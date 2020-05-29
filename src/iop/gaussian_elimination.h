@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2017 Heiko Bauke.
+    Copyright (C) 2017-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -47,7 +47,7 @@ static int gauss_make_triangular(double *A, int *p, int n)
     for(int i = k + 1; i < n; ++i)
       if(fabs(A[k + n * i]) > fabs(A[k + n * m])) m = i;
     p[k] = m; // rows k and m are swapped
-    // eleminate elements and swap rows
+    // eliminate elements and swap rows
     double t1 = A[k + n * m];
     A[k + n * m] = A[k + n * k];
     A[k + n * k] = t1; // new diagonal elements are (implicitly) one, store scaling factors on diagonal

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010 Henrik Andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,7 +34,6 @@
 #include "gui/gtk.h"
 #include "gui/presets.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
@@ -160,9 +159,14 @@ int flags()
          | IOP_FLAGS_TILING_FULL_ROI;
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("vignetting", IOP_GROUP_EFFECT);
+  return IOP_GROUP_EFFECT;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_rgb;
 }
 
 void init_key_accels(dt_iop_module_so_t *self)
@@ -259,7 +263,7 @@ static void encrypt_tea(unsigned int *arg)
   const unsigned int key[] = { 0xa341316c, 0xc8013ea4, 0xad90777d, 0x7e95761e };
   unsigned int v0 = arg[0], v1 = arg[1];
   unsigned int sum = 0;
-  unsigned int delta = 0x9e3779b9;
+  const unsigned int delta = 0x9e3779b9;
   for(int i = 0; i < TEA_ROUNDS; i++)
   {
     sum += delta;
@@ -272,7 +276,7 @@ static void encrypt_tea(unsigned int *arg)
 
 static float tpdf(unsigned int urandom)
 {
-  float frandom = (float)urandom / 0xFFFFFFFFu;
+  float frandom = (float)urandom / (float)0xFFFFFFFFu;
 
   return (frandom < 0.5f ? (sqrtf(2.0f * frandom) - 1.0f) : (1.0f - sqrtf(2.0f * (1.0f - frandom))));
 }
@@ -294,8 +298,8 @@ static int get_grab(float pointerx, float pointery, float startx, float starty, 
 static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int grab, float zoom_scale)
 {
   // half width/height of the crosshair
-  float crosshair_w = DT_PIXEL_APPLY_DPI(10.0) / zoom_scale;
-  float crosshair_h = DT_PIXEL_APPLY_DPI(10.0) / zoom_scale;
+  const float crosshair_w = DT_PIXEL_APPLY_DPI(10.0) / zoom_scale;
+  const float crosshair_h = DT_PIXEL_APPLY_DPI(10.0) / zoom_scale;
 
   // center crosshair
   cairo_move_to(cr, -crosshair_w, 0.0);
@@ -373,8 +377,8 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   //   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
   dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
 
-  float wd = dev->preview_pipe->backbuf_width;
-  float ht = dev->preview_pipe->backbuf_height;
+  const float wd = dev->preview_pipe->backbuf_width;
+  const float ht = dev->preview_pipe->backbuf_height;
   float bigger_side, smaller_side;
   if(wd >= ht)
   {
@@ -386,11 +390,11 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
     bigger_side = ht;
     smaller_side = wd;
   }
-  float zoom_y = dt_control_get_dev_zoom_y();
-  float zoom_x = dt_control_get_dev_zoom_x();
-  dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  int closeup = dt_control_get_dev_closeup();
-  float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1);
+  const float zoom_y = dt_control_get_dev_zoom_y();
+  const float zoom_x = dt_control_get_dev_zoom_x();
+  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+  const int closeup = dt_control_get_dev_closeup();
+  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1);
   float pzx, pzy;
   dt_dev_get_pointer_zoom_pos(dev, pointerx, pointery, &pzx, &pzy);
   pzx += 0.5f;
@@ -453,10 +457,10 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
                       -vignette_fy, zoom_scale);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) / zoom_scale);
-  cairo_set_source_rgba(cr, .3, .3, .3, .8);
+  dt_draw_set_color_overlay(cr, 0.3, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(1.0) / zoom_scale);
-  cairo_set_source_rgba(cr, .8, .8, .8, .8);
+  dt_draw_set_color_overlay(cr, 0.8, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
 }
 
@@ -465,8 +469,8 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
 {
   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
   dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
-  float wd = self->dev->preview_pipe->backbuf_width;
-  float ht = self->dev->preview_pipe->backbuf_height;
+  const float wd = self->dev->preview_pipe->backbuf_width;
+  const float ht = self->dev->preview_pipe->backbuf_height;
   float bigger_side, smaller_side;
   if(wd >= ht)
   {
@@ -478,9 +482,9 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
     bigger_side = ht;
     smaller_side = wd;
   }
-  dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  int closeup = dt_control_get_dev_closeup();
-  float zoom_scale = dt_dev_get_zoom_scale(self->dev, zoom, 1<<closeup, 1);
+  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+  const int closeup = dt_control_get_dev_closeup();
+  const float zoom_scale = dt_dev_get_zoom_scale(self->dev, zoom, 1<<closeup, 1);
   float pzx, pzy;
   dt_dev_get_pointer_zoom_pos(self->dev, x, y, &pzx, &pzy);
   pzx += 0.5f;
@@ -555,10 +559,10 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
     }
     else if(grab == 2) // change the width
     {
-      float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
-      float new_vignette_w = MIN(bigger_side * 0.5, MAX(0.1, pzx * wd - vignette_x));
-      float ratio = new_vignette_w / vignette_h;
-      float new_scale = 100.0 * new_vignette_w / max;
+      const float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
+      const float new_vignette_w = MIN(bigger_side, MAX(0.1, pzx * wd - vignette_x));
+      const float ratio = new_vignette_w / vignette_h;
+      const float new_scale = 100.0 * new_vignette_w / max;
       // FIXME: When going over the 1.0 boundary from wide to narrow (>1.0 -> <=1.0) the height slightly
       // changes, depending on speed.
       //        I guess we have to split the computation.
@@ -586,9 +590,9 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
     }
     else if(grab == 4) // change the height
     {
-      float new_vignette_h = MIN(bigger_side * 0.5, MAX(0.1, vignette_y - pzy * ht));
-      float ratio = new_vignette_h / vignette_w;
-      float max = 0.5 * ((ratio <= 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
+      const float new_vignette_h = MIN(bigger_side, MAX(0.1, vignette_y - pzy * ht));
+      const float ratio = new_vignette_h / vignette_w;
+      const float max = 0.5 * ((ratio <= 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
       // FIXME: When going over the 1.0 boundary from narrow to wide (>1.0 -> <=1.0) the width slightly
       // changes, depending on speed.
       //        I guess we have to split the computation.
@@ -596,7 +600,7 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
       {
         if(which == GDK_CONTROL_MASK)
         {
-          float new_scale = 100.0 * new_vignette_h / max;
+          const float new_scale = 100.0 * new_vignette_h / max;
           dt_bauhaus_slider_set(g->scale, new_scale);
         }
         else
@@ -606,30 +610,30 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
       }
       else
       {
-        float new_scale = 100.0 * new_vignette_h / max;
+        const float new_scale = 100.0 * new_vignette_h / max;
         dt_bauhaus_slider_set(g->scale, new_scale);
 
         if(which != GDK_CONTROL_MASK)
         {
-          float new_whratio = 1.0 / ratio;
+          const float new_whratio = 1.0 / ratio;
           dt_bauhaus_slider_set(g->whratio, new_whratio);
         }
       }
     }
     else if(grab == 8) // change the falloff on the right
     {
-      float new_vignette_fx = pzx * wd - vignette_x;
-      float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
-      float delta_x = MIN(max, MAX(0.0, new_vignette_fx - vignette_w));
-      float new_falloff = 100.0 * delta_x / max;
+      const float new_vignette_fx = pzx * wd - vignette_x;
+      const float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
+      const float delta_x = MIN(2.0f * max, MAX(0.0, new_vignette_fx - vignette_w));
+      const float new_falloff = 100.0 * delta_x / max;
       dt_bauhaus_slider_set(g->falloff_scale, new_falloff);
     }
     else if(grab == 16) // change the falloff on the top
     {
-      float new_vignette_fy = vignette_y - pzy * ht;
-      float max = 0.5 * ((p->whratio > 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
-      float delta_y = MIN(max, MAX(0.0, new_vignette_fy - vignette_h));
-      float new_falloff = 100.0 * delta_y / max;
+      const float new_vignette_fy = vignette_y - pzy * ht;
+      const float max = 0.5 * ((p->whratio > 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
+      const float delta_y = MIN(2.0f * max, MAX(0.0, new_vignette_fy - vignette_h));
+      const float new_falloff = 100.0 * delta_y / max;
       dt_bauhaus_slider_set(g->falloff_scale, new_falloff);
     }
     dt_control_queue_redraw_center();
@@ -740,7 +744,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   unsigned int *const tea_states = calloc(2 * dt_get_num_threads(), sizeof(unsigned int));
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) shared(data, yscale, xscale, dither) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ch, dscale, exp1, exp2, fscale, ivoid, ovoid, \
+                      roi_center_scaled, roi_out, tea_states, unbound) \
+  shared(data, yscale, xscale, dither) \
+  schedule(static)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -818,7 +826,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
                const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
-  dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->data;
+  dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->global_data;
 
   cl_int err = -999;
   const int devid = piece->pipe->devid;
@@ -889,9 +897,9 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   float scale[2] = { xscale, yscale };
   float roi_center_scaled_f[2] = { roi_center_scaled.x, roi_center_scaled.y };
   float expt[2] = { exp1, exp2 };
-  float brightness = data->brightness;
-  float saturation = data->saturation;
-  int unbound = data->unbound;
+  const float brightness = data->brightness;
+  const float saturation = data->saturation;
+  const int unbound = data->unbound;
 
   size_t sizes[2] = { ROUNDUPWD(width), ROUNDUPHT(height) };
 
@@ -1102,7 +1110,6 @@ void init(dt_iop_module_t *module)
   module->params = calloc(1, sizeof(dt_iop_vignette_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_vignette_params_t));
   module->default_enabled = 0;
-  module->priority = 852; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_vignette_params_t);
   module->gui_data = NULL;
   dt_iop_vignette_params_t tmp
@@ -1115,6 +1122,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void gui_init(struct dt_iop_module_t *self)
@@ -1129,8 +1138,8 @@ void gui_init(struct dt_iop_module_t *self)
 
   label1 = dtgtk_reset_label_new(_("automatic ratio"), self, &p->autoratio, sizeof p->autoratio);
 
-  g->scale = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 0.5, p->scale, 2);
-  g->falloff_scale = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 1.0, p->falloff_scale, 2);
+  g->scale = dt_bauhaus_slider_new_with_range(self, 0.0, 200.0, 0.5, p->scale, 2);
+  g->falloff_scale = dt_bauhaus_slider_new_with_range(self, 0.0, 200.0, 1.0, p->falloff_scale, 2);
   g->brightness = dt_bauhaus_slider_new_with_range(self, -1.0, 1.0, 0.01, p->brightness, 3);
   g->saturation = dt_bauhaus_slider_new_with_range(self, -1.0, 1.0, 0.01, p->saturation, 3);
   g->center_x = dt_bauhaus_slider_new_with_range(self, -1.0, 1.0, 0.01, p->center.x, 3);
@@ -1203,6 +1212,30 @@ void gui_cleanup(struct dt_iop_module_t *self)
   self->gui_data = NULL;
 }
 
+GSList *mouse_actions(struct dt_iop_module_t *self)
+{
+  GSList *lm = NULL;
+  dt_mouse_action_t *a = NULL;
+
+  a = (dt_mouse_action_t *)calloc(1, sizeof(dt_mouse_action_t));
+  a->action = DT_MOUSE_ACTION_LEFT_DRAG;
+  g_snprintf(a->name, sizeof(a->name), _("[%s on node] change vignette/feather size"), self->name());
+  lm = g_slist_append(lm, a);
+
+  a = (dt_mouse_action_t *)calloc(1, sizeof(dt_mouse_action_t));
+  a->key.accel_mods = GDK_CONTROL_MASK;
+  a->action = DT_MOUSE_ACTION_LEFT_DRAG;
+  g_snprintf(a->name, sizeof(a->name), _("[%s on node] change vignette/feather size keeping ratio"),
+             self->name());
+  lm = g_slist_append(lm, a);
+
+  a = (dt_mouse_action_t *)calloc(1, sizeof(dt_mouse_action_t));
+  a->action = DT_MOUSE_ACTION_LEFT_DRAG;
+  g_snprintf(a->name, sizeof(a->name), _("[%s on center] move vignette"), self->name());
+  lm = g_slist_append(lm, a);
+
+  return lm;
+}
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;

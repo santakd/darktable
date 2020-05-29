@@ -1,8 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
-    copyright (c) 2011 henrik andersson.
-    copyright (c) 2016 Roman Lebedev.
+    Copyright (C) 2016-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU Lesser General Public License as published by
@@ -38,7 +36,7 @@ struct dt_view_t;
 #pragma GCC visibility push(default)
 
 /** version */
-int version();
+int version(void);
 /** get name of the module, to be translated. */
 const char *name(struct dt_lib_module_t *self);
 

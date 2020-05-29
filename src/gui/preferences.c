@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2011 johannes hanika, Tobias Ellinghaus.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,11 +17,14 @@
 */
 
 #include <gdk/gdkkeysyms.h>
+#include <strings.h>
 
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
 #include "common/debug.h"
+#include "common/file_location.h"
 #include "common/l10n.h"
+#include "common/presets.h"
 #include "control/control.h"
 #include "develop/imageop.h"
 #include "gui/accelerators.h"
@@ -54,6 +57,13 @@ typedef struct dt_gui_presets_edit_dialog_t
   GtkSpinButton *focal_length_min, *focal_length_max;
   GtkWidget *format_btn[3];
 } dt_gui_presets_edit_dialog_t;
+
+typedef struct dt_gui_accel_search_t
+{
+  GtkWidget *tree, *search_box;
+  gchar *last_search_term;
+  int last_found_count, curr_found_count;
+} dt_gui_accel_search_t;
 
 // FIXME: this is copypasta from gui/presets.c. better put these somewhere so that all places can access the
 // same data.
@@ -107,8 +117,9 @@ enum
   P_N_COLUMNS
 };
 
-static void init_tab_presets(GtkWidget *book);
-static void init_tab_accels(GtkWidget *book);
+static void init_tab_presets(GtkWidget *stack);
+static void init_tab_accels(GtkWidget *stack, dt_gui_accel_search_t *search_data);
+static gboolean accel_search(gpointer widget, gpointer data);
 static void tree_insert_accel(gpointer accel_struct, gpointer model_link);
 static void tree_insert_rec(GtkTreeStore *model, GtkTreeIter *parent, const gchar *accel_path,
                             const gchar *translated_path, guint accel_key, GdkModifierType accel_mods);
@@ -120,6 +131,7 @@ static void import_export(GtkButton *button, gpointer data);
 static void restore_defaults(GtkButton *button, gpointer data);
 static gint compare_rows_accels(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer data);
 static gint compare_rows_presets(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer data);
+static void import_preset(GtkButton *button, gpointer data);
 
 // Signal handlers
 static void tree_row_activated_accels(GtkTreeView *tree, GtkTreePath *path, GtkTreeViewColumn *column,
@@ -129,16 +141,108 @@ static void tree_row_activated_presets(GtkTreeView *tree, GtkTreePath *path, Gtk
 static void tree_selection_changed(GtkTreeSelection *selection, gpointer data);
 static gboolean tree_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data);
 static gboolean tree_key_press_presets(GtkWidget *widget, GdkEventKey *event, gpointer data);
-static gboolean prefix_search(GtkTreeModel *model, gint column, const gchar *key, GtkTreeIter *iter,
-                              gpointer d);
 
 static void edit_preset(GtkTreeView *tree, const gint rowid, const gchar *name, const gchar *module);
 static void edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_presets_edit_dialog_t *g);
 
 static GtkWidget *_preferences_dialog;
 
+///////////// gui theme selection
 
-///////////// gui language selection
+static void load_themes_dir(const char *basedir)
+{
+  char *themes_dir = g_build_filename(basedir, "themes", NULL);
+  GDir *dir = g_dir_open(themes_dir, 0, NULL);
+  if(dir)
+  {
+    const gchar *d_name;
+    while((d_name = g_dir_read_name(dir)))
+      darktable.themes = g_list_append(darktable.themes, g_strdup(d_name));
+    g_dir_close(dir);
+  }
+  g_free(themes_dir);
+}
+
+static void load_themes(void)
+{
+  // Clear theme list...
+  g_list_free_full(darktable.themes, g_free);
+  darktable.themes = NULL;
+
+  // check themes dirs
+  gchar configdir[PATH_MAX] = { 0 };
+  gchar datadir[PATH_MAX] = { 0 };
+  dt_loc_get_datadir(datadir, sizeof(datadir));
+  dt_loc_get_user_config_dir(configdir, sizeof(configdir));
+
+  load_themes_dir(datadir);
+  load_themes_dir(configdir);
+}
+
+static void theme_callback(GtkWidget *widget, gpointer user_data)
+{
+  const int selected = gtk_combo_box_get_active(GTK_COMBO_BOX(widget));
+  gchar *theme = g_list_nth(darktable.themes, selected)->data;
+  gchar *i = g_strrstr(theme, ".");
+  if(i) *i = '\0';
+  dt_gui_load_theme(theme);
+  dt_bauhaus_load_theme();
+}
+
+static void usercss_callback(GtkWidget *widget, gpointer user_data)
+{
+  dt_conf_set_bool("themes/usercss", gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)));
+  dt_gui_load_theme(dt_conf_get_string("ui_last/theme"));
+  dt_bauhaus_load_theme();
+}
+
+static void font_size_changed_callback(GtkWidget *widget, gpointer user_data)
+{
+  dt_conf_set_float("font_size", gtk_spin_button_get_value(GTK_SPIN_BUTTON(widget)));
+  dt_gui_load_theme(dt_conf_get_string("ui_last/theme"));
+  dt_bauhaus_load_theme();
+}
+
+static void use_sys_font_callback(GtkWidget *widget, gpointer user_data)
+{
+  dt_conf_set_bool("use_system_font", gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)));
+  if(dt_conf_get_bool("use_system_font"))
+    gtk_widget_set_state_flags(GTK_WIDGET(user_data), GTK_STATE_FLAG_INSENSITIVE, TRUE);
+  else
+    gtk_widget_set_state_flags(GTK_WIDGET(user_data), GTK_STATE_FLAG_NORMAL, TRUE);
+
+  dt_gui_load_theme(dt_conf_get_string("ui_last/theme"));
+  dt_bauhaus_load_theme();
+}
+
+static void save_usercss_callback(GtkWidget *widget, gpointer user_data)
+{
+  //get file locations
+  char usercsspath[PATH_MAX] = { 0 }, configdir[PATH_MAX] = { 0 };
+  dt_loc_get_user_config_dir(configdir, sizeof(configdir));
+  g_snprintf(usercsspath, sizeof(usercsspath), "%s/user.css", configdir);
+
+  //read text buffer into gchar
+  GtkTextBuffer *buffer = (GtkTextBuffer *)user_data;
+  GtkTextIter start, end;
+  gtk_text_buffer_get_start_iter(buffer, &start);
+  gtk_text_buffer_get_end_iter(buffer, &end);
+  const gchar *usercsscontent = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+
+  //write to file
+  GError *error = NULL;
+  if(!g_file_set_contents(usercsspath, usercsscontent, -1, &error))
+  {
+    fprintf(stderr, "%s: error saving css to %s: %s\n", G_STRFUNC, usercsspath, error->message);
+    g_clear_error(&error);
+  }
+
+  //reload the theme
+  dt_gui_load_theme(dt_conf_get_string("ui_last/theme"));
+  dt_bauhaus_load_theme();
+}
+
+///////////// gui language and theme selection
 
 static void language_callback(GtkWidget *widget, gpointer user_data)
 {
@@ -166,8 +270,22 @@ static gboolean reset_language_widget(GtkWidget *label, GdkEventButton *event, G
   return FALSE;
 }
 
-static void hardcoded_gui(GtkWidget *grid, int *line)
+static void init_tab_general(GtkWidget *stack)
 {
+
+  GtkWidget *container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), DT_PIXEL_APPLY_DPI(3));
+  gtk_grid_set_column_spacing(GTK_GRID(grid), DT_PIXEL_APPLY_DPI(5));
+  gtk_widget_set_valign(grid, GTK_ALIGN_START);
+  int line = 0;
+
+  gtk_box_pack_start(GTK_BOX(container), grid, FALSE, FALSE, 0);
+
+  gtk_stack_add_titled(GTK_STACK(stack), container, _("general"), _("general"));
+
+  // language
+
   GtkWidget *label = gtk_label_new(_("interface language"));
   gtk_widget_set_halign(label, GTK_ALIGN_START);
   GtkWidget *labelev = gtk_event_box_new();
@@ -186,47 +304,219 @@ static void hardcoded_gui(GtkWidget *grid, int *line)
   gtk_widget_set_tooltip_text(labelev,  _("double click to reset to the system language"));
   gtk_event_box_set_visible_window(GTK_EVENT_BOX(labelev), FALSE);
   gtk_widget_set_tooltip_text(widget, _("set the language of the user interface. the system default is marked with an * (needs a restart)"));
-  gtk_grid_attach(GTK_GRID(grid), labelev, 0, (*line)++, 1, 1);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, line++, 1, 1);
   gtk_grid_attach_next_to(GTK_GRID(grid), widget, labelev, GTK_POS_RIGHT, 1, 1);
   g_signal_connect(G_OBJECT(labelev), "button-press-event", G_CALLBACK(reset_language_widget), (gpointer)widget);
+
+  // theme
+
+  load_themes();
+
+  label = gtk_label_new(_("theme"));
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  widget = gtk_combo_box_text_new();
+  labelev = gtk_event_box_new();
+  gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
+  gtk_container_add(GTK_CONTAINER(labelev), label);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, line++, 1, 1);
+  gtk_grid_attach_next_to(GTK_GRID(grid), widget, labelev, GTK_POS_RIGHT, 1, 1);
+
+  // read all themes
+  char *theme_name = dt_conf_get_string("ui_last/theme");
+  int selected = 0;
+  int k = 0;
+  for(GList *iter = darktable.themes; iter; iter = g_list_next(iter))
+  {
+    gchar *name = g_strdup((gchar*)(iter->data));
+    // remove extension
+    gchar *i = g_strrstr(name, ".");
+    if(i) *i = '\0';
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(widget), name);
+    if(!g_strcmp0(name, theme_name)) selected = k;
+    k++;
+  }
+  g_free(theme_name);
+
+  gtk_combo_box_set_active(GTK_COMBO_BOX(widget), selected);
+
+  g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(theme_callback), 0);
+  gtk_widget_set_tooltip_text(widget, _("set the theme for the user interface"));
+
+  //Font size check and spin buttons
+  GtkWidget *usesysfont = gtk_check_button_new();
+  GtkWidget *fontsize = gtk_spin_button_new_with_range(5.0f, 30.0f, 0.2f);
+
+  //checkbox to use system font size
+  if(dt_conf_get_bool("use_system_font"))
+    gtk_widget_set_state_flags(fontsize, GTK_STATE_FLAG_INSENSITIVE, TRUE);
+  else
+    gtk_widget_set_state_flags(fontsize, GTK_STATE_FLAG_NORMAL, TRUE);
+
+  label = gtk_label_new(_("use system font size"));
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  labelev = gtk_event_box_new();
+  gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
+  gtk_container_add(GTK_CONTAINER(labelev), label);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, line++, 1, 1);
+  gtk_grid_attach_next_to(GTK_GRID(grid), usesysfont, labelev, GTK_POS_RIGHT, 1, 1);
+  gtk_widget_set_tooltip_text(usesysfont, _("use system font size"));
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(usesysfont), dt_conf_get_bool("use_system_font"));
+  g_signal_connect(G_OBJECT(usesysfont), "toggled", G_CALLBACK(use_sys_font_callback), (gpointer)fontsize);
+
+
+  //font size selector
+  if(dt_conf_get_float("font_size") < 5.0f || dt_conf_get_float("font_size") > 20.0f)
+    dt_conf_set_float("font_size", 12.0f);
+
+  label = gtk_label_new(_("font size in points"));
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  labelev = gtk_event_box_new();
+  gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
+  gtk_container_add(GTK_CONTAINER(labelev), label);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, line++, 1, 1);
+  gtk_grid_attach_next_to(GTK_GRID(grid), fontsize, labelev, GTK_POS_RIGHT, 1, 1);
+  gtk_widget_set_tooltip_text(fontsize, _("font size in points"));
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(fontsize), dt_conf_get_float("font_size"));
+  g_signal_connect(G_OBJECT(fontsize), "value_changed", G_CALLBACK(font_size_changed_callback), 0);
+
+
+  //checkbox to allow user to modify theme with user.css
+  label = gtk_label_new(_("modify selected theme with CSS tweaks below"));
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  GtkWidget *cssbutton = gtk_check_button_new();
+  labelev = gtk_event_box_new();
+  gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
+  gtk_container_add(GTK_CONTAINER(labelev), label);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, line++, 1, 1);
+  gtk_grid_attach_next_to(GTK_GRID(grid), cssbutton, labelev, GTK_POS_RIGHT, 1, 1);
+  gtk_widget_set_tooltip_text(cssbutton, _("modify theme with CSS keyed below (saved to user.css)"));
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cssbutton), dt_conf_get_bool("themes/usercss"));
+  g_signal_connect(G_OBJECT(cssbutton), "toggled", G_CALLBACK(usercss_callback), 0);
+
+  //scrollable textarea with save button to allow user to directly modify user.css file
+  GtkWidget *usercssbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_box_pack_start(GTK_BOX(container), usercssbox, TRUE, TRUE, 0);
+  gtk_widget_set_name(usercssbox, "usercss_box");
+
+  GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
+  GtkWidget *textview = gtk_text_view_new_with_buffer(buffer);
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(textview), GTK_WRAP_WORD);
+  gtk_widget_set_hexpand(textview, TRUE);
+  gtk_widget_set_halign(textview, GTK_ALIGN_FILL);
+
+  GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_container_add(GTK_CONTAINER(scroll), textview);
+  gtk_box_pack_start(GTK_BOX(usercssbox), scroll, TRUE, TRUE, 0);
+
+  GtkWidget *button = gtk_button_new_with_label(C_("usercss", "save theme tweaks"));
+  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(save_usercss_callback), buffer);
+  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_box_pack_end(GTK_BOX(hbox), button, FALSE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(usercssbox), hbox, FALSE, FALSE, 0);
+
+  //set textarea text from file or default
+  char usercsspath[PATH_MAX] = { 0 }, configdir[PATH_MAX] = { 0 };
+  dt_loc_get_user_config_dir(configdir, sizeof(configdir));
+  g_snprintf(usercsspath, sizeof(usercsspath), "%s/user.css", configdir);
+
+  if(g_file_test(usercsspath, G_FILE_TEST_EXISTS))
+  {
+    gchar *usercsscontent = NULL;
+    //load file into buffer
+    if(g_file_get_contents(usercsspath, &usercsscontent, NULL, NULL))
+    {
+      gtk_text_buffer_set_text(buffer, usercsscontent, -1);
+    }
+    else
+    {
+      //load default text with some pointers
+      gtk_text_buffer_set_text(buffer, _("/* ERROR Loading user.css */"), -1);
+    }
+    g_free(usercsscontent);
+  }
+  else
+  {
+    //load default text
+    gtk_text_buffer_set_text(buffer, _("/* Enter CSS theme tweaks here */\n\n"), -1);
+  }
+
 }
 
-///////////// end of gui language selection
+///////////// end of gui and theme language selection
 
 
 void dt_gui_preferences_show()
 {
-  GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
-  _preferences_dialog = gtk_dialog_new_with_buttons(_("darktable preferences"), GTK_WINDOW(win),
+  GtkWindow *win = GTK_WINDOW(dt_ui_main_window(darktable.gui->ui));
+  _preferences_dialog = gtk_dialog_new_with_buttons(_("darktable preferences"), win,
                                                     GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_MODAL,
-                                                    _("close"), GTK_RESPONSE_ACCEPT, NULL);
+                                                    NULL, NULL);
+  gtk_window_set_default_size(GTK_WINDOW(_preferences_dialog), DT_PIXEL_APPLY_DPI(1100), DT_PIXEL_APPLY_DPI(700));
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(_preferences_dialog);
 #endif
-  gtk_window_set_position(GTK_WINDOW(_preferences_dialog), GTK_WIN_POS_CENTER_ALWAYS);
+  gtk_window_set_position(GTK_WINDOW(_preferences_dialog), GTK_WIN_POS_CENTER_ON_PARENT);
+  gtk_widget_set_name(_preferences_dialog, "preferences_notebook");
+
+  //grab the content area of the dialog
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(_preferences_dialog));
-  GtkWidget *notebook = gtk_notebook_new();
-  gtk_widget_set_size_request(notebook, -1, DT_PIXEL_APPLY_DPI(500));
-  gtk_widget_set_name(notebook, "preferences_notebook");
-  gtk_box_pack_start(GTK_BOX(content), notebook, TRUE, TRUE, 0);
+  gtk_widget_set_name(content, "preferences_content");
+  gtk_container_set_border_width(GTK_CONTAINER(content), 0);
+
+  //place a box in the content area
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_name(box, "preferences_box");
+  gtk_container_set_border_width(GTK_CONTAINER(box), 0);
+  gtk_box_pack_start(GTK_BOX(content), box, TRUE, TRUE, 0);
+
+  //create stack and sidebar and pack into the box
+  GtkWidget *stack = gtk_stack_new();
+  GtkWidget *stacksidebar = gtk_stack_sidebar_new();
+  gtk_stack_sidebar_set_stack(GTK_STACK_SIDEBAR(stacksidebar), GTK_STACK(stack));
+  gtk_widget_set_size_request(stack, DT_PIXEL_APPLY_DPI(900), DT_PIXEL_APPLY_DPI(700));
+  gtk_box_pack_start(GTK_BOX(box), stacksidebar, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), stack, TRUE, TRUE, 0);
 
   // Make sure remap mode is off initially
   darktable.control->accel_remap_str = NULL;
   darktable.control->accel_remap_path = NULL;
 
-  init_tab_gui(_preferences_dialog, notebook, &hardcoded_gui);
-  init_tab_core(_preferences_dialog, notebook, NULL);
-  init_tab_session(_preferences_dialog, notebook, NULL);
-  init_tab_accels(notebook);
-  init_tab_presets(notebook);
+  dt_gui_accel_search_t *search_data = (dt_gui_accel_search_t *)malloc(sizeof(dt_gui_accel_search_t));
+
+  //setup tabs
+  init_tab_general(stack);
+  init_tab_import(_preferences_dialog, stack);
+  init_tab_lighttable(_preferences_dialog, stack);
+  init_tab_darkroom(_preferences_dialog, stack);
+  init_tab_other_views(_preferences_dialog, stack);
+  init_tab_processing(_preferences_dialog, stack);
+  init_tab_security(_preferences_dialog, stack);
+  init_tab_cpugpu(_preferences_dialog, stack);
+  init_tab_storage(_preferences_dialog, stack);
+  init_tab_misc(_preferences_dialog, stack);
+  init_tab_accels(stack, search_data);
+  init_tab_presets(stack);
+
+  //open in the appropriate tab if currently in darkroom or lighttable view
+  const gchar *current_view = darktable.view_manager->current_view->name(darktable.view_manager->current_view);
+  if(strcmp(current_view, "darkroom") == 0 || strcmp(current_view, "lighttable") == 0)
+  {
+    gtk_stack_set_visible_child(GTK_STACK(stack), gtk_stack_get_child_by_name(GTK_STACK(stack), current_view));
+  }
+
 #ifdef USE_LUA
-  GtkGrid* lua_grid = init_tab_lua(_preferences_dialog, notebook);
+  GtkGrid* lua_grid = init_tab_lua(_preferences_dialog, stack);
 #endif
   gtk_widget_show_all(_preferences_dialog);
   (void)gtk_dialog_run(GTK_DIALOG(_preferences_dialog));
+
 #ifdef USE_LUA
   destroy_tab_lua(lua_grid);
 #endif
+
+  g_free(search_data->last_search_term);
+  free(search_data);
   gtk_widget_destroy(_preferences_dialog);
 
   // Cleaning up any memory still allocated for remapping
@@ -287,21 +577,21 @@ static void tree_insert_presets(GtkTreeStore *tree_model)
                               -1, &stmt, NULL);
   while(sqlite3_step(stmt) == SQLITE_ROW)
   {
-    gint rowid = sqlite3_column_int(stmt, 0);
-    gchar *name = (gchar *)sqlite3_column_text(stmt, 1);
-    gchar *operation = (gchar *)sqlite3_column_text(stmt, 2);
+    const gint rowid = sqlite3_column_int(stmt, 0);
+    const gchar *name = (gchar *)sqlite3_column_text(stmt, 1);
+    const gchar *operation = (gchar *)sqlite3_column_text(stmt, 2);
     const gboolean autoapply = (sqlite3_column_int(stmt, 3) == 0 ? FALSE : TRUE);
-    gchar *model = (gchar *)sqlite3_column_text(stmt, 4);
-    gchar *maker = (gchar *)sqlite3_column_text(stmt, 5);
-    gchar *lens = (gchar *)sqlite3_column_text(stmt, 6);
-    float iso_min = sqlite3_column_double(stmt, 7);
-    float iso_max = sqlite3_column_double(stmt, 8);
-    float exposure_min = sqlite3_column_double(stmt, 9);
-    float exposure_max = sqlite3_column_double(stmt, 10);
-    float aperture_min = sqlite3_column_double(stmt, 11);
-    float aperture_max = sqlite3_column_double(stmt, 12);
-    int focal_length_min = sqlite3_column_double(stmt, 13);
-    int focal_length_max = sqlite3_column_double(stmt, 14);
+    const gchar *model = (gchar *)sqlite3_column_text(stmt, 4);
+    const gchar *maker = (gchar *)sqlite3_column_text(stmt, 5);
+    const gchar *lens = (gchar *)sqlite3_column_text(stmt, 6);
+    const float iso_min = sqlite3_column_double(stmt, 7);
+    const float iso_max = sqlite3_column_double(stmt, 8);
+    const float exposure_min = sqlite3_column_double(stmt, 9);
+    const float exposure_max = sqlite3_column_double(stmt, 10);
+    const float aperture_min = sqlite3_column_double(stmt, 11);
+    const float aperture_max = sqlite3_column_double(stmt, 12);
+    const int focal_length_min = sqlite3_column_double(stmt, 13);
+    const int focal_length_max = sqlite3_column_double(stmt, 14);
     const gboolean writeprotect = (sqlite3_column_int(stmt, 15) == 0 ? FALSE : TRUE);
 
     gchar *iso = NULL, *exposure = NULL, *aperture = NULL, *focal_length = NULL;
@@ -378,8 +668,9 @@ static void tree_insert_presets(GtkTreeStore *tree_model)
   cairo_surface_destroy(check_cst);
 }
 
-static void init_tab_presets(GtkWidget *book)
+static void init_tab_presets(GtkWidget *stack)
 {
+  GtkWidget *container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
   GtkWidget *tree = gtk_tree_view_new();
   GtkTreeStore *model = gtk_tree_store_new(
@@ -391,11 +682,7 @@ static void init_tab_presets(GtkWidget *book)
   GtkTreeViewColumn *column;
 
   // Adding the outer container
-  gtk_widget_set_margin_top(scroll, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_bottom(scroll, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_start(scroll, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_end(scroll, DT_PIXEL_APPLY_DPI(20));
-  gtk_notebook_append_page(GTK_NOTEBOOK(book), scroll, gtk_label_new(_("presets")));
+  gtk_stack_add_titled(GTK_STACK(stack), container, _("presets"), _("presets"));
 
   tree_insert_presets(model);
 
@@ -449,6 +736,19 @@ static void init_tab_presets(GtkWidget *book)
   column = gtk_tree_view_column_new_with_attributes(_("auto"), renderer, "pixbuf", P_AUTOAPPLY_COLUMN, NULL);
   gtk_tree_view_append_column(GTK_TREE_VIEW(tree), column);
 
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_box_pack_start(GTK_BOX(container), scroll, TRUE, TRUE, 0);
+
+  // Adding the import/export buttons
+  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+  GtkWidget *button = gtk_button_new_with_label(C_("preferences", "import..."));
+  gtk_widget_set_name(hbox, "preset_controls");
+  gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
+  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(import_preset), (gpointer)model);
+
+  gtk_box_pack_start(GTK_BOX(container), hbox, FALSE, FALSE, 0);
+
   // Attaching treeview signals
 
   // row-activated either expands/collapses a row or activates editing
@@ -471,23 +771,19 @@ static void init_tab_presets(GtkWidget *book)
   g_object_unref(G_OBJECT(model));
 }
 
-static void init_tab_accels(GtkWidget *book)
+static void init_tab_accels(GtkWidget *stack, dt_gui_accel_search_t *search_data)
 {
-  GtkWidget *container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+  GtkWidget *container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
   GtkWidget *tree = gtk_tree_view_new();
-  GtkWidget *button;
+  GtkWidget *button, *searchentry;
   GtkWidget *hbox;
   GtkTreeStore *model = gtk_tree_store_new(A_N_COLUMNS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
   GtkCellRenderer *renderer;
   GtkTreeViewColumn *column;
 
   // Adding the outer container
-  gtk_widget_set_margin_top(container, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_bottom(container, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_start(container, DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_end(container, DT_PIXEL_APPLY_DPI(20));
-  gtk_notebook_append_page(GTK_NOTEBOOK(book), container, gtk_label_new(_("shortcuts")));
+  gtk_stack_add_titled(GTK_STACK(stack), container, _("shortcuts"), _("shortcuts"));
 
   // Building the accelerator tree
   g_slist_foreach(darktable.control->accelerator_list, tree_insert_accel, (gpointer)model);
@@ -517,11 +813,6 @@ static void init_tab_accels(GtkWidget *book)
   // A keypress may remap an accel or delete one
   g_signal_connect(G_OBJECT(tree), "key-press-event", G_CALLBACK(tree_key_press), (gpointer)model);
 
-  // Setting up the search functionality
-  gtk_tree_view_set_search_column(GTK_TREE_VIEW(tree), A_TRANS_COLUMN);
-  gtk_tree_view_set_search_equal_func(GTK_TREE_VIEW(tree), prefix_search, NULL, NULL);
-  gtk_tree_view_set_enable_search(GTK_TREE_VIEW(tree), TRUE);
-
   // Attaching the model to the treeview
   gtk_tree_view_set_model(GTK_TREE_VIEW(tree), GTK_TREE_MODEL(model));
 
@@ -530,7 +821,24 @@ static void init_tab_accels(GtkWidget *book)
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
   gtk_box_pack_start(GTK_BOX(container), scroll, TRUE, TRUE, 0);
 
-  hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+  // Adding toolbar at bottom of treeview
+  hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_name(hbox, "shortcut_controls");
+
+  // Adding search box
+  searchentry = gtk_entry_new();
+  g_signal_connect(G_OBJECT(searchentry), "activate", G_CALLBACK(accel_search), (gpointer)search_data);
+
+  gtk_box_pack_start(GTK_BOX(hbox), searchentry, FALSE, TRUE, 10);
+
+  // Adding the search button
+  button = gtk_button_new_with_label(C_("preferences", "search"));
+  gtk_widget_set_tooltip_text(GTK_WIDGET(button), _("click or press enter to search\nclick or press enter again to cycle through results"));
+  gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
+  search_data->tree = tree;
+  search_data->search_box = searchentry;
+  search_data->last_search_term = NULL;
+  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(accel_search), (gpointer)search_data);
 
   // Adding the restore defaults button
   button = gtk_button_new_with_label(C_("preferences", "default"));
@@ -540,13 +848,13 @@ static void init_tab_accels(GtkWidget *book)
 
   // Adding the import/export buttons
 
-  button = gtk_button_new_with_label(C_("preferences", "import"));
-  gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
+  button = gtk_button_new_with_label(C_("preferences", "import..."));
+  gtk_box_pack_end(GTK_BOX(hbox), button, FALSE, TRUE, 0);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(import_export), (gpointer)0);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(update_accels_model), (gpointer)model);
 
-  button = gtk_button_new_with_label(_("export"));
-  gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
+  button = gtk_button_new_with_label(_("export..."));
+  gtk_box_pack_end(GTK_BOX(hbox), button, FALSE, TRUE, 0);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(import_export), (gpointer)1);
 
   gtk_box_pack_start(GTK_BOX(container), hbox, FALSE, FALSE, 0);
@@ -561,8 +869,8 @@ static void tree_insert_accel(gpointer accel_struct, gpointer model_link)
   GtkAccelKey key;
 
   // Getting the first significant parts of the paths
-  char *accel_path = accel->path;
-  char *translated_path = accel->translated_path;
+  const char *accel_path = accel->path;
+  const char *translated_path = accel->translated_path;
 
   /* if prefixed lets forward pointer */
   if(!strncmp(accel_path, "<Darktable>", strlen("<Darktable>")))
@@ -581,8 +889,6 @@ static void tree_insert_accel(gpointer accel_struct, gpointer model_link)
 static void tree_insert_rec(GtkTreeStore *model, GtkTreeIter *parent, const gchar *accel_path,
                             const gchar *translated_path, guint accel_key, GdkModifierType accel_mods)
 {
-
-  int i;
   gboolean found = FALSE;
   gchar *val_str;
   GtkTreeIter iter;
@@ -603,9 +909,9 @@ static void tree_insert_rec(GtkTreeStore *model, GtkTreeIter *parent, const gcha
   else
   {
     /* we are on a branch let's get the node name */
-    gchar *end = g_strstr_len(accel_path, strlen(accel_path), "/");
+    const gchar *end = g_strstr_len(accel_path, strlen(accel_path), "/");
+    const gchar *trans_end = g_strstr_len(translated_path, strlen(translated_path), "/");
     gchar *node = g_strndup(accel_path, end - accel_path);
-    gchar *trans_end = g_strstr_len(translated_path, strlen(translated_path), "/");
     gchar *trans_node;
     // safeguard against broken translations
     if(trans_end)
@@ -617,9 +923,9 @@ static void tree_insert_rec(GtkTreeStore *model, GtkTreeIter *parent, const gcha
       translated_path = accel_path;
     }
 
-    /* search the tree if we alread have an sibling with node name */
+    /* search the tree if we already have a sibling with node name */
     int siblings = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(model), parent);
-    for(i = 0; i < siblings; i++)
+    for(int i = 0; i < siblings; i++)
     {
       gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(model), &iter, parent, i);
       gtk_tree_model_get(GTK_TREE_MODEL(model), &iter, A_ACCEL_COLUMN, &val_str, -1);
@@ -696,13 +1002,80 @@ static void update_accels_model(gpointer widget, gpointer data)
   }
 }
 
+gboolean accel_search_children(dt_gui_accel_search_t *search_data, GtkTreeIter *parent)
+{
+  GtkTreeView *tv = GTK_TREE_VIEW(search_data->tree);
+  GtkTreeModel *tvmodel = gtk_tree_view_get_model(tv);
+  const gchar *search_term = gtk_entry_get_text(GTK_ENTRY(search_data->search_box));
+
+  gchar *row_data;
+  GtkTreeIter iter;
+
+  //check the current item for a match
+  gtk_tree_model_get(tvmodel, parent, A_TRANS_COLUMN, &row_data, -1);
+
+  GtkTreePath *childpath = gtk_tree_model_get_path(tvmodel, parent);
+
+  if(strstr(row_data, search_term))
+  {
+    search_data->curr_found_count++;
+    if(search_data->curr_found_count > search_data->last_found_count)
+    {
+      gtk_tree_view_expand_to_path(tv, childpath);
+      gtk_tree_view_set_cursor(tv, childpath, gtk_tree_view_get_column(tv, A_TRANS_COLUMN), FALSE);
+      search_data->last_found_count++;
+      return TRUE;
+    }
+  }
+
+  if(gtk_tree_model_iter_has_child(tvmodel, parent))
+  {
+    //match not found then call again for each child, each time exiting if matched
+    const int siblings = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(tvmodel), parent);
+    for(int i = 0; i < siblings; i++)
+    {
+      gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(tvmodel), &iter, parent, i);
+      if(accel_search_children(search_data, &iter))
+        return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+static gboolean accel_search(gpointer widget, gpointer data)
+{
+  dt_gui_accel_search_t *search_data = (dt_gui_accel_search_t *)data;
+  GtkTreeView *tv = GTK_TREE_VIEW(search_data->tree);
+  GtkTreeModel *tvmodel = gtk_tree_view_get_model(tv);
+  const gchar *search_term = gtk_entry_get_text(GTK_ENTRY(search_data->search_box));
+  if(!search_data->last_search_term || strcmp(search_data->last_search_term, search_term) != 0)
+  {
+    g_free(search_data->last_search_term);
+    search_data->last_search_term = g_strdup(search_term);
+    search_data->last_found_count = 0;
+  }
+  search_data->curr_found_count = 0;
+  GtkTreeIter childiter;
+
+  gtk_tree_view_collapse_all(GTK_TREE_VIEW(tv));
+
+  const int siblings = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(tvmodel), NULL);
+  for(int i = 0; i < siblings; i++)
+  {
+    gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(tvmodel), &childiter, NULL, i);
+    if(accel_search_children(search_data, &childiter))
+      return TRUE;
+  }
+  search_data->last_found_count = 0;
+  return FALSE;
+}
+
 static void update_accels_model_rec(GtkTreeModel *model, GtkTreeIter *parent, gchar *path, size_t path_len)
 {
   GtkAccelKey key;
   GtkTreeIter iter;
   gchar *str_data;
-  gchar *end;
-  gint i;
 
   // First concatenating this part of the key
   g_strlcat(path, "/", path_len);
@@ -713,9 +1086,9 @@ static void update_accels_model_rec(GtkTreeModel *model, GtkTreeIter *parent, gc
   if(gtk_tree_model_iter_has_child(model, parent))
   {
     // Branch node, carry on with recursion
-    end = path + strlen(path);
+    gchar *end = path + strlen(path);
 
-    for(i = 0; i < gtk_tree_model_iter_n_children(model, parent); i++)
+    for(gint i = 0; i < gtk_tree_model_iter_n_children(model, parent); i++)
     {
       gtk_tree_model_iter_nth_child(model, &iter, parent, i);
       update_accels_model_rec(model, &iter, path, path_len);
@@ -735,8 +1108,8 @@ static void update_accels_model_rec(GtkTreeModel *model, GtkTreeIter *parent, gc
 
 static void delete_matching_accels(gpointer current, gpointer mapped)
 {
-  dt_accel_t *current_accel = (dt_accel_t *)current;
-  dt_accel_t *mapped_accel = (dt_accel_t *)mapped;
+  const dt_accel_t *current_accel = (dt_accel_t *)current;
+  const dt_accel_t *mapped_accel = (dt_accel_t *)mapped;
   GtkAccelKey current_key;
   GtkAccelKey mapped_key;
 
@@ -750,7 +1123,8 @@ static void delete_matching_accels(gpointer current, gpointer mapped)
   if(current_key.accel_key == mapped_key.accel_key                 // Key code matches
      && current_key.accel_mods == mapped_key.accel_mods            // Key state matches
      && !(current_accel->local && mapped_accel->local              // Not both local to
-          && strcmp(current_accel->module, mapped_accel->module))) // diff mods
+          && strcmp(current_accel->module, mapped_accel->module))
+     && (current_accel->views & mapped_accel->views) != 0) // diff mods
     gtk_accel_map_change_entry(current_accel->path, 0, 0, TRUE);
 }
 
@@ -858,12 +1232,10 @@ static void tree_selection_changed(GtkTreeSelection *selection, gpointer data)
 
 static gboolean tree_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
-
   GtkTreeModel *model = (GtkTreeModel *)data;
   GtkTreeIter iter;
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
   GtkTreePath *path;
-  GSList *remapped;
   dt_accel_t query;
 
   gchar accel[256];
@@ -879,20 +1251,73 @@ static gboolean tree_key_press(GtkWidget *widget, GdkEventKey *event, gpointer d
   // Otherwise, determine whether we're in remap mode or not
   if(darktable.control->accel_remap_str)
   {
-    // Change the accel map entry
-    if(gtk_accel_map_change_entry(darktable.control->accel_remap_str, gdk_keyval_to_lower(event->keyval),
-                                  event->state & KEY_STATE_MASK, TRUE))
-    {
-      // If it succeeded delete any conflicting accelerators
-      // First locate the accel list entry
-      g_strlcpy(query.path, darktable.control->accel_remap_str, sizeof(query.path));
-      remapped = g_slist_find_custom(darktable.control->accelerator_list, (gpointer)&query, _accelcmp);
+    const guint event_mods = dt_gui_translated_key_state(event);
 
-      // Then remove conflicts
-      g_slist_foreach(darktable.control->accelerator_list, delete_matching_accels, (gpointer)(remapped->data));
+    // First locate the accel list entry
+    g_strlcpy(query.path, darktable.control->accel_remap_str, sizeof(query.path));
+    GSList *remapped = g_slist_find_custom(darktable.control->accelerator_list, (gpointer)&query, _accelcmp);
+    const dt_accel_t *accel_current = (dt_accel_t *)remapped->data;
+
+    // let's search for conflicts
+    dt_accel_t *accel_conflict = NULL;
+    GSList *l = darktable.control->accelerator_list;
+    while (l)
+    {
+      dt_accel_t *a = (dt_accel_t *)l->data;
+      GtkAccelKey key;
+      if (a != accel_current && gtk_accel_map_lookup_entry(a->path, &key))
+      {
+        if (key.accel_key == gdk_keyval_to_lower(event->keyval) &&
+            key.accel_mods == event_mods &&
+            !(a->local && accel_current->local && strcmp(a->module, accel_current->module)) &&
+            (a->views & accel_current->views) != 0)
+        {
+          accel_conflict = a;
+          break;
+        }
+      }
+      l = g_slist_next(l);
     }
 
+    if(!accel_conflict)
+    {
+      // no conflict
+      gtk_accel_map_change_entry(darktable.control->accel_remap_str, gdk_keyval_to_lower(event->keyval),
+                                 event_mods, TRUE);
+    }
+    else
+    {
+      // we ask for confirmation
+      GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
+      gchar *accel_txt
+          = gtk_accelerator_get_label(gdk_keyval_to_lower(event->keyval), event_mods);
+      gchar txt[512] = { 0 };
+      if(g_str_has_prefix(accel_conflict->translated_path, "<Darktable>/"))
+        g_strlcpy(txt, accel_conflict->translated_path + 12, sizeof(txt));
+      else
+        g_strlcpy(txt, accel_conflict->translated_path, sizeof(txt));
+      GtkWidget *dialog = gtk_message_dialog_new(
+          GTK_WINDOW(win), GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+          _("%s accel is already mapped to\n%s.\ndo you want to replace it ?"), accel_txt, txt);
+      g_free(accel_txt);
+#ifdef GDK_WINDOWING_QUARTZ
+      dt_osx_disallow_fullscreen(dialog);
+#endif
 
+      gtk_window_set_title(GTK_WINDOW(dialog), _("accel conflict"));
+      gint res = gtk_dialog_run(GTK_DIALOG(dialog));
+      gtk_widget_destroy(dialog);
+      if(res == GTK_RESPONSE_YES)
+      {
+        // Change the accel map entry
+        if(gtk_accel_map_change_entry(darktable.control->accel_remap_str, gdk_keyval_to_lower(event->keyval),
+                                      event_mods, TRUE))
+        {
+          // Then remove conflicts
+          g_slist_foreach(darktable.control->accelerator_list, delete_matching_accels, (gpointer)(accel_current));
+        }
+      }
+    }
 
     // Then update the text in the A_BINDING_COLUMN of each row
     update_accels_model(NULL, model);
@@ -969,6 +1394,9 @@ static gboolean tree_key_press_presets(GtkWidget *widget, GdkEventKey *event, gp
       GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window), GTK_DIALOG_DESTROY_WITH_PARENT,
                                                  GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
                                                  _("do you really want to delete the preset `%s'?"), name);
+#ifdef GDK_WINDOWING_QUARTZ
+      dt_osx_disallow_fullscreen(dialog);
+#endif
       gtk_window_set_title(GTK_WINDOW(dialog), _("delete preset?"));
       if(gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_YES)
       {
@@ -1067,8 +1495,6 @@ static void import_export(GtkButton *button, gpointer data)
 
 static void restore_defaults(GtkButton *button, gpointer data)
 {
-  GList *ops;
-  dt_iop_module_so_t *op;
   gchar accelpath[256];
   gchar dir[PATH_MAX] = { 0 };
   gchar path[PATH_MAX] = { 0 };
@@ -1077,6 +1503,9 @@ static void restore_defaults(GtkButton *button, gpointer data)
       = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK_CANCEL,
                                _("are you sure you want to restore the default keybindings?  this will "
                                  "erase any modifications you have made."));
+#ifdef GDK_WINDOWING_QUARTZ
+  dt_osx_disallow_fullscreen(message);
+#endif
   if(gtk_dialog_run(GTK_DIALOG(message)) == GTK_RESPONSE_OK)
   {
     // First load the default keybindings for immediate effect
@@ -1085,10 +1514,10 @@ static void restore_defaults(GtkButton *button, gpointer data)
     gtk_accel_map_load(path);
 
     // Now deleting any iop show shortcuts
-    ops = darktable.iop;
+    GList *ops = darktable.iop;
     while(ops)
     {
-      op = (dt_iop_module_so_t *)ops->data;
+      dt_iop_module_so_t *op = (dt_iop_module_so_t *)ops->data;
       snprintf(accelpath, sizeof(accelpath), "<Darktable>/darkroom/modules/%s/show", op->op);
       gtk_accel_map_change_entry(accelpath, 0, 0, TRUE);
       ops = g_list_next(ops);
@@ -1106,19 +1535,46 @@ static void restore_defaults(GtkButton *button, gpointer data)
   gtk_widget_destroy(message);
 }
 
-static gboolean prefix_search(GtkTreeModel *model, gint column, const gchar *key, GtkTreeIter *iter,
-                              gpointer d)
+static void import_preset(GtkButton *button, gpointer data)
 {
-  gchar *row_data;
+  GtkTreeModel *model = (GtkTreeModel *)data;
+  GtkWidget *chooser;
 
-  gtk_tree_model_get(model, iter, A_TRANS_COLUMN, &row_data, -1);
-  while(*key != '\0')
+  // Zero value indicates import
+  chooser = gtk_file_chooser_dialog_new(_("select preset to import"), NULL, GTK_FILE_CHOOSER_ACTION_OPEN,
+                                        _("_cancel"), GTK_RESPONSE_CANCEL, _("_open"), GTK_RESPONSE_ACCEPT,
+                                        NULL);
+#ifdef GDK_WINDOWING_QUARTZ
+  dt_osx_disallow_fullscreen(chooser);
+#endif
+
+  gchar *import_path = dt_conf_get_string("ui_last/import_path");
+  if(import_path != NULL)
   {
-    if(*row_data != *key) return TRUE;
-    key++;
-    row_data++;
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), import_path);
+    g_free(import_path);
   }
-  return FALSE;
+  if(gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+  {
+    if(g_file_test(gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser)), G_FILE_TEST_EXISTS))
+    {
+      if(dt_presets_import_from_file(gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser))))
+      {
+        dt_control_log(_("failed to import preset"));
+      }
+      else
+      {
+        GtkTreeStore *tree_store = GTK_TREE_STORE(model);
+        gtk_tree_store_clear(tree_store);
+        tree_insert_presets(tree_store);
+      }
+
+      gchar *folder = gtk_file_chooser_get_current_folder(GTK_FILE_CHOOSER(chooser));
+      dt_conf_set_string("ui_last/import_path", folder);
+      g_free(folder);
+    }
+  }
+  gtk_widget_destroy(chooser);
 }
 
 // Custom sort function for TreeModel entries for accels list
@@ -1191,23 +1647,20 @@ static void edit_preset(GtkTreeView *tree, const gint rowid, const gchar *name, 
   char title[1024];
   snprintf(title, sizeof(title), _("edit `%s' for module `%s'"), name, module);
   dialog = gtk_dialog_new_with_buttons(title, GTK_WINDOW(_preferences_dialog),
-                                       GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_MODAL, _("_ok"),
-                                       GTK_RESPONSE_NONE, NULL);
+                                       GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_MODAL,
+                                       _("_cancel"), GTK_RESPONSE_CANCEL,
+                                       _("_save"), GTK_RESPONSE_YES,
+                                       _("_ok"), GTK_RESPONSE_OK, NULL);
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(dialog);
 #endif
   GtkContainer *content_area = GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
-  GtkBox *box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 5));
-  gtk_widget_set_margin_top(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_bottom(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_start(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(20));
-  gtk_widget_set_margin_end(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(20));
+  GtkBox *box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
   gtk_container_add(content_area, GTK_WIDGET(box));
   GtkWidget *label;
 
   dt_gui_presets_edit_dialog_t *g
       = (dt_gui_presets_edit_dialog_t *)malloc(sizeof(dt_gui_presets_edit_dialog_t));
-  // g->module = module;
   g->rowid = rowid;
   g->tree = tree;
   g->name = GTK_LABEL(gtk_label_new(name));
@@ -1230,7 +1683,7 @@ static void edit_preset(GtkTreeView *tree, const gint rowid, const gchar *name, 
 
   int line = 0;
   g->details = gtk_grid_new();
-  gtk_grid_set_row_spacing(GTK_GRID(g->details), DT_PIXEL_APPLY_DPI(5));
+  gtk_grid_set_row_spacing(GTK_GRID(g->details), DT_PIXEL_APPLY_DPI(3));
   gtk_grid_set_column_spacing(GTK_GRID(g->details), DT_PIXEL_APPLY_DPI(10));
   gtk_box_pack_start(box, GTK_WIDGET(g->details), FALSE, FALSE, 0);
 
@@ -1380,39 +1833,68 @@ static void edit_preset(GtkTreeView *tree, const gint rowid, const gchar *name, 
 static void edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_presets_edit_dialog_t *g)
 {
   // commit all the user input fields
-  sqlite3_stmt *stmt;
-  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
-                              "UPDATE data.presets SET description = ?1, model = ?2, maker = ?3, lens = ?4, "
-                              "iso_min = ?5, iso_max = ?6, exposure_min = ?7, exposure_max = ?8, "
-                              "aperture_min = ?9, aperture_max = ?10, focal_length_min = ?11, "
-                              "focal_length_max = ?12, autoapply = ?13, filter = ?14, def = 0, format = ?15 "
-                              "WHERE rowid = ?16",
-                              -1, &stmt, NULL);
-  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 1, gtk_entry_get_text(g->description), -1, SQLITE_TRANSIENT);
-  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 2, gtk_entry_get_text(g->model), -1, SQLITE_TRANSIENT);
-  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 3, gtk_entry_get_text(g->maker), -1, SQLITE_TRANSIENT);
-  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 4, gtk_entry_get_text(g->lens), -1, SQLITE_TRANSIENT);
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 5, gtk_spin_button_get_value(g->iso_min));
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 6, gtk_spin_button_get_value(g->iso_max));
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 7,
-                               dt_gui_presets_exposure_value[dt_bauhaus_combobox_get(g->exposure_min)]);
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 8,
-                               dt_gui_presets_exposure_value[dt_bauhaus_combobox_get(g->exposure_max)]);
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 9,
-                               dt_gui_presets_aperture_value[dt_bauhaus_combobox_get(g->aperture_min)]);
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 10,
-                               dt_gui_presets_aperture_value[dt_bauhaus_combobox_get(g->aperture_max)]);
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 11, gtk_spin_button_get_value(g->focal_length_min));
-  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 12, gtk_spin_button_get_value(g->focal_length_max));
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 13, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->autoapply)));
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 14, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->filter)));
-  int format = 0;
-  for(int k = 0; k < 3; k++)
-    format += gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->format_btn[k])) * dt_gui_presets_format_flag[k];
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 15, format);
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 16, g->rowid);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  if(response_id == GTK_RESPONSE_OK)
+  {
+    sqlite3_stmt *stmt;
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "UPDATE data.presets SET description = ?1, model = ?2, maker = ?3, lens = ?4, "
+                                "iso_min = ?5, iso_max = ?6, exposure_min = ?7, exposure_max = ?8, "
+                                "aperture_min = ?9, aperture_max = ?10, focal_length_min = ?11, "
+                                "focal_length_max = ?12, autoapply = ?13, filter = ?14, def = 0, format = ?15 "
+                                "WHERE rowid = ?16",
+                                -1, &stmt, NULL);
+    DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 1, gtk_entry_get_text(g->description), -1, SQLITE_TRANSIENT);
+    DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 2, gtk_entry_get_text(g->model), -1, SQLITE_TRANSIENT);
+    DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 3, gtk_entry_get_text(g->maker), -1, SQLITE_TRANSIENT);
+    DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 4, gtk_entry_get_text(g->lens), -1, SQLITE_TRANSIENT);
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 5, gtk_spin_button_get_value(g->iso_min));
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 6, gtk_spin_button_get_value(g->iso_max));
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 7,
+                                 dt_gui_presets_exposure_value[dt_bauhaus_combobox_get(g->exposure_min)]);
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 8,
+                                 dt_gui_presets_exposure_value[dt_bauhaus_combobox_get(g->exposure_max)]);
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 9,
+                                 dt_gui_presets_aperture_value[dt_bauhaus_combobox_get(g->aperture_min)]);
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 10,
+                                 dt_gui_presets_aperture_value[dt_bauhaus_combobox_get(g->aperture_max)]);
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 11, gtk_spin_button_get_value(g->focal_length_min));
+    DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 12, gtk_spin_button_get_value(g->focal_length_max));
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 13, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->autoapply)));
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 14, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->filter)));
+    int format = 0;
+    for(int k = 0; k < 3; k++)
+      format += gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->format_btn[k])) * dt_gui_presets_format_flag[k];
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 15, format);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 16, g->rowid);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+  else if(response_id == GTK_RESPONSE_YES)
+  {
+    const gchar *name = gtk_label_get_text(g->name);
+
+    // ask for destination directory
+
+    GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
+    GtkWidget *filechooser = gtk_file_chooser_dialog_new(
+      _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
+      GTK_RESPONSE_CANCEL, _("_select as output destination"), GTK_RESPONSE_ACCEPT, (char *)NULL);
+#ifdef GDK_WINDOWING_QUARTZ
+    dt_osx_disallow_fullscreen(filechooser);
+#endif
+
+    // save if accepted
+
+    if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+    {
+      char *filedir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
+      dt_presets_save_to_file(g->rowid, name, filedir);
+      dt_control_log(_("preset %s was successfully saved"), name);
+      g_free(filedir);
+    }
+
+    gtk_widget_destroy(GTK_WIDGET(filechooser));
+  }
 
   GtkTreeStore *tree_store = GTK_TREE_STORE(gtk_tree_view_get_model(g->tree));
   gtk_tree_store_clear(tree_store);

@@ -1,7 +1,7 @@
 
 /*
    This file is part of darktable,
-   copyright (c) 2013 Jeremy Rosen
+   Copyright (C) 2013-2020 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -197,7 +197,7 @@ static int films_new(lua_State *L)
   dt_film_t my_film;
   dt_film_init(&my_film);
   int film_id = dt_film_new(&my_film, final_path);
-  free(final_path);
+  g_free(final_path);
   if(film_id)
   {
     luaA_push(L, dt_lua_film_t, &film_id);

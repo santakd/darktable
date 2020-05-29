@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2012 tobias ellinghaus.
+    Copyright (C) 2012-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -86,10 +86,7 @@ typedef enum
 
 typedef struct dt_imageio_j2k_t
 {
-  int max_width, max_height;
-  int width, height;
-  char style[128];
-  gboolean style_append;
+  dt_imageio_module_data_t global;
   int bpp;
   dt_imageio_j2k_format_t format;
   dt_imageio_j2k_preset_t preset;
@@ -323,7 +320,8 @@ static void cinema_setup_encoder(opj_cparameters_t *parameters, opj_image_t *ima
 
 int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const void *in_tmp,
                 dt_colorspaces_color_profile_type_t over_type, const char *over_filename,
-                void *exif, int exif_len, int imgid, int num, int total)
+                void *exif, int exif_len, int imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
+                const gboolean export_masks)
 {
   const float *in = (const float *)in_tmp;
   dt_imageio_j2k_t *j2k = (dt_imageio_j2k_t *)j2k_tmp;
@@ -366,7 +364,7 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     const int subsampling_dy = parameters.subsampling_dy;
     const int numcomps = 3;
     const int prec = 12; // TODO: allow other bitdepths!
-    const int w = j2k->width, h = j2k->height;
+    const int w = j2k->global.width, h = j2k->global.height;
 
     opj_image_cmptparm_t cmptparm[4]; /* RGBA: max. 4 components */
     memset(&cmptparm[0], 0, numcomps * sizeof(opj_image_cmptparm_t));
@@ -397,12 +395,12 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
 
     switch(prec)
     {
-      case 8:
-        for(int i = 0; i < w * h; i++)
-        {
-          for(int k = 0; k < numcomps; k++) image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_8BIT(in[i * 4 + k]);
-        }
-        break;
+//      case 8:
+//        for(int i = 0; i < w * h; i++)
+//        {
+//          for(int k = 0; k < numcomps; k++) image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_8BIT(in[i * 4 + k]);
+//        }
+//        break;
       case 12:
         for(int i = 0; i < w * h; i++)
         {
@@ -410,19 +408,19 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
             image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_12BIT(in[i * 4 + k]);
         }
         break;
-      case 16:
-        for(int i = 0; i < w * h; i++)
-        {
-          for(int k = 0; k < numcomps; k++)
-            image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_16BIT(in[i * 4 + k]);
-        }
-        break;
-      default:
-        fprintf(stderr, "Error: this shouldn't happen, there is no bit depth of %d for jpeg 2000 images.\n",
-                prec);
-        free(rates);
-        opj_image_destroy(image);
-        return 1;
+//      case 16:
+//        for(int i = 0; i < w * h; i++)
+//        {
+//          for(int k = 0; k < numcomps; k++)
+//            image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_16BIT(in[i * 4 + k]);
+//        }
+//        break;
+//      default:
+//        fprintf(stderr, "Error: this shouldn't happen, there is no bit depth of %d for jpeg 2000 images.\n",
+//                prec);
+//        free(rates);
+//        opj_image_destroy(image);
+//        return 1;
     }
   }
 
@@ -541,12 +539,12 @@ void *legacy_params(dt_imageio_module_format_t *self, const void *const old_para
     dt_imageio_j2k_v1_t *o = (dt_imageio_j2k_v1_t *)old_params;
     dt_imageio_j2k_t *n = (dt_imageio_j2k_t *)malloc(sizeof(dt_imageio_j2k_t));
 
-    n->max_width = o->max_width;
-    n->max_height = o->max_height;
-    n->width = o->width;
-    n->height = o->height;
-    g_strlcpy(n->style, o->style, sizeof(o->style));
-    n->style_append = 0;
+    n->global.max_width = o->max_width;
+    n->global.max_height = o->max_height;
+    n->global.width = o->width;
+    n->global.height = o->height;
+    g_strlcpy(n->global.style, o->style, sizeof(o->style));
+    n->global.style_append = FALSE;
     n->bpp = o->bpp;
     n->format = o->format;
     n->preset = o->preset;
@@ -637,7 +635,7 @@ void gui_init(dt_imageio_module_format_t *self)
 {
   dt_imageio_j2k_gui_t *gui = (dt_imageio_j2k_gui_t *)malloc(sizeof(dt_imageio_j2k_gui_t));
   self->gui_data = (void *)gui;
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_PIXEL_APPLY_DPI(5));
+  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
   const int format_last = dt_conf_get_int("plugins/imageio/format/j2k/format");
   const int preset_last = dt_conf_get_int("plugins/imageio/format/j2k/preset");
@@ -683,7 +681,7 @@ void gui_reset(dt_imageio_module_format_t *self)
 int flags(dt_imageio_module_data_t *data)
 {
   dt_imageio_j2k_t *j = (dt_imageio_j2k_t *)data;
-  return (j->format == JP2_CFMT ? FORMAT_FLAGS_SUPPORT_XMP : 0);
+  return ((j && j->format == JP2_CFMT) ? FORMAT_FLAGS_SUPPORT_XMP : 0);
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

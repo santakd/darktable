@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 */
 
 #include "common/ratings.h"
+#include "common/collection.h"
 #include "common/debug.h"
 #include "control/control.h"
 #include "dtgtk/button.h"
@@ -75,33 +76,35 @@ int position()
   return 1002;
 }
 
-#define STAR_SIZE DT_PIXEL_APPLY_DPI(12)
-#define STAR_SPACING DT_PIXEL_APPLY_DPI(6)
-
 void gui_init(dt_lib_module_t *self)
 {
   /* initialize ui widgets */
   dt_lib_ratings_t *d = (dt_lib_ratings_t *)g_malloc0(sizeof(dt_lib_ratings_t));
   self->data = (void *)d;
 
-  self->widget = gtk_drawing_area_new();
+  self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
   gtk_widget_set_halign(self->widget, GTK_ALIGN_CENTER);
   gtk_widget_set_valign(self->widget, GTK_ALIGN_CENTER);
-  gtk_widget_set_events(self->widget, GDK_EXPOSURE_MASK | GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
+
+  GtkWidget *drawing = gtk_drawing_area_new();
+
+  gtk_widget_set_events(drawing, GDK_EXPOSURE_MASK | GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
                             | GDK_LEAVE_NOTIFY_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
                             | GDK_STRUCTURE_MASK);
 
   /* connect callbacks */
-  gtk_widget_set_app_paintable(self->widget, TRUE);
-  g_signal_connect(G_OBJECT(self->widget), "draw", G_CALLBACK(_lib_ratings_draw_callback), self);
-  g_signal_connect(G_OBJECT(self->widget), "button-press-event", G_CALLBACK(_lib_ratings_button_press_callback), self);
-  g_signal_connect(G_OBJECT(self->widget), "button-release-event", G_CALLBACK(_lib_ratings_button_release_callback),
+  gtk_widget_set_app_paintable(drawing, TRUE);
+  g_signal_connect(G_OBJECT(drawing), "draw", G_CALLBACK(_lib_ratings_draw_callback), self);
+  g_signal_connect(G_OBJECT(drawing), "button-press-event", G_CALLBACK(_lib_ratings_button_press_callback), self);
+  g_signal_connect(G_OBJECT(drawing), "button-release-event", G_CALLBACK(_lib_ratings_button_release_callback),
                    self);
-  g_signal_connect(G_OBJECT(self->widget), "motion-notify-event", G_CALLBACK(_lib_ratings_motion_notify_callback), self);
-  g_signal_connect(G_OBJECT(self->widget), "leave-notify-event", G_CALLBACK(_lib_ratings_leave_notify_callback), self);
+  g_signal_connect(G_OBJECT(drawing), "motion-notify-event", G_CALLBACK(_lib_ratings_motion_notify_callback), self);
+  g_signal_connect(G_OBJECT(drawing), "leave-notify-event", G_CALLBACK(_lib_ratings_leave_notify_callback), self);
+
+  gtk_box_pack_start(GTK_BOX(self->widget), drawing, TRUE, TRUE, 0);
 
   /* set size of navigation draw area */
-  gtk_widget_set_size_request(self->widget, (STAR_SIZE * 6) + (STAR_SPACING * 5), STAR_SIZE);
+  gtk_widget_set_name(self->widget, "lib-rating-stars");
 }
 
 void gui_cleanup(dt_lib_module_t *self)
@@ -120,6 +123,9 @@ static gboolean _lib_ratings_draw_callback(GtkWidget *widget, cairo_t *crf, gpoi
   GtkAllocation allocation;
   gtk_widget_get_allocation(widget, &allocation);
 
+  const float star_size = allocation.height;
+  const float star_spacing = (allocation.width - 5.0 * star_size) / 4.0;
+
   cairo_surface_t *cst
       = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32, allocation.width, allocation.height);
   cairo_t *cr = cairo_create(cst);
@@ -134,13 +140,13 @@ static gboolean _lib_ratings_draw_callback(GtkWidget *widget, cairo_t *crf, gpoi
 
   /* lets draw stars */
   int x = 0;
-  cairo_set_line_width(cr, 1.5);
+  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(1));
   gdk_cairo_set_source_rgba(cr, &fg_color);
   d->current = 0;
   for(int k = 0; k < 5; k++)
   {
     /* outline star */
-    dt_draw_star(cr, STAR_SIZE / 2.0 + x, STAR_SIZE / 2.0, STAR_SIZE / 2.0, STAR_SIZE / 4.0);
+    dt_draw_star(cr, star_size / 2.0 + x, star_size / 2.0, star_size / 2.0, star_size / (2.0 * 2.5));
     if(x < d->pointerx)
     {
       cairo_fill_preserve(cr);
@@ -151,7 +157,7 @@ static gboolean _lib_ratings_draw_callback(GtkWidget *widget, cairo_t *crf, gpoi
     }
     else
       cairo_stroke(cr);
-    x += STAR_SIZE + STAR_SPACING;
+    x += star_size + star_spacing;
   }
 
   /* blit memsurface onto widget*/
@@ -190,20 +196,9 @@ static gboolean _lib_ratings_button_press_callback(GtkWidget *widget, GdkEventBu
   dt_lib_ratings_t *d = (dt_lib_ratings_t *)self->data;
   if(d->current > 0)
   {
-    int32_t mouse_over_id;
-
-    mouse_over_id = dt_view_get_image_to_act_on();
-
-    if(mouse_over_id <= 0)
-    {
-      dt_ratings_apply_to_selection(d->current);
-    }
-    else
-    {
-      dt_ratings_apply_to_image(mouse_over_id, d->current);
-      // dt_control_log(ngettext("applying rating %d to %d image", "applying rating %d to %d images", 1),
-      // d->current, 1); //FIXME: Change the message after release
-    }
+    GList *imgs = dt_view_get_images_to_act_on(FALSE);
+    dt_ratings_apply_on_list(imgs, d->current, TRUE);
+    dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, imgs);
 
     dt_control_queue_redraw_center();
   }
@@ -213,8 +208,6 @@ static gboolean _lib_ratings_button_press_callback(GtkWidget *widget, GdkEventBu
 static gboolean _lib_ratings_button_release_callback(GtkWidget *widget, GdkEventButton *event,
                                                      gpointer user_data)
 {
-  /*  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-    self=NULL;*/
   return TRUE;
 }
 

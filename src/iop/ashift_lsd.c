@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  copyright (c) 2016 Ulrich Pegelow.
+  Copyright (C) 2016-2020 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,7 +21,7 @@
  * Changes versus the original code:
  *      do not include "lsd.h" (not needed)
  *      make all interface functions static
- *      comment out unsused interface functions
+ *      comment out unused interface functions
  *      catch (unlikely) division by zero near line 2035
  *      rename rad1 and rad2 to radius1 and radius2 in reduce_region_radius()
  *        to avoid naming conflict in windows build

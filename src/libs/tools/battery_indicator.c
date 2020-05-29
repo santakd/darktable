@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2018 johannes hanika
-    copyright (c) 2018 tobias ellinghaus
+    Copyright (C) 2018-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,6 +16,7 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "bauhaus/bauhaus.h"
 #include "dtgtk/icon.h"
 #include "libs/lib.h"
 #include "libs/lib_api.h"
@@ -67,7 +67,7 @@ void gui_init(dt_lib_module_t *self)
   d->fill = _get_fill();
 
   self->widget = d->icon = dtgtk_icon_new(_paint_battery, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, d);
-  gtk_widget_set_size_request(d->icon, DT_PIXEL_APPLY_DPI(18), DT_PIXEL_APPLY_DPI(18));
+  gtk_widget_set_size_request(d->icon, DT_PIXEL_APPLY_DPI(23), -1);
   gtk_widget_set_tooltip_text(d->icon, _("battery indicator"));
 
   g_timeout_add_seconds(60, _check_fill, d); // TODO: is checking the battery status once per minute fine?
@@ -149,7 +149,8 @@ static void _paint_battery(cairo_t *cr, gint x, gint y, gint w, gint h, gint fla
   // grow is needed because ink.* are int and everything gets rounded to 1 or so otherwise,
   // leading to imprecise positioning
   static const float grow = 10.0;
-  PangoFontDescription *desc = pango_font_description_from_string("sans-serif bold");
+  PangoFontDescription *desc = pango_font_description_copy_static(darktable.bauhaus->pango_font_desc);
+  pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
   pango_font_description_set_absolute_size(desc, .48 * grow * PANGO_SCALE);
   layout = pango_cairo_create_layout(cr);
   pango_layout_set_font_description(layout, desc);

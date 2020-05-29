@@ -1,8 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
-    copyright (c) 2012 Tobias Ellinghaus.
-    copyright (c) 2015 Roman Lebedev.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +18,7 @@
 
 #include "common/darktable.h"
 #include "common/debug.h"
+#include "common/file_location.h"
 #include "common/image_cache.h"
 #include "control/conf.h"
 #include "control/control.h"
@@ -34,7 +33,7 @@ DT_MODULE(1)
 
 #define DT_MODULE_LIST_SPACING DT_PIXEL_APPLY_DPI(2)
 
-#define ICON_SIZE DT_PIXEL_APPLY_DPI(20)
+#define ICON_SIZE DT_PIXEL_APPLY_DPI(16)
 typedef struct dt_lib_modulelist_t
 {
   GtkTreeView *tree;
@@ -51,6 +50,8 @@ static void _lib_modulelist_style_set(GtkWidget *widget, GtkStyle *previous_styl
 static void _lib_modulelist_gui_update(struct dt_lib_module_t *);
 /* helper for sorting */
 static gint _lib_modulelist_gui_sort(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer userdata);
+/* update selection based on activated modules */
+static void _lib_modulelist_selection_changed_callback(gpointer instance, gpointer user_data);
 
 const char *name(dt_lib_module_t *self)
 {
@@ -93,7 +94,10 @@ void gui_init(dt_lib_module_t *self)
                             G_CALLBACK(_lib_modulelist_populate_callback), self);
   g_signal_connect(GTK_WIDGET(d->tree), "style-set", G_CALLBACK(_lib_modulelist_style_set), self);
   g_signal_connect(GTK_WIDGET(d->tree), "cursor-changed", G_CALLBACK(_lib_modulelist_row_changed_callback),
-                   NULL);
+                   self);
+
+  GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
+  g_signal_connect(selection, "changed", G_CALLBACK(_lib_modulelist_selection_changed_callback), self);
 
   darktable.view_manager->proxy.more_module.module = self;
   darktable.view_manager->proxy.more_module.update = _lib_modulelist_gui_update;
@@ -124,27 +128,26 @@ static void image_renderer_function(GtkTreeViewColumn *col, GtkCellRenderer *ren
   gtk_tree_model_get(model, iter, COL_MODULE, &module, -1);
   surface = dt_gdk_cairo_surface_create_from_pixbuf(pixbuf, 1, NULL);
   g_object_set(renderer, "surface", surface, (gchar *)0);
-  g_object_set(renderer, "cell-background-set", module->state != dt_iop_state_HIDDEN, (gchar *)0);
   cairo_surface_destroy(surface);
   g_object_unref(pixbuf);
 }
+
 static void favorite_renderer_function(GtkTreeViewColumn *col, GtkCellRenderer *renderer, GtkTreeModel *model,
                                        GtkTreeIter *iter, gpointer user_data)
 {
   dt_iop_module_so_t *module;
   gtk_tree_model_get(model, iter, COL_MODULE, &module, -1);
-  g_object_set(renderer, "cell-background-set", module->state != dt_iop_state_HIDDEN, (gchar *)0);
   GdkPixbuf *fav_pixbuf
       = ((dt_lib_modulelist_t *)darktable.view_manager->proxy.more_module.module->data)->fav_pixbuf;
   g_object_set(renderer, "pixbuf", module->state == dt_iop_state_FAVORITE ? fav_pixbuf : NULL, (gchar *)0);
 }
+
 static void text_renderer_function(GtkTreeViewColumn *col, GtkCellRenderer *renderer, GtkTreeModel *model,
                                    GtkTreeIter *iter, gpointer user_data)
 {
   dt_iop_module_so_t *module;
   gtk_tree_model_get(model, iter, COL_MODULE, &module, -1);
   g_object_set(renderer, "text", module->name(), (gchar *)0);
-  g_object_set(renderer, "cell-background-set", module->state != dt_iop_state_HIDDEN, (gchar *)0);
 }
 
 static GdkPixbuf *load_image(const char *filename)
@@ -163,6 +166,31 @@ static GdkPixbuf *load_image(const char *filename)
 
 static const uint8_t fallback_pixel[4] = { 0, 0, 0, 0 };
 
+static void update_selection(dt_lib_module_t *self)
+{
+  dt_iop_module_so_t *module;
+  GtkTreeIter iter;
+  GtkTreeView *treeview = ((dt_lib_modulelist_t *)self->data)->tree;
+  GtkTreeModel *model = gtk_tree_view_get_model(treeview);
+  GtkTreeSelection *selection = gtk_tree_view_get_selection(treeview);
+
+  gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
+  while(valid)
+  {
+    gtk_tree_model_get(model, &iter, COL_MODULE, &module, -1);
+    if(module->state != dt_iop_state_HIDDEN)
+      gtk_tree_selection_select_iter (selection, &iter);
+    else
+      gtk_tree_selection_unselect_iter (selection, &iter);
+    valid = gtk_tree_model_iter_next(model, &iter);
+  }
+}
+
+static void _lib_modulelist_selection_changed_callback(gpointer instance, gpointer user_data)
+{
+  update_selection(user_data);
+}
+
 static void _lib_modulelist_populate_callback(gpointer instance, gpointer user_data)
 {
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
@@ -172,16 +200,6 @@ static void _lib_modulelist_populate_callback(gpointer instance, gpointer user_d
   GtkTreeIter iter;
   GtkWidget *view = GTK_WIDGET(((dt_lib_modulelist_t *)self->data)->tree);
   GtkCellRenderer *pix_renderer, *fav_renderer, *text_renderer;
-  GdkRGBA color;
-  GtkStyleContext *context = gtk_widget_get_style_context(view);
-  gboolean color_found = gtk_style_context_lookup_color (context, "selected_bg_color", &color);
-  if(!color_found)
-  {
-    color.red = 1.0;
-    color.green = 0.0;
-    color.blue = 0.0;
-    color.alpha = 1.0;
-  }
 
   store = gtk_list_store_new(NUM_COLS, GDK_TYPE_PIXBUF, G_TYPE_POINTER, G_TYPE_STRING);
   gtk_tree_view_set_model(GTK_TREE_VIEW(view), GTK_TREE_MODEL(store));
@@ -191,7 +209,6 @@ static void _lib_modulelist_populate_callback(gpointer instance, gpointer user_d
   gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(store), COL_MODULE, GTK_SORT_ASCENDING);
 
   pix_renderer = gtk_cell_renderer_pixbuf_new();
-  g_object_set(pix_renderer, "cell-background-rgba", &color, (gchar *)0);
 
   fav_renderer = gtk_cell_renderer_pixbuf_new();
   cairo_surface_t *fav_cst = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, ICON_SIZE, ICON_SIZE);
@@ -204,18 +221,16 @@ static void _lib_modulelist_populate_callback(gpointer instance, gpointer user_d
   ((dt_lib_modulelist_t *)self->data)->fav_pixbuf
       = gdk_pixbuf_new_from_data(data, GDK_COLORSPACE_RGB, TRUE, 8, ICON_SIZE, ICON_SIZE,
                                  cairo_image_surface_get_stride(fav_cst), NULL, NULL);
-  g_object_set(fav_renderer, "cell-background-rgba", &color, (gchar *)0);
   g_object_set(fav_renderer, "width", gdk_pixbuf_get_width(((dt_lib_modulelist_t *)self->data)->fav_pixbuf),
                (gchar *)0);
 
   text_renderer = gtk_cell_renderer_text_new();
-  g_object_set(text_renderer, "cell-background-rgba", &color, (gchar *)0);
 
   gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(view), FALSE);
   gtk_tree_view_set_headers_clickable(GTK_TREE_VIEW(view), FALSE);
   gtk_tree_view_set_tooltip_column(GTK_TREE_VIEW(view), COL_DESCRIPTION);
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
-  gtk_tree_selection_set_mode(selection, GTK_SELECTION_NONE);
+  gtk_tree_selection_set_mode(selection, GTK_SELECTION_MULTIPLE);
 
   GtkTreeViewColumn *col;
   col = gtk_tree_view_get_column(GTK_TREE_VIEW(view), 0);
@@ -270,6 +285,10 @@ static void _lib_modulelist_populate_callback(gpointer instance, gpointer user_d
       gtk_list_store_append(store, &iter);
       gtk_list_store_set(store, &iter, COL_IMAGE, pixbuf, COL_MODULE, module,
                          COL_DESCRIPTION, module->description ? module->description() : module->name(), -1);
+
+      if(module->state != dt_iop_state_HIDDEN)
+        gtk_tree_selection_select_iter (selection, &iter);
+
       g_object_unref(pixbuf);
     }
 
@@ -288,6 +307,7 @@ static void _lib_modulelist_row_changed_callback(GtkTreeView *treeview, gpointer
   GtkTreeIter iter;
   GtkTreeModel *model;
   GtkTreePath *path;
+  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
 
   gtk_tree_view_get_cursor(treeview, &path, NULL);
 
@@ -301,6 +321,8 @@ static void _lib_modulelist_row_changed_callback(GtkTreeView *treeview, gpointer
     dt_iop_so_gui_set_state(module, (module->state + 1) % dt_iop_state_LAST);
     if(module->state == dt_iop_state_FAVORITE)
       dt_dev_modulegroups_set(darktable.develop, DT_MODULEGROUP_FAVORITES);
+
+    update_selection(self);
   }
 }
 
@@ -317,7 +339,7 @@ static gint _lib_modulelist_gui_sort(GtkTreeModel *model, GtkTreeIter *a, GtkTre
   return g_utf8_collate(modulea->name(), moduleb->name());
 }
 
-static char *gen_params(char state, int *size)
+static char *gen_params(char state, int *size, char *names)
 {
   int len = 0;
   char *params = NULL;
@@ -341,7 +363,9 @@ static char *gen_params(char state, int *size)
       params = tmp;
     }
     memcpy(params + len, module->op, op_len);
-    params[new_len - 1] = state;
+    char *pattern = g_strdup_printf("|%s|", module->op);
+    params[new_len - 1] = (names==NULL ? state : strstr(names, pattern)!=NULL);
+    g_free(pattern);
     len = new_len;
   }
 
@@ -353,14 +377,141 @@ void init_presets(dt_lib_module_t *self)
 {
   // add "none" and "all" presets
   int len;
-  char *params_none = gen_params(0, &len);
-  char *params_all = gen_params(1, &len);
+  char *params_none = gen_params(0, &len, NULL);
+  char *params_all = gen_params(1, &len, NULL);
+  dt_lib_presets_add(_("subset: no module"), self->plugin_name, self->version(), params_none, len);
+  dt_lib_presets_add(_("subset: all modules"), self->plugin_name, self->version(), params_all, len);
 
-  dt_lib_presets_add(_("show none"), self->plugin_name, self->version(), params_none, len);
-  dt_lib_presets_add(_("show all"), self->plugin_name, self->version(), params_all, len);
+  /* The modules that are activated by default in the initial configuration:
+   * minimum toolkit to quickely edit 90% of pictures from start to finish
+   * with no headache.
+   * Be sure to always put there the possibly on-by-default modules
+   * */
+  char *params = gen_params(1, &len,
+                                    "|demosaic|temperature|highlights"       // basic raw handling
+                                    "|flip|clipping"                         // cropping & orientation
+                                    "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                                    "|basecurve|toneequal|exposure|rgblevels"// tones
+                                    "|colorin|colorbalance"                  // colors
+                                    "|sharpen|bilat|");                      // local contrast / sharpness
+
+  dt_lib_presets_add(_("subset: default modules"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len, // default modules
+                              "|demosaic|temperature|highlights"       // basic raw handling
+                              "|flip|clipping"                         // cropping & orientation
+                              "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                              "|basecurve|toneequal|exposure|rgblevels"// tones
+                              "|colorin|colorbalance"                  // colors
+                              "|sharpen|bilat"                         // local contrast
+                              // all-purpose addings
+                              "|filmicrgb|tonecurve|rgblevels"                        // tones
+                              "|channelmixer|colorzones|colorchecker|vibrance|lut3d"  // colors
+                              "|atrous"                                               // sharpness
+                              "|cacorrect|defringe|colorreconstruction|");            // image reconstruction
+
+  dt_lib_presets_add(_("workspace: all-purpose"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len, // default modules
+                              "|demosaic|temperature|highlights"       // basic raw handling
+                              "|flip|clipping"                         // cropping & orientation
+                              "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                              "|basecurve|toneequal|exposure|rgblevels"// tones
+                              "|colorin|colorbalance"                  // colors
+                              "|sharpen|bilat"                         // local contrast
+                              // all-purpose addings
+                              "|filmicrgb|tonecurve|rgblevels"                        // tones
+                              "|channelmixer|colorzones|colorchecker|vibrance|lut3d"  // colors
+                              "|atrous"                                               // sharpness
+                              "|cacorrect|defringe|colorreconstruction"               // image reconstruction
+                              // workspace addings
+                              "|rgbcurves"                                            // colors
+                              "|graduatednd|zonesystem|tonemap|shadhi|");             // HDR reconstruction - tones
+
+  dt_lib_presets_add(_("workspace: landscape & HDR"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len,
+                              // default modules
+                              "|demosaic|temperature|highlights"       // basic raw handling
+                              "|flip|clipping"                         // cropping & orientation
+                              "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                              "|basecurve|toneequal|exposure|rgblevels"// tones
+                              "|colorin|colorbalance"                  // colors
+                              "|sharpen|bilat"                         // local contrast
+                              // all-purpose addings
+                              "|filmicrgb|tonecurve|rgblevels"                        // tones
+                              "|channelmixer|colorzones|colorchecker|vibrance|lut3d"  // colors
+                              "|atrous"                                               // sharpness
+                              "|cacorrect|defringe|colorreconstruction"               // image reconstruction
+                              // workspace addings
+                              "|ashift|retouch|");                                     // perspective and spot removal
+
+  dt_lib_presets_add(_("workspace: architecture & streets"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len,
+                              // default modules
+                              "|demosaic|temperature|highlights"       // basic raw handling
+                              "|flip|clipping"                         // cropping & orientation
+                              "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                              "|basecurve|toneequal|exposure|rgblevels"// tones
+                              "|colorin|colorbalance"                  // colors
+                              "|sharpen|bilat"                         // local contrast
+                              // all-purpose addings
+                              "|filmicrgb|tonecurve|rgblevels"                        // tones
+                              "|channelmixer|colorzones|colorchecker|vibrance|lut3d"  // colors
+                              "|atrous"                                               // sharpness
+                              "|cacorrect|defringe|colorreconstruction"               // image reconstruction
+                              // workspace addings
+                              "|rgbcurves"                                            // colors
+                              "|retouch|liquify|soften|");                            // skin retouch
+
+  dt_lib_presets_add(_("workspace: portrait & beauty"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len,
+                              // default modules
+                              "|demosaic|temperature|highlights"       // basic raw handling
+                              "|flip|clipping"                         // cropping & orientation
+                              "|lens|denoiseprofile|hazeremoval"       // correct image issues
+                              "|basecurve|toneequal|exposure|rgblevels"// tones
+                              "|colorin|colorbalance"                  // colors
+                              "|sharpen|bilat"                         // local contrast
+                              // all-purpose addings
+                              "|filmicrgb|tonecurve|rgblevels"                        // tones
+                              "|channelmixer|colorzones|colorchecker|vibrance|lut3d"  // colors
+                              "|atrous"                                               // sharpness
+                              "|cacorrect|defringe|colorreconstruction"               // image reconstruction
+                              // workspace addings
+                              "|bilateral|hotpixels|");                               // extra denoising methods
+
+  dt_lib_presets_add(_("workspace: lowlight & high ISO"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len,
+                        "|velvia|splittoning|colormapping|colorize|colorcorrection"
+                        "|vignette|relight|lowlight|bloom|soften|colisa|monochrome"
+                        "|watermark|border|grain|colorcontrast|");
+
+  dt_lib_presets_add(_("subset: creative modules only"), self->plugin_name, self->version(), params, len);
+
+  free(params);
+  params = gen_params(1, &len,
+                        "|demosaic|exposure|colorin|temperature|colorout|rawprepare"// raw handling
+                        "|sharpen|bilat|atrous|highpass|lowpass"                    // sharpness
+                        "|cacorrect|defringe|highlights|lens|colorreconstruction"   // image reconstruction
+                        "|denoiseprofile|bilateral|hotpixels|rawdenoise|nlmeans"    // denoising
+                        "|dither|profile_gamma|invert|scalepixels|rotatepixels|colorchecker|");
+
+  dt_lib_presets_add(_("subset: technical modules only"), self->plugin_name, self->version(), params, len);
+
 
   free(params_none);
   free(params_all);
+  free(params);
 }
 
 void *get_params(dt_lib_module_t *self, int *size)
@@ -417,6 +568,7 @@ int set_params(dt_lib_module_t *self, const void *params, int size)
     }
     pos += op_len + 2;
   }
+  update_selection(self);
 
   return pos != size;
 }

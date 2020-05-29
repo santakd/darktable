@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010 Henrik Andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -25,6 +25,9 @@
 
 /** process preview */
 dt_job_t *dt_dev_process_preview_job_create(dt_develop_t *dev);
+
+/** process preview2 */
+dt_job_t *dt_dev_process_preview2_job_create(dt_develop_t *dev);
 
 /** process image */
 dt_job_t *dt_dev_process_image_job_create(dt_develop_t *dev);

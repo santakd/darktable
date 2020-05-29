@@ -1,7 +1,6 @@
 /*
  *    This file is part of darktable,
- *    copyright (c) 2013 johannes hanika.
- *    copyright (c) 2015 tobias ellinghaus.
+ *    Copyright (C) 2015-2020 darktable developers.
  *
  *    darktable is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -21,7 +20,7 @@
 #include "common/file_location.h"
 #include "control/control.h"
 
-// bump this when the noiseprofiles are getting a differen layout or meaning (raw-raw data, ...)
+// bump this when the noiseprofiles are getting a different layout or meaning (raw-raw data, ...)
 #define DT_NOISE_PROFILE_VERSION 0
 
 const dt_noiseprofile_t dt_noiseprofile_generic = {N_("generic poissonian"), "", "", 0, {0.0001f, 0.0001f, 0.0001}, {0.0f, 0.0f, 0.0f}};
@@ -41,7 +40,7 @@ JsonParser *dt_noiseprofile_init(const char *alternative)
     snprintf(filename, sizeof(filename), "%s/%s", datadir, "noiseprofiles.json");
   }
   else
-    snprintf(filename, sizeof(filename), "%s", alternative);
+    g_strlcpy(filename, alternative, sizeof(filename));
 
   dt_print(DT_DEBUG_CONTROL, "[noiseprofile] loading noiseprofiles from `%s'\n", filename);
   if(!g_file_test(filename, G_FILE_TEST_EXISTS)) return NULL;

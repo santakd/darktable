@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
-    copyright (c) 2015 johannes hanika
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -66,9 +65,13 @@ static inline float dt_points_get_for(dt_points_t *p, const unsigned int thread_
   s1 ^= s0 >> 26;
   p->s[thread_num].state1 = s1;
   // return (state0 + state1) / ((double)((uint64_t)-1) + 1.0);
-  uint32_t v = 0x3f800000
-               | ((p->s[thread_num].state0 + p->s[thread_num].state1) >> 41); // faster than double version.
-  return (*(float *)&v) - 1.0f;
+  union {
+      float f;
+      uint32_t u;
+  } v;
+  v.u = 0x3f800000 |
+      ((p->s[thread_num].state0 + p->s[thread_num].state1) >> 41); // faster than double version.
+  return v.f - 1.0f;
 }
 
 static inline float dt_points_get()
@@ -145,10 +148,10 @@ static inline float dt_points_get()
 */
 
 /** These definitions are part of a 128-bit period certification vector.
-#define PARITY1	0x00000001U
-#define PARITY2	0x00000000U
-#define PARITY3	0x00000000U
-#define PARITY4	0xc98e126aU
+#define PARITY1 0x00000001U
+#define PARITY2 0x00000000U
+#define PARITY3 0x00000000U
+#define PARITY4 0xc98e126aU
 */
 
 #if 0
@@ -374,8 +377,12 @@ inline static double to_real2(uint32_t v)
 /** generates a random number on [0,1)-real-interval (float) */
 inline static float to_real2f(uint32_t v)
 {
-  v = 0x3f800000 | (v >> 9); // faster than double version.
-  return (*(float *)&v) - 1.0f;
+  union {
+      float f;
+      uint32_t u;
+  } x;
+  x.u = 0x3f800000 | (v >> 9); // faster than double version.
+  return x.f - 1.0f;
   /* divided by 2^32 */
 }
 
@@ -783,13 +790,10 @@ inline static void do_recursion(w128_t *r, w128_t *a, w128_t *b, w128_t *c, w128
 #if defined(BIG_ENDIAN64) && !defined(ONLY64) && !defined(HAVE_ALTIVEC)
 inline static void swap(w128_t *array, int size)
 {
-  int i;
-  uint32_t x, y;
-
-  for(i = 0; i < size; i++)
+  for(int i = 0; i < size; i++)
   {
-    x = array[i].u[0];
-    y = array[i].u[2];
+    uint32_t x = array[i].u[0];
+    uint32_t y = array[i].u[2];
     array[i].u[0] = array[i].u[1];
     array[i].u[2] = array[i].u[3];
     array[i].u[1] = x;
@@ -825,11 +829,9 @@ static uint32_t func2(uint32_t x)
 static void period_certification(sfmt_state_t *s)
 {
   int inner = 0;
-  int i, j;
-  uint32_t work;
 
-  for(i = 0; i < 4; i++) inner ^= s->psfmt32[idxof(i)] & s->parity[i];
-  for(i = 16; i > 0; i >>= 1) inner ^= inner >> i;
+  for(int i = 0; i < 4; i++) inner ^= s->psfmt32[idxof(i)] & s->parity[i];
+  for(int i = 16; i > 0; i >>= 1) inner ^= inner >> i;
   inner &= 1;
   /* check OK */
   if(inner == 1)
@@ -837,10 +839,10 @@ static void period_certification(sfmt_state_t *s)
     return;
   }
   /* check NG, and modification */
-  for(i = 0; i < 4; i++)
+  for(int i = 0; i < 4; i++)
   {
-    work = 1;
-    for(j = 0; j < 32; j++)
+    uint32_t work = 1;
+    for(int j = 0; j < 32; j++)
     {
       if((work & s->parity[i]) != 0)
       {
@@ -1125,7 +1127,7 @@ void init_by_array(sfmt_state_t *s, uint32_t *init_key, int key_length)
 
 static inline void dt_points_init(dt_points_t *p, const unsigned int num_threads)
 {
-  sfmt_state_t *states = (sfmt_state_t *)dt_alloc_align(16, sizeof(sfmt_state_t) * num_threads);
+  sfmt_state_t *states = (sfmt_state_t *)dt_alloc_align(64, sizeof(sfmt_state_t) * num_threads);
   p->s = (sfmt_state_t **)calloc(num_threads, sizeof(sfmt_state_t *));
   p->num = num_threads;
 

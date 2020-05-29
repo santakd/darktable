@@ -1,8 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
-    copyright (c) 2011 henrik andersson.
-    copyright (c) 2014 tobias ellinghaus.
+    Copyright (C) 2009-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,9 +24,10 @@
 
 #define DT_CONTROL_DESCRIPTION_LEN 256
 // reserved workers
-#define DT_CTL_WORKER_RESERVED 2
+#define DT_CTL_WORKER_RESERVED 3
 #define DT_CTL_WORKER_ZOOM_1 0    // dev zoom 1
 #define DT_CTL_WORKER_ZOOM_FILL 1 // dev zoom fill
+#define DT_CTL_WORKER_ZOOM_2 2    // dev zoom for preview2
 
 typedef enum dt_job_state_t
 {

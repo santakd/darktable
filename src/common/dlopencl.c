@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Ulrich Pegelow
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -200,7 +200,8 @@ dt_dlopencl_t *dt_dlopencl_init(const char *name)
                                            (void (**)(void)) & ocl->symbols->dt_clEnqueueUnmapMemObject);
     success = success && dt_gmodule_symbol(module, "clGetMemObjectInfo",
                                            (void (**)(void)) & ocl->symbols->dt_clGetMemObjectInfo);
-
+    success = success && dt_gmodule_symbol(module, "clGetImageInfo",
+                                           ((void (**)(void)) & ocl->symbols->dt_clGetImageInfo));
 
     ocl->have_opencl = success;
 

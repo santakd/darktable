@@ -47,6 +47,7 @@ if (WIN32 AND NOT BUILD_MSYS2_INSTALL)
     ${MINGW_PATH}/gtk-update-icon-cache.exe
     ${MINGW_PATH}/gspawn-win64-helper.exe
     ${MINGW_PATH}/gspawn-win64-helper-console.exe
+    ${MINGW_PATH}/gdbus.exe
   #LZO2
     ${MINGW_PATH}/liblzo*.dll
   #OPENEXR
@@ -144,6 +145,12 @@ if (WIN32 AND NOT BUILD_MSYS2_INSTALL)
       DESTINATION share/glib-2.0/schemas/
       COMPONENT DTApplication)
 
+  # Add libthai files
+  install(DIRECTORY
+      "${MINGW_PATH}/../share/libthai/"
+      DESTINATION share/libthai/
+      COMPONENT DTApplication)
+
   # Add libgphoto2 files
   install(DIRECTORY
       "${MINGW_PATH}/../lib/libgphoto2"
@@ -168,35 +175,44 @@ if (WIN32 AND NOT BUILD_MSYS2_INSTALL)
       PATTERN "*.la" EXCLUDE)
 
   # Add lensfun libraries
-  set(LENSFUN_DB_GLOBAL "${MINGW_PATH}/../share/lensfun/version_1")
-  set(LENSFUN_DB_UPDATES "${MINGW_PATH}/../var/lib/lensfun-updates/version_1")
-  set(LENSFUN_DB "${LENSFUN_DB_GLOBAL}")
-  if(EXISTS "${LENSFUN_DB_UPDATES}")
-    file(READ "${LENSFUN_DB_GLOBAL}/timestamp.txt" LENSFUN_TS)
-    file(READ "${LENSFUN_DB_UPDATES}/timestamp.txt" LENSFUN_TS_UPDATE)
-    if(LENSFUN_TS LESS LENSFUN_TS_UPDATE)
-      set(LENSFUN_DB "${LENSFUN_DB_UPDATES}")
+  if(LensFun_FOUND)
+    set(LENSFUN_DB_GLOBAL "${MINGW_PATH}/../share/lensfun/version_1")
+    set(LENSFUN_DB_UPDATES "${MINGW_PATH}/../var/lib/lensfun-updates/version_1")
+    set(LENSFUN_DB "${LENSFUN_DB_GLOBAL}")
+    if(EXISTS "${LENSFUN_DB_UPDATES}")
+      file(READ "${LENSFUN_DB_GLOBAL}/timestamp.txt" LENSFUN_TS)
+      file(READ "${LENSFUN_DB_UPDATES}/timestamp.txt" LENSFUN_TS_UPDATE)
+      if(LENSFUN_TS LESS LENSFUN_TS_UPDATE)
+        set(LENSFUN_DB "${LENSFUN_DB_UPDATES}")
+      endif()
     endif()
-  endif()
-  message(STATUS "Installing lensfun database from ${LENSFUN_DB}")
-  install(DIRECTORY
-      "${LENSFUN_DB}"
-      DESTINATION share/lensfun/
-      COMPONENT DTApplication)
+    message(STATUS "Installing lensfun database from ${LENSFUN_DB}")
+    install(DIRECTORY
+        "${LENSFUN_DB}"
+        DESTINATION share/lensfun/
+        COMPONENT DTApplication)
+  endif(LensFun_FOUND)
 
   # Add iso-codes
-  if(ISO_CODES_FOUND)
+  if(IsoCodes_FOUND)
     install(FILES
-        "${ISO_CODES_LOCATION}/iso_639-2.json"
+        "${IsoCodes_LOCATION}/iso_639-2.json"
         DESTINATION share/iso-codes/json/
         COMPONENT DTApplication
     )
-    file(GLOB ISO_CODES_MO_FILES RELATIVE "${ISO_CODES_LOCALEDIR}" "${ISO_CODES_LOCALEDIR}/*/LC_MESSAGES/iso_639.mo")
-    foreach(MO ${ISO_CODES_MO_FILES})
+    file(GLOB IsoCodes_MO_FILES RELATIVE "${IsoCodes_LOCALEDIR}" "${IsoCodes_LOCALEDIR}/*/LC_MESSAGES/iso_639.mo")
+    foreach(MO ${IsoCodes_MO_FILES})
       string(REPLACE "iso_639.mo" "" MO_TARGET_DIR "${MO}")
-      install(FILES "${ISO_CODES_LOCALEDIR}/${MO}" DESTINATION "share/locale/${MO_TARGET_DIR}" COMPONENT DTApplication)
+      install(FILES "${IsoCodes_LOCALEDIR}/${MO}" DESTINATION "share/locale/${MO_TARGET_DIR}" COMPONENT DTApplication)
     endforeach()
-  endif(ISO_CODES_FOUND)
+  endif(IsoCodes_FOUND)
+
+  # Add ca-cert for curl
+  install(FILES
+      "${MINGW_PATH}/../ssl/certs/ca-bundle.crt"
+      DESTINATION share/curl/
+      RENAME curl-ca-bundle.crt
+      COMPONENT DTApplication)
 
 endif(WIN32 AND NOT BUILD_MSYS2_INSTALL)
 

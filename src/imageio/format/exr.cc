@@ -1,7 +1,6 @@
 /*
    This file is part of darktable,
-   copyright (c) 2010-2011 Henrik Andersson.
-   copyright (c) 2014 LebedevRI.
+   Copyright (C) 2010-2020 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -66,10 +65,7 @@ enum dt_imageio_exr_compression_t
 
 typedef struct dt_imageio_exr_t
 {
-  int max_width, max_height;
-  int width, height;
-  char style[128];
-  gboolean style_append;
+  dt_imageio_module_data_t global;
   dt_imageio_exr_compression_t compression;
 } dt_imageio_exr_t;
 
@@ -103,7 +99,8 @@ void cleanup(dt_imageio_module_format_t *self)
 
 int write_image(dt_imageio_module_data_t *tmp, const char *filename, const void *in_tmp,
                 dt_colorspaces_color_profile_type_t over_type, const char *over_filename,
-                void *exif, int exif_len, int imgid, int num, int total)
+                void *exif, int exif_len, int imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
+                const gboolean export_masks)
 {
   const dt_imageio_exr_t *exr = (dt_imageio_exr_t *)tmp;
 
@@ -111,7 +108,7 @@ int write_image(dt_imageio_module_data_t *tmp, const char *filename, const void 
 
   Imf::Blob exif_blob(exif_len, (uint8_t *)exif);
 
-  Imf::Header header(exr->width, exr->height, 1, Imath::V2f(0, 0), 1, Imf::INCREASING_Y,
+  Imf::Header header(exr->global.width, exr->global.height, 1, Imath::V2f(0, 0), 1, Imf::INCREASING_Y,
                      (Imf::Compression)exr->compression);
 
   char comment[1024];
@@ -208,13 +205,13 @@ icc_end:
   const float *in = (const float *)in_tmp;
 
   data.insert("R", Imf::Slice(Imf::PixelType::FLOAT, (char *)(in + 0), 4 * sizeof(float),
-                              4 * sizeof(float) * exr->width));
+                              4 * sizeof(float) * exr->global.width));
 
   data.insert("G", Imf::Slice(Imf::PixelType::FLOAT, (char *)(in + 1), 4 * sizeof(float),
-                              4 * sizeof(float) * exr->width));
+                              4 * sizeof(float) * exr->global.width));
 
   data.insert("B", Imf::Slice(Imf::PixelType::FLOAT, (char *)(in + 2), 4 * sizeof(float),
-                              4 * sizeof(float) * exr->width));
+                              4 * sizeof(float) * exr->global.width));
 
   file.setFrameBuffer(data);
   file.writeTiles(0, file.numXTiles() - 1, 0, file.numYTiles() - 1);
@@ -233,12 +230,25 @@ void *legacy_params(dt_imageio_module_format_t *self, const void *const old_para
 {
   if(old_version == 1 && new_version == 4)
   {
-    dt_imageio_exr_t *new_params = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
-    memcpy(new_params, old_params, old_params_size);
-    new_params->compression = (dt_imageio_exr_compression_t)PIZ_COMPRESSION;
-    new_params->style_append = 0;
+    struct dt_imageio_exr_v1_t
+    {
+      int max_width, max_height;
+      int width, height;
+      char style[128];
+    };
+
+    const dt_imageio_exr_v1_t *o = (dt_imageio_exr_v1_t *)old_params;
+    dt_imageio_exr_t *n = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
+
+    n->global.max_width = o->max_width;
+    n->global.max_height = o->max_height;
+    n->global.width = o->width;
+    n->global.height = o->height;
+    g_strlcpy(n->global.style, o->style, sizeof(o->style));
+    n->global.style_append = FALSE;
+    n->compression = (dt_imageio_exr_compression_t)PIZ_COMPRESSION;
     *new_size = self->params_size(self);
-    return new_params;
+    return n;
   }
   if(old_version == 2 && new_version == 4)
   {
@@ -260,15 +270,18 @@ void *legacy_params(dt_imageio_module_format_t *self, const void *const old_para
     };
 
     const dt_imageio_exr_v2_t *o = (dt_imageio_exr_v2_t *)old_params;
-    dt_imageio_exr_t *new_params = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
+    dt_imageio_exr_t *n = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
 
     // last param was dropped (pixel type)
-    memcpy(new_params, old_params, old_params_size);
-    new_params->style_append = 0;
-    new_params->compression = o->compression;
-
+    n->global.max_width = o->max_width;
+    n->global.max_height = o->max_height;
+    n->global.width = o->width;
+    n->global.height = o->height;
+    g_strlcpy(n->global.style, o->style, sizeof(o->style));
+    n->global.style_append = FALSE;
+    n->compression = o->compression;
     *new_size = self->params_size(self);
-    return new_params;
+    return n;
   }
   if(old_version == 3 && new_version == 4)
   {
@@ -281,14 +294,17 @@ void *legacy_params(dt_imageio_module_format_t *self, const void *const old_para
     };
 
     const dt_imageio_exr_v3_t *o = (dt_imageio_exr_v3_t *)old_params;
-    dt_imageio_exr_t *new_params = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
+    dt_imageio_exr_t *n = (dt_imageio_exr_t *)malloc(sizeof(dt_imageio_exr_t));
 
-    memcpy(new_params, old_params, sizeof(dt_imageio_exr_t));
-    new_params->style_append = 0;
-    new_params->compression = o->compression;
-
+    n->global.max_width = o->max_width;
+    n->global.max_height = o->max_height;
+    n->global.width = o->width;
+    n->global.height = o->height;
+    g_strlcpy(n->global.style, o->style, sizeof(o->style));
+    n->global.style_append = FALSE;
+    n->compression = o->compression;
     *new_size = self->params_size(self);
-    return new_params;
+    return n;
   }
   return NULL;
 }
@@ -350,7 +366,7 @@ void gui_init(dt_imageio_module_format_t *self)
   self->gui_data = malloc(sizeof(dt_imageio_exr_gui_t));
   dt_imageio_exr_gui_t *gui = (dt_imageio_exr_gui_t *)self->gui_data;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
   const int compression_last = dt_conf_get_int("plugins/imageio/format/exr/compression");
 

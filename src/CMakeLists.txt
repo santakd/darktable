@@ -18,6 +18,8 @@ FILE(GLOB SOURCE_FILES
   "common/colorlabels.c"
   "common/colorspaces.c"
   "common/curve_tools.c"
+  "common/splines.cpp"
+  "common/curl_tools.c"
   "common/cpuid.c"
   "common/darktable.c"
   "common/database.c"
@@ -29,7 +31,9 @@ FILE(GLOB SOURCE_FILES
   "common/fswatch.c"
   "common/gaussian.c"
   "common/grouping.c"
+  "common/guided_filter.c"
   "common/history.c"
+  "common/history_snapshot.c"
   "common/gpx.c"
   "common/image.c"
   "common/image_cache.c"
@@ -42,6 +46,7 @@ FILE(GLOB SOURCE_FILES
   "common/imageio_pnm.c"
   "common/imageio_rgbe.c"
   "common/imageio_tiff.c"
+  "common/imageio_im.c"
   "common/imageio_gm.c"
   "common/imageio_rawspeed.cc"
   "common/import_session.c"
@@ -50,10 +55,12 @@ FILE(GLOB SOURCE_FILES
   "common/locallaplaciancl.c"
   "common/l10n.c"
   "common/metadata.c"
+  "common/metadata_export.c"
   "common/mipmap_cache.c"
   "common/module.c"
   "common/noiseprofiles.c"
   "common/pdf.c"
+  "common/presets.c"
   "common/styles.c"
   "common/selection.c"
   "common/system_signal_handling.c"
@@ -71,6 +78,9 @@ FILE(GLOB SOURCE_FILES
   "common/undo.c"
   "common/usermanual_url.c"
   "common/iop_group.c"
+  "common/iop_order.c"
+  "common/iop_profile.c"
+  "control/conf.c"
   "control/control.c"
   "control/crawler.c"
   "control/jobs.c"
@@ -93,6 +103,7 @@ FILE(GLOB SOURCE_FILES
   "develop/masks/masks.c"
   "develop/format.c"
   "dtgtk/button.c"
+  "dtgtk/culling.c"
   "dtgtk/drawingarea.c"
   "dtgtk/expander.c"
   "dtgtk/gradientslider.c"
@@ -100,6 +111,9 @@ FILE(GLOB SOURCE_FILES
   "dtgtk/paint.c"
   "dtgtk/resetlabel.c"
   "dtgtk/sidepanel.c"
+  "dtgtk/thumbnail.c"
+  "dtgtk/thumbnail_btn.c"
+  "dtgtk/thumbtable.c"
   "dtgtk/togglebutton.c"
   "gui/accelerators.c"
   "gui/gtkentry.c"
@@ -109,10 +123,12 @@ FILE(GLOB SOURCE_FILES
   "gui/preferences.c"
   "gui/presets.c"
   "gui/styles_dialog.c"
+  "gui/color_picker_proxy.c"
+  "gui/import_metadata.c"
   "libs/lib.c"
   "views/view.c"
   )
-FILE(GLOB HEADER_FILES "*.h" "common/*.h" "external/CL/*.h" "control/*.h" "iop/*.h" "libs/*.h" "views/*.h")
+FILE(GLOB HEADER_FILES "*.h" "common/*.h" "external/OpenCL/CL/*.h" "control/*.h" "iop/*.h" "libs/*.h" "views/*.h")
 
 if(APPLE)
   list(APPEND SOURCE_FILES "osx/osx.mm")
@@ -138,6 +154,9 @@ if(WIN32)
   list(APPEND SOURCE_FILES "win/dtwin.c")
   list(APPEND HEADER_FILES "win/dtwin.h")
 
+  list(APPEND SOURCE_FILES "win/filepath.c")
+  list(APPEND HEADER_FILES "win/filepath.h")
+
   # Use mingw's sprintf instead of windows's
   ADD_DEFINITIONS( -D__USE_MINGW_ANSI_STDIO=1 )
 
@@ -156,9 +175,13 @@ endif(WIN32)
 
 set(SOURCES ${SOURCE_FILES} ${HEADER_FILES})
 
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ppc64le")
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ppc64le)
+endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/external)
+include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/external/OpenCL)
 
 # initial compiler flags
 add_definitions("-DHAVE_CONFIG_H")
@@ -206,21 +229,12 @@ if(APPLE AND (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_
         list(REMOVE_ITEM CMAKE_CXX_IMPLICIT_LINK_LIBRARIES to_library)
 endif()
 
-# Check for base threading library
-set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-find_package(Threads REQUIRED)
-# Fail if returned library is not pthread
-if(NOT CMAKE_USE_PTHREADS_INIT)
-  message(FATAL_ERROR "POSIX threads: not found")
-endif()
 # Append thread flags/libraries to LIBS
 list(APPEND LIBS "${CMAKE_THREAD_LIBS_INIT}")
 
 # Need to explicitly link against math library.
 list(APPEND LIBS "-lm")
 
-# Check for openmp
-find_package(OpenMP)
 if(USE_OPENMP)
   if(OpenMP_C_FLAGS)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -230,14 +244,24 @@ if(USE_OPENMP)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
   endif()
 
+  if(OpenMP_C_INCLUDE_DIRS)
+    include_directories(${OpenMP_C_INCLUDE_DIRS})
+  endif()
+
+  if(OpenMP_CXX_INCLUDE_DIRS)
+    include_directories(${OpenMP_CXX_INCLUDE_DIRS})
+  endif()
+
+  list(APPEND LIBS ${OpenMP_C_LIBRARIES} ${OpenMP_CXX_LIBRARIES})
+
   if(WIN32)
     list(APPEND LIBS gomp)
   endif(WIN32)
 endif(USE_OPENMP)
 
 if(USE_DARKTABLE_PROFILING)
-	add_definitions(-DUSE_DARKTABLE_PROFILING)
-	set(SOURCES ${SOURCES} "common/profiling.c")
+  add_definitions(-DUSE_DARKTABLE_PROFILING)
+  set(SOURCES ${SOURCES} "common/profiling.c")
 endif()
 
 #
@@ -251,8 +275,8 @@ include_directories(SYSTEM ${Glib_INCLUDE_DIRS})
 list(APPEND LIBS ${Glib_LIBRARIES})
 
 # GTK3 pulls in ATK, GDK, GDK-PIXBUF, CAIRO, GLIB, PANGO
-find_package(GTK3 3.14 REQUIRED)
-add_definitions("-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_14")
+find_package(GTK3 3.22 REQUIRED)
+add_definitions("-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_22")
 #add_definitions("-DGDK_VERSION_MAX_ALLOWED=GDK_VERSION_MIN_REQUIRED")
 include_directories(SYSTEM ${GTK3_INCLUDE_DIRS})
 list(APPEND LIBS ${GTK3_LIBRARIES})
@@ -265,13 +289,13 @@ add_definitions(${LIBXML2_DEFINITIONS})
 
 # used to launch a tiny http server, used by facebook exporter
 find_package(LibSoup2)
-if(LIBSOUP2_FOUND)
-  include_directories(SYSTEM ${LIBSOUP2_INCLUDE_DIRS})
-  list(APPEND LIBS ${LIBSOUP2_LIBRARIES})
-  add_definitions(${LIBSOUP2_DEFINITIONS})
+if(LibSoup2_FOUND)
+  include_directories(SYSTEM ${LibSoup2_INCLUDE_DIRS})
+  list(APPEND LIBS ${LibSoup2_LIBRARIES})
+  add_definitions(${LibSoup2_DEFINITIONS})
   add_definitions("-DHAVE_HTTP_SERVER")
   list(APPEND SOURCES "common/http_server.c")
-endif(LIBSOUP2_FOUND)
+endif(LibSoup2_FOUND)
 
 if(USE_CAMERA_SUPPORT)
   find_package(Gphoto2)
@@ -282,25 +306,54 @@ endif(USE_CAMERA_SUPPORT)
 
 if(USE_OPENEXR)
   find_package(OpenEXR)
-  if(OPENEXR_FOUND)
+  if(OpenEXR_FOUND)
     include_directories(SYSTEM ${OpenEXR_INCLUDE_DIRS})
     list(APPEND LIBS ${OpenEXR_LIBRARIES})
     add_definitions(${OpenEXR_DEFINITIONS})
     list(APPEND SOURCES "common/imageio_exr.cc")
-  endif(OPENEXR_FOUND)
+  endif(OpenEXR_FOUND)
 endif(USE_OPENEXR)
 
 if(USE_WEBP)
-   find_package(WebP 0.3.0)
-  if(WEBP_FOUND)
+  find_package(WebP 0.3.0)
+  if(WebP_FOUND)
     include_directories(SYSTEM ${WebP_INCLUDE_DIRS})
     list(APPEND LIBS ${WebP_LIBRARIES})
     add_definitions(${WebP_DEFINITIONS})
-  endif(WEBP_FOUND)
-  else(USE_WEBP)
+  endif(WebP_FOUND)
 endif(USE_WEBP)
 
-foreach(lib ${OUR_LIBS} LensFun GIO GThread GModule PangoCairo Rsvg2 LibXml2 Sqlite3 CURL PNG JPEG TIFF LCMS2 JsonGlib)
+if (USE_AVIF)
+    find_package(libavif 0.7.2 CONFIG)
+    if (TARGET avif)
+        list(APPEND LIBS avif)
+        add_definitions(-DHAVE_LIBAVIF=1)
+        list(APPEND SOURCES "common/imageio_avif.c")
+        set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
+    endif()
+endif()
+
+if(USE_LENSFUN)
+  find_package(LensFun)
+  if(LensFun_FOUND)
+    include_directories(SYSTEM ${LensFun_INCLUDE_DIRS})
+    list(APPEND LIBS ${LensFun_LIBRARIES})
+    add_definitions(${LensFun_DEFINITIONS})
+  endif()
+endif()
+
+find_package(Sqlite3 3.15 REQUIRED)
+if(NOT Sqlite3_VERSION VERSION_LESS 3.24)
+  add_definitions("-DHAVE_SQLITE_324_OR_NEWER")
+  message(STATUS "Sqlite3 version 3.24 or newer")
+else()
+  message(STATUS "Sqlite3 version older than 3.24, some features may be downgraded")
+endif()
+include_directories(SYSTEM ${Sqlite3_INCLUDE_DIR})
+list(APPEND LIBS ${Sqlite3_LIBRARIES})
+add_definitions(${Sqlite3_DEFINITIONS})
+
+foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 LibXml2 CURL PNG JPEG TIFF LCMS2 JsonGlib)
   find_package(${lib} REQUIRED)
   include_directories(SYSTEM ${${lib}_INCLUDE_DIRS})
   list(APPEND LIBS ${${lib}_LIBRARIES})
@@ -312,15 +365,6 @@ find_package(Exiv2 0.24 REQUIRED)
 include_directories(SYSTEM ${Exiv2_INCLUDE_DIRS})
 list(APPEND LIBS ${Exiv2_LIBRARIES})
 add_definitions(${Exiv2_DEFINITIONS})
-
-if(USE_FLICKR)
-  find_package(FLICKCURL)
-  if(FLICKCURL_FOUND)
-    include_directories(SYSTEM ${FLICKCURL_INCLUDE_DIRS})
-    list(APPEND LIBS ${FLICKCURL_LIBRARIES})
-    add_definitions(${FLICKCURL_DEFINITIONS})
-  endif(FLICKCURL_FOUND)
-endif(USE_FLICKR)
 
 if(USE_OPENJPEG)
   find_package(OpenJPEG)
@@ -334,32 +378,32 @@ if(USE_OPENJPEG)
 endif(USE_OPENJPEG)
 
 find_package(IsoCodes 3.66)
-if(ISO_CODES_FOUND)
+if(IsoCodes_FOUND)
   add_definitions("-DHAVE_ISO_CODES")
-else(ISO_CODES_FOUND)
+else(IsoCodes_FOUND)
   message(STATUS "no suitable iso-codes, there will be no language names in the preferences")
-endif(ISO_CODES_FOUND)
+endif(IsoCodes_FOUND)
 
 #
 # Detect compile of optional pwstorage backends
 #
 if(USE_LIBSECRET AND JsonGlib_FOUND)
   find_package(Libsecret)
-  if(LIBSECRET_FOUND)
-    if(LIBSECRET_VERSION VERSION_LESS "0.16")
-      message(STATUS "Found libsecret version ${LIBSECRET_VERSION}. You need at least libsecret 0.16 or newer.")
-      set(LIBSECRET_FOUND FALSE)
+  if(Libsecret_FOUND)
+    if(Libsecret_VERSION VERSION_LESS "0.16")
+      message(STATUS "Found libsecret version ${Libsecret_VERSION}. You need at least libsecret 0.16 or newer.")
+      set(Libsecret_FOUND FALSE)
     else()
-      if(LIBSECRET_VERSION VERSION_LESS "0.18")
-        message(STATUS "Found libsecret version ${LIBSECRET_VERSION}. Enable unstable API. Please upgrade to version 0.18 or newer.")
+      if(Libsecret_VERSION VERSION_LESS "0.18")
+        message(STATUS "Found libsecret version ${Libsecret_VERSION}. Enable unstable API. Please upgrade to version 0.18 or newer.")
         add_definitions("-DSECRET_API_SUBJECT_TO_CHANGE")
       endif()
       set(SOURCES ${SOURCES} "common/pwstorage/backend_libsecret.c")
-      include_directories(SYSTEM ${LIBSECRET_INCLUDE_DIRS})
-      list(APPEND LIBS ${LIBSECRET_LIBRARIES})
+      include_directories(SYSTEM ${Libsecret_INCLUDE_DIRS})
+      list(APPEND LIBS ${Libsecret_LIBRARIES})
       add_definitions("-DHAVE_LIBSECRET")
     endif()
-  endif(LIBSECRET_FOUND)
+  endif(Libsecret_FOUND)
 endif(USE_LIBSECRET AND JsonGlib_FOUND)
 
 if(USE_KWALLET)
@@ -377,11 +421,11 @@ endif(USE_MAC_INTEGRATION)
 
 if(USE_UNITY)
   find_package(Unity)
-  if(UNITY_FOUND)
+  if(Unity_FOUND)
     add_definitions(-DHAVE_UNITY)
-    include_directories(SYSTEM ${UNITY_INCLUDE_DIRS})
-    list(APPEND LIBS ${UNITY_LIBRARIES})
-  endif(UNITY_FOUND)
+    include_directories(SYSTEM ${Unity_INCLUDE_DIRS})
+    list(APPEND LIBS ${Unity_LIBRARIES})
+  endif(Unity_FOUND)
 endif(USE_UNITY)
 
 if(USE_GRAPHICSMAGICK)
@@ -394,25 +438,49 @@ if(USE_GRAPHICSMAGICK)
   endif(GraphicsMagick_FOUND)
 endif(USE_GRAPHICSMAGICK)
 
+if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
+  # Do not use find_package(): module is not working with ImageMagick 7
+  find_package(PkgConfig)
+  pkg_check_modules(ImageMagick MagickWand QUIET)
+  if(ImageMagick_FOUND)
+    add_definitions(-DHAVE_IMAGEMAGICK ${ImageMagick_CFLAGS_OTHER})
+    if(NOT ImageMagick_VERSION VERSION_GREATER 7)
+      message(FATAL "ImageMagick version must be >= 7")
+    endif(NOT ImageMagick_VERSION VERSION_GREATER 7)
+    include_directories(SYSTEM ${ImageMagick_INCLUDE_DIRS})
+    find_library(ImageMagick_LIBRARY ${ImageMagick_LIBRARIES} HINTS ${ImageMagick_LIBDIR})
+    list(APPEND LIBS ${ImageMagick_LIBRARY})
+  endif(ImageMagick_FOUND)
+endif(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
+
+if(USE_GMIC)
+  find_package(GMIC)
+  if(GMIC_FOUND)
+    add_definitions(-DHAVE_GMIC)
+    include_directories(SYSTEM ${GMIC_INCLUDE_DIRS})
+    list(APPEND LIBS ${GMIC_LIBRARIES})
+  endif(GMIC_FOUND)
+endif(USE_GMIC)
+
 #
 # Add HAVE_xxx defines used by darktable
 #
 
-if(LENSFUN_FOUND)
+if(LensFun_FOUND)
   add_definitions("-DHAVE_LENSFUN")
-endif(LENSFUN_FOUND)
+endif(LensFun_FOUND)
 
-if(OPENEXR_FOUND)
+if(OpenEXR_FOUND)
   add_definitions("-DHAVE_OPENEXR")
   set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc CACHE INTERNAL "")
-endif(OPENEXR_FOUND)
+endif(OpenEXR_FOUND)
 
 if(USE_OPENCL)
   add_definitions("-DHAVE_OPENCL")
 endif(USE_OPENCL)
 
 
-if(GPHOTO2_FOUND)
+if(Gphoto2_FOUND)
   set(SOURCES ${SOURCES} "common/camera_control.c" "control/jobs/camera_jobs.c" "gui/camera_import_dialog.c" )
   add_definitions("-DHAVE_GPHOTO2")
 
@@ -424,7 +492,7 @@ if(GPHOTO2_FOUND)
   # This workaround may be removed when darktable no longer needs
   # to support gphoto2 < 2.5.0.
   #
-  if(${GPHOTO2_VERSION_STRING} VERSION_LESS "2.5")
+  if(${Gphoto2_VERSION_STRING} VERSION_LESS "2.5")
   else()
     add_definitions("-DHAVE_GPHOTO_25_OR_NEWER")
   endif()
@@ -432,9 +500,9 @@ if(GPHOTO2_FOUND)
   # CPack ignores variables you define in your CMakeLists.txt file,
   # and only variables ${CPACK_*} are correctly used.
   # so this needs to be saved by adding another variable with a name beginning with CPACK
-  set( CPACK_NSIS_GPHOTO2_VERSION ${GPHOTO2_VERSION_STRING} CACHE STRING "GPHOTO2 version string")
-  set( CPACK_NSIS_GRAPHICSMAGICK_VERSION ${GraphicsMagick_PKGCONF_VERSION} CACHE STRING "GM version string")
-endif(GPHOTO2_FOUND)
+  set(CPACK_NSIS_GPHOTO2_VERSION ${Gphoto2_VERSION_STRING} CACHE STRING "Gphoto2 version string")
+  set(CPACK_NSIS_GRAPHICSMAGICK_VERSION ${GraphicsMagick_PKGCONF_VERSION} CACHE STRING "GM version string")
+endif(Gphoto2_FOUND)
 
 # Check for __builtin_cpu_supports here due to a bug in clang/llvm. LLVM uses
 # libgcc to provide the symbols, so if clang wasn't compiled with libgcc, the
@@ -487,9 +555,15 @@ if(NOT CUSTOM_CFLAGS)
   #endif()
 
   #-g MUST be set for ALL builds, or there will be no support for them when bugs happen
+
+  # TODO: check if these flags bring some good :
+  # -ftree-loop-distribution -fivopts -fipa-matrix-reorg -ftracer -fvect-cost-model -fvariable-expansion-in-unroller
+  # -fprefetch-loop-arrays -ftree-vect-loop-version -freorder-blocks-and-partition -fmodulo-sched-allow-regmoves
+  # -ftree-loop-im -ftree-loop-ivcanon -fsplit-ivs-in-unroller -funroll-loops
+  # also, in IOPs, in-loops branches could be forced to be compiled as different loops variants
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2")
-  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
   if(CMAKE_COMPILER_IS_GNUCC)
     if(BUILD_SSE2_CODEPATHS)
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
@@ -503,7 +577,7 @@ if(NOT CUSTOM_CFLAGS)
 
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2")
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
   if(CMAKE_COMPILER_IS_GNUCXX)
     if(BUILD_SSE2_CODEPATHS)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpmath=sse")
@@ -525,17 +599,16 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 string(REPLACE ";" "\", \"" DT_SUPPORTED_EXTENSIONS_STRING "${DT_SUPPORTED_EXTENSIONS}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config.cmake.h" "${CMAKE_CURRENT_BINARY_DIR}/config.h" @ONLY)
 
-include_directories("${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 
 #
 # Build external deps
 #
 if(USE_LUA)
   find_package(Lua53 5.3)
-  if(LUA53_FOUND)
+  if(Lua53_FOUND)
     message(STATUS "Lua support: Enabled")
-    include_directories(SYSTEM ${LUA53_INCLUDE_DIRS})
-    list(APPEND LIBS ${LUA53_LDFLAGS})
+    include_directories(SYSTEM ${Lua53_INCLUDE_DIRS})
+    list(APPEND LIBS ${Lua53_LDFLAGS})
   else()
     if(DONT_USE_INTERNAL_LUA)
       message(STATUS "Lua support: System library for lua 5.3 not found (to use darktable's version use -DDONT_USE_INTERNAL_LUA=Off)")
@@ -546,7 +619,7 @@ if(USE_LUA)
       add_subdirectory(external/lua)
       list(APPEND LIBS lua)
     endif(DONT_USE_INTERNAL_LUA)
-  endif(LUA53_FOUND)
+  endif(Lua53_FOUND)
 
   if(USE_LUA)
     add_definitions("-DUSE_LUA")
@@ -598,9 +671,9 @@ else(USE_LUA)
 endif(USE_LUA)
 
 if(USE_LUA)
-  if(NOT LUA53_FOUND)
+  if(NOT Lua53_FOUND)
     list(APPEND LIB_DEPS lua) # 2nd half of the uglyness :/
-  endif(NOT LUA53_FOUND)
+  endif(NOT Lua53_FOUND)
   # liblautoc for lua automated interface generation
   add_library(lautoc_static STATIC IMPORTED)
   set_target_properties(lautoc_static PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/LuaAutoC/liblautoc.a POSITION_INDEPENDENT_CODE True)
@@ -614,30 +687,34 @@ find_package(Pugixml 1.2 REQUIRED)
 include_directories(SYSTEM ${Pugixml_INCLUDE_DIRS})
 list(APPEND LIBS ${Pugixml_LIBRARIES})
 
-if(NOT SOURCE_PACKAGE AND NOT APPLE)
-  # apple build fails on deprecated warnings..
+if(NOT SOURCE_PACKAGE)
   add_definitions(-Werror)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # do not error out on "loop not vectorized" clang OpenMP warnings
+  add_definitions("-Wno-error=pass-failed")
 endif()
 
 # osm gps map library
 if(USE_MAP)
   find_package(OSMGpsMap)
-  if(OSMGPSMAP_FOUND)
+  if(OSMGpsMap_FOUND)
     message(STATUS "Map mode: enabled")
     add_definitions("-DHAVE_MAP")
-    if(NOT OSMGPSMAP_VERSION VERSION_LESS 1.1.0)
+    if(NOT OSMGpsMap_VERSION VERSION_LESS 1.1.0)
       add_definitions("-DHAVE_OSMGPSMAP_110_OR_NEWER")
     endif()
-    if(OSMGPSMAP_VERSION VERSION_GREATER 1.1.0)
+    if(OSMGpsMap_VERSION VERSION_GREATER 1.1.0)
       add_definitions("-DHAVE_OSMGPSMAP_NEWER_THAN_110")
     endif()
-    include_directories(SYSTEM ${OSMGPSMAP_INCLUDE_DIRS})
-    list(APPEND LIBS ${OSMGPSMAP_LIBRARIES})
-    add_definitions(${OSMGPSMAP_DEFINITIONS})
-  else(OSMGPSMAP_FOUND)
+    include_directories(SYSTEM ${OSMGpsMap_INCLUDE_DIRS})
+    list(APPEND LIBS ${OSMGpsMap_LIBRARIES})
+    add_definitions(${OSMGpsMap_DEFINITIONS})
+  else(OSMGpsMap_FOUND)
     set(USE_MAP OFF)
     message(STATUS "Map mode: disabled, please install libosmgpsmap")
-  endif(OSMGPSMAP_FOUND)
+  endif(OSMGpsMap_FOUND)
 
 else(USE_MAP)
   message(STATUS "Map mode: disabled")
@@ -646,27 +723,27 @@ endif(USE_MAP)
 # libcolord-gtk:
 if(USE_COLORD)
   find_package(Colord)
-  if(COLORD_FOUND)
+  if(Colord_FOUND)
     find_package(ColordGTK)
-    if(COLORDGTK_FOUND)
+    if(ColordGTK_FOUND)
       # We might make use of colord directly so link against it explicitly. just in case. move up if it is used without colord-gtk, too.
-      include_directories(SYSTEM ${COLORD_INCLUDE_DIRS})
-      list(APPEND LIBS ${COLORD_LIBRARIES})
-      add_definitions(${COLORD_DEFINITIONS})
+      include_directories(SYSTEM ${Colord_INCLUDE_DIRS})
+      list(APPEND LIBS ${Colord_LIBRARIES})
+      add_definitions(${Colord_DEFINITIONS})
 
       # ... and also against libcolord-gtk to get the display profile
-      include_directories(SYSTEM ${COLORDGTK_INCLUDE_DIRS})
-      list(APPEND LIBS ${COLORDGTK_LIBRARIES})
-      add_definitions(${COLORDGTK_DEFINITIONS})
+      include_directories(SYSTEM ${ColordGTK_INCLUDE_DIRS})
+      list(APPEND LIBS ${ColordGTK_LIBRARIES})
+      add_definitions(${ColordGTK_DEFINITIONS})
       add_definitions("-DUSE_COLORDGTK")
-    else(COLORDGTK_FOUND)
+    else(ColordGTK_FOUND)
       message(STATUS "No libcolord-gtk found, this build will lack the ability to get the screen profile from colord")
       set(USE_COLORD OFF)
-    endif(COLORDGTK_FOUND)
-  else(COLORD_FOUND)
+    endif(ColordGTK_FOUND)
+  else(Colord_FOUND)
     message(STATUS "No libcolord found, this build will lack the ability to get the screen profile from colord")
     set(USE_COLORD OFF)
-  endif(COLORD_FOUND)
+  endif(Colord_FOUND)
 endif(USE_COLORD)
 
 if(BUILD_PRINT)
@@ -689,6 +766,13 @@ if(BUILD_PRINT)
 else(BUILD_PRINT)
   message(STATUS "Print mode: disabled")
 endif(BUILD_PRINT)
+
+if(USE_GAME)
+  add_definitions("-DHAVE_GAME")
+  message(STATUS "Game: the good knight")
+else(USE_GAME)
+  message(STATUS "Game: no")
+endif(USE_GAME)
 
 #
 # set development flags for our code
@@ -731,24 +815,9 @@ if(USE_XMLLINT)
 endif(USE_XMLLINT)
 
 #
-# Generate mapping of key strings to internal metadata id
-#
-add_custom_command(
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/create_metadata.sh ${CMAKE_CURRENT_SOURCE_DIR}/../tools/metadata.txt
-  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.h ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.c
-  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../tools/create_metadata.sh ${CMAKE_CURRENT_SOURCE_DIR}/../tools/metadata.txt ${CMAKE_CURRENT_BINARY_DIR}
-  COMMENT "Generating metadata .c/.h"
-)
-add_custom_target(
-  generate_metadata ALL
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/create_metadata.sh ${CMAKE_CURRENT_SOURCE_DIR}/../tools/metadata.txt ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.h ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.c
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-)
-
-#
 # build libdarktable
 #
-add_library(lib_darktable SHARED ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.h ${CMAKE_CURRENT_BINARY_DIR}/metadata_gen.c ${CMAKE_BINARY_DIR}/src/version_gen.c ${SOURCES})
+add_library(lib_darktable SHARED ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h ${CMAKE_BINARY_DIR}/src/version_gen.c ${SOURCES})
 
 # cmake implicitly sets GENERATED on the source file in the directory of the custom command
 # since this isn't the same directory we do have to manually set it
@@ -756,7 +825,6 @@ set_source_files_properties(${CMAKE_BINARY_DIR}/src/version_gen.c PROPERTIES GEN
 
 add_dependencies(lib_darktable generate_version)
 add_dependencies(lib_darktable generate_preferences)
-add_dependencies(lib_darktable generate_metadata)
 
 if(APPLE)
   set_target_properties(lib_darktable PROPERTIES MACOSX_RPATH TRUE)
@@ -822,9 +890,9 @@ endif(BUILD_CMSTEST)
 add_subdirectory(chart)
 
 # have some test programs for unit testing, ...
-if(BUILD_TESTS)
+if(BUILD_TESTING)
   add_subdirectory(tests)
-endif(BUILD_TESTS)
+endif(BUILD_TESTING)
 
 #
 # build darktable executable
@@ -840,6 +908,10 @@ if (WIN32)
   set_target_properties(darktable PROPERTIES LINK_FLAGS "-mconsole -mwindows -Wl,-subsystem,console")
   _detach_debuginfo (darktable bin)
   _detach_debuginfo (lib_darktable bin)
+else()
+    set_target_properties(darktable
+                          PROPERTIES
+                          INSTALL_RPATH ${CMAKE_INSTALL_LIBDIR_RPATH})
 endif(WIN32)
 
 install(TARGETS darktable DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT DTApplication)

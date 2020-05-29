@@ -29,8 +29,8 @@ static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUP
 #define WANTED_STACK_SIZE (@WANTED_STACK_SIZE@)
 #define WANTED_THREADS_STACK_SIZE (@WANTED_THREADS_STACK_SIZE@)
 
-#define ISO_CODES_LOCATION "@ISO_CODES_LOCATION@"
-#define ISO_CODES_LOCALEDIR "@ISO_CODES_LOCALEDIR@"
+#define ISO_CODES_LOCATION "@IsoCodes_LOCATION@"
+#define ISO_CODES_LOCALEDIR "@IsoCodes_LOCALEDIR@"
 
 // clang-format on
 
@@ -65,6 +65,23 @@ static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUP
 #define ASAN_POISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
 #define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
 #endif
+
+#cmakedefine HAVE_CPUID_H 1
+#cmakedefine HAVE___GET_CPUID 1
+
+#cmakedefine HAVE_OMP_FIRSTPRIVATE_WITH_CONST 1
+
+#cmakedefine HAVE_THREAD_RWLOCK_ARCH_T_READERS 1
+
+#cmakedefine HAVE_THREAD_RWLOCK_ARCH_T_NR_READERS 1
+
+/******************************************************************************
+ * OpenCL target settings
+ *****************************************************************************/
+
+// OpenCL 1.2 is the highest version supported by Nvidia drivers as of end 2019
+// we force use it because we don't have time to support every (vendor driver × OpenCL version)
+#define CL_TARGET_OPENCL_VERSION 120
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

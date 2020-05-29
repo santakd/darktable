@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  copyright (c) 2012--2015 Ulrich Pegelow.
+  Copyright (C) 2012-2020 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -34,7 +34,6 @@
 #include "gui/gtk.h"
 #include "gui/presets.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
@@ -183,9 +182,14 @@ int flags()
   return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("shadows and highlights", IOP_GROUP_BASIC);
+  return IOP_GROUP_BASIC;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_Lab;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -276,6 +280,7 @@ void init_key_accels(dt_iop_module_so_t *self)
   dt_accel_register_slider_iop(self, FALSE, NC_("accel", "compress"));
   dt_accel_register_slider_iop(self, FALSE, NC_("accel", "shadows color correction"));
   dt_accel_register_slider_iop(self, FALSE, NC_("accel", "highlights color correction"));
+  dt_accel_register_combobox_iop(self, FALSE, NC_("accel", "soften with"));
 }
 
 void connect_key_accels(dt_iop_module_t *self)
@@ -289,6 +294,7 @@ void connect_key_accels(dt_iop_module_t *self)
   dt_accel_connect_slider_iop(self, "compress", GTK_WIDGET(g->compress));
   dt_accel_connect_slider_iop(self, "shadows color correction", GTK_WIDGET(g->shadows_ccorrect));
   dt_accel_connect_slider_iop(self, "highlights color correction", GTK_WIDGET(g->highlights_ccorrect));
+  dt_accel_connect_combobox_iop(self, "soften with", GTK_WIDGET(g->shadhi_algo));
 }
 
 
@@ -373,7 +379,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 // invert and desaturate
 #ifdef _OPENMP
-#pragma omp parallel for default(none) shared(out) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(roi_out) \
+  shared(out) \
+  schedule(static)
 #endif
   for(size_t j = 0; j < (size_t)roi_out->width * roi_out->height * 4; j += 4)
   {
@@ -391,7 +400,13 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) shared(in, out) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ch, compress, doublemax, flags, halfmax, height, \
+                      highlights, highlights_ccorrect, lmax, lmin, \
+                      low_approximation, max, min,  shadows, \
+                      shadows_ccorrect, unbound_mask, whitepoint, width) \
+  shared(in, out) \
+  schedule(static)
 #endif
   for(size_t j = 0; j < (size_t)width * height * ch; j += ch)
   {
@@ -488,7 +503,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
                const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_shadhi_data_t *d = (dt_iop_shadhi_data_t *)piece->data;
-  dt_iop_shadhi_global_data_t *gd = (dt_iop_shadhi_global_data_t *)self->data;
+  dt_iop_shadhi_global_data_t *gd = (dt_iop_shadhi_global_data_t *)self->global_data;
 
   cl_int err = -999;
   const int devid = piece->pipe->devid;
@@ -770,7 +785,6 @@ void init(dt_iop_module_t *module)
   module->params = calloc(1, sizeof(dt_iop_shadhi_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_shadhi_params_t));
   module->default_enabled = 0;
-  module->priority = 558; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_shadhi_params_t);
   module->gui_data = NULL;
   dt_iop_shadhi_params_t tmp
@@ -794,6 +808,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void cleanup_global(dt_iop_module_so_t *module)

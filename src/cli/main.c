@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2012 johannes hanika, tobias ellinghaus.
+    Copyright (C) 2012-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -45,19 +45,40 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include "osx/osx.h"
+#endif
+
 #ifdef _WIN32
 #include "win/main_wrapper.h"
 #endif
 
+#define DT_MAX_STYLE_NAME_LENGTH 128
+
 static void usage(const char *progname)
 {
-  fprintf(stderr, "usage: %s <input file> [<xmp file>] <output file> [--width <max width>,--height <max "
-                  "height>,--bpp <bpp>,--hq <0|1|true|false>,--upscale <0|1|true|false>,--verbose] [--core <darktable options>]\n",
-          progname);
+  fprintf(stderr, "usage: %s <input file> [<xmp file>] <output file> [options] [--core <darktable options>]\n", progname);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "options:\n");
+  fprintf(stderr, "   --width <max width> default: 0 = full resolution\n");
+  fprintf(stderr, "   --height <max height> default: 0 = full resolution\n");
+  fprintf(stderr, "   --bpp <bpp>, unsupported\n");
+  fprintf(stderr, "   --hq <0|1|false|true> default: true\n");
+  fprintf(stderr, "   --upscale <0|1|false|true>, default: false\n");
+  fprintf(stderr, "   --export_masks <0|1|false|true>, default: false\n");
+  fprintf(stderr, "   --style <style name>\n");
+  fprintf(stderr, "   --style-overwrite\n");
+  fprintf(stderr, "   --apply-custom-presets <0|1|false|true>, default: true\n");
+  fprintf(stderr, "   --verbose\n");
+  fprintf(stderr, "   --help,-h\n");
+  fprintf(stderr, "   --version\n");
 }
 
 int main(int argc, char *arg[])
 {
+#ifdef __APPLE__
+  dt_osx_prepare_environment();
+#endif
   bindtextdomain(GETTEXT_PACKAGE, DARKTABLE_LOCALEDIR);
   bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
   textdomain(GETTEXT_PACKAGE);
@@ -68,16 +89,18 @@ int main(int argc, char *arg[])
   char *input_filename = NULL;
   char *xmp_filename = NULL;
   char *output_filename = NULL;
+  char *style = NULL;
   int file_counter = 0;
   int width = 0, height = 0, bpp = 0;
-  gboolean verbose = FALSE, high_quality = TRUE, upscale = FALSE;
+  gboolean verbose = FALSE, high_quality = TRUE, upscale = FALSE,
+           style_overwrite = FALSE, custom_presets = TRUE, export_masks = FALSE;
 
   int k;
   for(k = 1; k < argc; k++)
   {
     if(arg[k][0] == '-')
     {
-      if(!strcmp(arg[k], "--help"))
+      if(!strcmp(arg[k], "--help") || !strcmp(arg[k], "-h"))
       {
         usage(arg[0]);
         exit(1);
@@ -86,7 +109,7 @@ int main(int argc, char *arg[])
       {
         printf("this is darktable-cli %s\ncopyright (c) 2012-%s johannes hanika, tobias ellinghaus\n",
                darktable_package_version, darktable_last_commit_year);
-        exit(1);
+        exit(0);
       }
       else if(!strcmp(arg[k], "--width") && argc > k + 1)
       {
@@ -121,6 +144,22 @@ int main(int argc, char *arg[])
         }
         g_free(str);
       }
+      else if(!strcmp(arg[k], "--export_masks") && argc > k + 1)
+      {
+        k++;
+        gchar *str = g_ascii_strup(arg[k], -1);
+        if(!g_strcmp0(str, "0") || !g_strcmp0(str, "FALSE"))
+          export_masks = FALSE;
+        else if(!g_strcmp0(str, "1") || !g_strcmp0(str, "TRUE"))
+          export_masks = TRUE;
+        else
+        {
+          fprintf(stderr, "%s: %s\n", _("unknown option for --export_masks"), arg[k]);
+          usage(arg[0]);
+          exit(1);
+        }
+        g_free(str);
+      }
       else if(!strcmp(arg[k], "--upscale") && argc > k + 1)
       {
         k++;
@@ -137,6 +176,32 @@ int main(int argc, char *arg[])
         }
         g_free(str);
       }
+      else if(!strcmp(arg[k], "--style") && argc > k + 1)
+      {
+        k++;
+        style = arg[k];
+      }
+      else if(!strcmp(arg[k], "--style-overwrite"))
+      {
+        style_overwrite = TRUE;
+      }
+      else if(!strcmp(arg[k], "--apply-custom-presets") && argc > k + 1)
+      {
+        k++;
+        gchar *str = g_ascii_strup(arg[k], -1);
+        if(!g_strcmp0(str, "0") || !g_strcmp0(str, "FALSE"))
+          custom_presets = FALSE;
+        else if(!g_strcmp0(str, "1") || !g_strcmp0(str, "TRUE"))
+          custom_presets = TRUE;
+        else
+        {
+          fprintf(stderr, "%s: %s\n", _("unknown option for --apply-custom-presets"), arg[k]);
+          usage(arg[0]);
+          exit(1);
+        }
+        g_free(str);
+      }
+
       else if(!strcmp(arg[k], "-v") || !strcmp(arg[k], "--verbose"))
       {
         verbose = TRUE;
@@ -198,7 +263,7 @@ int main(int argc, char *arg[])
   }
 
   // init dt without gui and without data.db:
-  if(dt_init(m_argc, m_arg, FALSE, FALSE, NULL))
+  if(dt_init(m_argc, m_arg, FALSE, custom_presets, NULL))
   {
     free(m_arg);
     exit(1);
@@ -208,7 +273,7 @@ int main(int argc, char *arg[])
 
   if(g_file_test(input_filename, G_FILE_TEST_IS_DIR))
   {
-    int filmid = dt_film_import(input_filename);
+    const int filmid = dt_film_import(input_filename);
     if(!filmid)
     {
       fprintf(stderr, _("error: can't open folder %s"), input_filename);
@@ -239,7 +304,7 @@ int main(int argc, char *arg[])
     id_list = g_list_append(id_list, GINT_TO_POINTER(id));
   }
 
-  int total = g_list_length(id_list);
+  const int total = g_list_length(id_list);
 
   if(total == 0)
   {
@@ -353,7 +418,15 @@ int main(int argc, char *arg[])
   fdata->max_width = (w != 0 && fdata->max_width > w) ? w : fdata->max_width;
   fdata->max_height = (h != 0 && fdata->max_height > h) ? h : fdata->max_height;
   fdata->style[0] = '\0';
-  fdata->style_append = 0;
+  fdata->style_append = 1; // make append the default and override with --style-overwrite
+
+  if(style)
+  {
+    g_strlcpy((char *)fdata->style, style, DT_MAX_STYLE_NAME_LENGTH);
+    fdata->style[127] = '\0';
+    if(style_overwrite)
+      fdata->style_append = 0;
+  }
 
   if(storage->initialize_store)
   {
@@ -374,9 +447,13 @@ int main(int argc, char *arg[])
   int num = 1;
   for(GList *iter = id_list; iter; iter = g_list_next(iter), num++)
   {
-    int id = GPOINTER_TO_INT(iter->data);
-    storage->store(storage, sdata, id, format, fdata, num, total, high_quality, upscale, icc_type, icc_filename,
-                   icc_intent);
+    const int id = GPOINTER_TO_INT(iter->data);
+    // TODO: have a parameter in command line to get the export presets
+    dt_export_metadata_t metadata;
+    metadata.flags = dt_lib_export_metadata_default_flags();
+    metadata.list = NULL;
+    storage->store(storage, sdata, id, format, fdata, num, total, high_quality, upscale, export_masks,
+                   icc_type, icc_filename, icc_intent, &metadata);
   }
 
   // cleanup time

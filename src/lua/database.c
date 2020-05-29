@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   copyright (c) 2012 Jeremy Rosen
+   Copyright (C) 2013-2020 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -64,7 +64,15 @@ int dt_lua_move_image(lua_State *L)
     luaA_to(L, dt_lua_film_t, &filmid, 1);
     luaA_to(L, dt_lua_image_t, &imgid, 2);
   }
-  dt_image_move(imgid, filmid);
+  const char *newname = lua_tostring(L, 3);
+  if(newname)
+  {
+    dt_image_rename(imgid, filmid, newname);
+  }
+  else
+  {
+    dt_image_move(imgid, filmid);
+  }
   return 0;
 }
 
@@ -82,7 +90,16 @@ int dt_lua_copy_image(lua_State *L)
     luaA_to(L, dt_lua_film_t, &filmid, 1);
     luaA_to(L, dt_lua_image_t, &imgid, 2);
   }
-  dt_lua_image_t new_image = dt_image_copy(imgid, filmid);
+  const char *newname = lua_tostring(L, 3);
+  dt_lua_image_t new_image;
+  if(newname)
+  {
+    new_image = dt_image_copy_rename(imgid, filmid, newname);
+  }
+  else
+  {
+    new_image = dt_image_copy(imgid, filmid);
+  }
   luaA_push(L, dt_lua_image_t, &new_image);
   return 1;
 }
@@ -123,7 +140,7 @@ static int import_images(lua_State *L)
       return luaL_error(L, "Error while importing : %s\n", strerror(errno));
     }
     result = dt_film_new(&new_film, final_path);
-    free(final_path);
+    g_free(final_path);
     if(result == 0)
     {
       if(dt_film_is_empty(new_film.id)) dt_film_remove(new_film.id);
@@ -141,6 +158,11 @@ static int import_images(lua_State *L)
       return luaL_error(L, "error while importing");
     }
     luaA_push(L, dt_lua_image_t, &result);
+    // force refresh of thumbtable view
+    dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, g_list_append(NULL, GINT_TO_POINTER(result)));
+    dt_control_signal_raise(darktable.signals, DT_SIGNAL_FILMROLLS_CHANGED);
+    dt_control_queue_redraw_center();
+
   }
   g_free(full_name);
   return 1;

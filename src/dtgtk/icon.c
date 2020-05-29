@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c)2011 Henrik Andersson.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -68,6 +68,7 @@ GtkWidget *dtgtk_icon_new(DTGTKCairoPaintIconFunc paint, gint paintflags, void *
   icon->icon = paint;
   icon->icon_flags = paintflags;
   icon->icon_data = paintdata;
+  gtk_widget_set_name(GTK_WIDGET(icon), "dt-icon");
   return (GtkWidget *)icon;
 }
 

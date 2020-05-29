@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
-    copyright (c) 2014 tobias ellinghaus.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -79,7 +78,6 @@ void gui_init(dt_lib_module_t *self)
   /* initialize base */
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_set_no_show_all(self->widget, TRUE);
-  gtk_container_set_border_width(GTK_CONTAINER(self->widget), 5);
 
   /* setup proxy */
   dt_pthread_mutex_lock(&darktable.control->progress_system.mutex);
@@ -134,7 +132,7 @@ static gboolean _added_gui_thread(gpointer user_data)
   _added_gui_thread_t *params = (_added_gui_thread_t *)user_data;
 
   /* lets show jobbox if its hidden */
-  gtk_box_pack_start(GTK_BOX(params->self_widget), params->instance_widget, TRUE, FALSE, 1);
+  gtk_box_pack_start(GTK_BOX(params->self_widget), params->instance_widget, TRUE, FALSE, 0);
   gtk_box_reorder_child(GTK_BOX(params->self_widget), params->instance_widget, 1);
   gtk_widget_show_all(params->instance_widget);
   gtk_widget_show(params->self_widget);
@@ -162,7 +160,6 @@ static void *_lib_backgroundjobs_added(dt_lib_module_t *self, gboolean has_progr
   gtk_widget_set_name(GTK_WIDGET(instance->widget), "background_job_eventbox");
   GtkBox *vbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
   instance->hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_container_set_border_width(GTK_CONTAINER(vbox), 2);
   gtk_container_add(GTK_CONTAINER(instance->widget), GTK_WIDGET(vbox));
 
   /* add job label */
@@ -176,7 +173,7 @@ static void *_lib_backgroundjobs_added(dt_lib_module_t *self, gboolean has_progr
   if(has_progress_bar)
   {
     instance->progressbar = gtk_progress_bar_new();
-    gtk_box_pack_start(GTK_BOX(vbox), instance->progressbar, TRUE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(vbox), instance->progressbar, TRUE, FALSE, 0);
   }
 
   /* lets show jobbox if its hidden */
@@ -243,7 +240,6 @@ static gboolean _cancellable_gui_thread(gpointer user_data)
 
   GtkBox *hbox = GTK_BOX(params->instance->hbox);
   GtkWidget *button = dtgtk_button_new(dtgtk_cairo_paint_cancel, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
-  gtk_widget_set_size_request(button, DT_PIXEL_APPLY_DPI(17), DT_PIXEL_APPLY_DPI(17));
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_lib_backgroundjobs_cancel_callback_new), params->progress);
   gtk_box_pack_start(hbox, GTK_WIDGET(button), FALSE, FALSE, 0);
   gtk_widget_show_all(button);

@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   copyright (c) 2009--2010 johannes hanika.
+   Copyright (C) 2010-2020 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -35,7 +35,6 @@
 #include "gui/accelerators.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 
 #include <gtk/gtk.h>
 #include <inttypes.h>
@@ -79,14 +78,33 @@ const char *name()
   return _("highlight reconstruction");
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("highlight reconstruction", IOP_GROUP_BASIC);
+  return IOP_GROUP_BASIC;
 }
 
 int flags()
 {
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_ONE_INSTANCE;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_RAW;
+}
+
+void init_key_accels(dt_iop_module_so_t *self)
+{
+  dt_accel_register_slider_iop(self, FALSE, NC_("accel", "clipping threshold"));
+  dt_accel_register_combobox_iop(self, FALSE, NC_("accel", "method"));
+}
+
+void connect_key_accels(dt_iop_module_t *self)
+{
+  dt_iop_highlights_gui_data_t *g = (dt_iop_highlights_gui_data_t *)self->gui_data;
+
+  dt_accel_connect_slider_iop(self, "clipping threshold", GTK_WIDGET(g->clip));
+  dt_accel_connect_combobox_iop(self, "method", GTK_WIDGET(g->mode));
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -107,7 +125,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
                const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_highlights_data_t *d = (dt_iop_highlights_data_t *)piece->data;
-  dt_iop_highlights_global_data_t *gd = (dt_iop_highlights_global_data_t *)self->data;
+  dt_iop_highlights_global_data_t *gd = (dt_iop_highlights_global_data_t *)self->global_data;
 
   cl_int err = -999;
   cl_mem dev_xtrans = NULL;
@@ -526,7 +544,9 @@ static void process_lch_bayer(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
   const uint32_t filters = piece->pipe->dsc.filters;
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(clip, filters, ivoid, ovoid, roi_out) \
+  schedule(dynamic)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -625,7 +645,9 @@ static void process_lch_xtrans(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(clip, ivoid, ovoid, roi_in, roi_out, xtrans) \
+  schedule(dynamic)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -760,7 +782,9 @@ static void process_clip_plain(dt_dev_pixelpipe_iop_t *piece, const void *const 
   if(piece->pipe->dsc.filters)
   { // raw mosaic
 #ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) schedule(static)
+#pragma omp parallel for SIMD() default(none) \
+    dt_omp_firstprivate(clip, in, out, roi_out) \
+    schedule(static)
 #endif
     for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
     {
@@ -772,7 +796,9 @@ static void process_clip_plain(dt_dev_pixelpipe_iop_t *piece, const void *const 
     const int ch = piece->colors;
 
 #ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) schedule(static)
+#pragma omp parallel for SIMD() default(none) \
+    dt_omp_firstprivate(ch, clip, in, out, roi_out) \
+    schedule(static)
 #endif
     for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k++)
     {
@@ -793,7 +819,9 @@ static void process_clip_sse2(dt_dev_pixelpipe_iop_t *piece, const void *const i
     float *const out = (float *)ovoid;
     float *const in = (float *)ivoid;
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(clipm, in, n, out) \
+    schedule(static)
 #endif
     for(size_t j = 0; j < (n & ~3u); j += 4) _mm_stream_ps(out + j, _mm_min_ps(clipm, _mm_load_ps(in + j)));
     _mm_sfence();
@@ -807,7 +835,9 @@ static void process_clip_sse2(dt_dev_pixelpipe_iop_t *piece, const void *const i
     const int ch = piece->colors;
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(ch, clipm, ivoid, ovoid, roi_in, roi_out) \
+    schedule(static)
 #endif
     for(int j = 0; j < roi_out->height; j++)
     {
@@ -868,7 +898,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       {
         const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none)
+#pragma omp parallel for default(none) \
+        dt_omp_firstprivate(clips, filters, ivoid, ovoid, roi_in, roi_out, \
+                            xtrans) \
+        schedule(dynamic)
 #endif
         for(int j = 0; j < roi_out->height; j++)
         {
@@ -876,7 +909,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           interpolate_color_xtrans(ivoid, ovoid, roi_in, roi_out, 0, -1, j, clips, xtrans, 1);
         }
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none)
+#pragma omp parallel for default(none) \
+        dt_omp_firstprivate(clips, filters, ivoid, ovoid, roi_in, roi_out, \
+                            xtrans) \
+        schedule(dynamic)
 #endif
         for(int i = 0; i < roi_out->width; i++)
         {
@@ -887,7 +923,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       else
       {
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none) shared(data, piece)
+#pragma omp parallel for default(none) \
+        dt_omp_firstprivate(clips, filters, ivoid, ovoid, roi_out) \
+        shared(data, piece) \
+        schedule(dynamic)
 #endif
         for(int j = 0; j < roi_out->height; j++)
         {
@@ -897,7 +936,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 // up/down directions
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) default(none) shared(data, piece)
+#pragma omp parallel for default(none) \
+        dt_omp_firstprivate(clips, filters, ivoid, ovoid, roi_out) \
+        shared(data, piece) \
+        schedule(dynamic)
 #endif
         for(int i = 0; i < roi_out->width; i++)
         {
@@ -1009,11 +1051,8 @@ void reload_defaults(dt_iop_module_t *module)
   // we might be called from presets update infrastructure => there is no image
   if(!module->dev) goto end;
 
-  // only on for raw images:
-  if(dt_image_is_raw(&module->dev->image_storage))
-    module->default_enabled = 1;
-  else
-    module->default_enabled = 0;
+  // enable this per default if raw or sraw, 
+  module->default_enabled = dt_image_is_rawprepare_supported(&(module->dev->image_storage));
 
 end:
   memcpy(module->params, &tmp, sizeof(dt_iop_highlights_params_t));
@@ -1025,8 +1064,6 @@ void init(dt_iop_module_t *module)
   // module->data = malloc(sizeof(dt_iop_highlights_data_t));
   module->params = calloc(1, sizeof(dt_iop_highlights_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_highlights_params_t));
-  module->priority = 58; // module order created by iop_dependencies.py, do not edit!
-  module->default_enabled = 1;
   module->params_size = sizeof(dt_iop_highlights_params_t);
   module->gui_data = NULL;
 }
@@ -1035,6 +1072,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void gui_init(struct dt_iop_module_t *self)

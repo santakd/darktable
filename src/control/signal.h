@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,6 +33,11 @@ typedef enum dt_signal_t
    */
   DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE,
 
+  /** \brief This signal is raised when image shown in the main view change
+      no param, no returned value
+   */
+  DT_SIGNAL_ACTIVE_IMAGES_CHANGE,
+
   /** \brief This signal is raised when dt_control_queue_redraw() is called.
     no param, no returned value
   */
@@ -51,21 +56,43 @@ typedef enum dt_signal_t
   DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED,
 
   /** \bief This signal is raised when a thumb is doubleclicked in
-    no param, no returned value
-      filmstrip module.
+    thumbtable (filemananger, filmstrip)
+    1 : int the imageid of the thumbnail
+    no returned value
    */
-  DT_SIGNAL_VIEWMANAGER_FILMSTRIP_ACTIVATE,
+  DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE,
 
-  /** \brief This signal is raised when collection query is changed
+  /** \brief This signal is raised when collection changed. To avoid leaking the list,
+    dt_collection_t is connected to this event and responsible of that.
+    1 : dt_collection_change_t the reason why the collection has changed
+    2 : GList of imageids that have changed (can be null if it's a global change)
+    3 : next untouched imgid in the list (-1 if no list)
+    no returned value
+    */
+  /** image list not to be freed by the caller, automatically freed */
+  DT_SIGNAL_COLLECTION_CHANGED,
+
+  /** \brief This signal is raised when the selection is changed
   no param, no returned value
     */
-  DT_SIGNAL_COLLECTION_CHANGED,
+  DT_SIGNAL_SELECTION_CHANGED,
 
   /** \brief This signal is raised when a tag is added/deleted/changed  */
   DT_SIGNAL_TAG_CHANGED,
 
+  /** \brief This signal is raised when metadata status (shown/hidden) or value has changed */
+  DT_SIGNAL_METADATA_CHANGED,
+
+  /** \brief This signal is raised when any of image info has changed  */
+  /** image list not to be freed by the caller, automatically freed */
+  // TODO check if tag and metadata could be included there
+  DT_SIGNAL_IMAGE_INFO_CHANGED,
+
   /** \brief This signal is raised when a style is added/deleted/changed  */
   DT_SIGNAL_STYLE_CHANGED,
+
+  /** \brief This signal is raised to request image order change */
+  DT_SIGNAL_IMAGES_ORDER_CHANGE,
 
   /** \brief This signal is raised when a filmroll is deleted/changed but not imported
       \note when a filmroll is imported, use DT_SIGNALS_FILMOLLS_IMPORTED, as the gui
@@ -91,7 +118,8 @@ typedef enum dt_signal_t
   DT_SIGNAL_DEVELOP_INITIALIZE,
 
   /** \brief This signal is raised when a mipmap has been generated and flushed to cache
-  no param, no returned value
+    1 :  int the imgid of the mipmap
+    no returned value
     */
   DT_SIGNAL_DEVELOP_MIPMAP_UPDATED,
 
@@ -100,10 +128,23 @@ typedef enum dt_signal_t
     */
   DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
 
-  /** \brief This signal is rasied when pipe is finished and the gui is attached
+  /** \brief This signal is raised when develop preview2 pipe process is finished
+  no param, no returned value
+    */
+  DT_SIGNAL_DEVELOP_PREVIEW2_PIPE_FINISHED,
+
+  /** \brief This signal is raised when pipe is finished and the gui is attached
   no param, no returned value
     */
   DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED,
+
+  /** \brief This signal is raised when develop history is about to be changed
+    1 : GList *  the current history
+    2 : uint32_t the correpsing history end
+    3 : GList *  the current iop-order list
+  no returned value
+    */
+  DT_SIGNAL_DEVELOP_HISTORY_WILL_CHANGE,
 
   /** \brief This signal is raised when develop history is changed
   no param, no returned value
@@ -116,13 +157,22 @@ typedef enum dt_signal_t
     */
   DT_SIGNAL_DEVELOP_MODULE_REMOVE,
 
-  /** \brief This signal is rasied when image is changed in darkroom */
+  /** \brief This signal is raised when order of modules in pipeline is changed */
+  DT_SIGNAL_DEVELOP_MODULE_MOVED,
+
+  /** \brief This signal is raised when image is changed in darkroom */
   DT_SIGNAL_DEVELOP_IMAGE_CHANGED,
 
   /** \brief This signal is raised when the screen profile has changed
   no param, no returned value
     */
   DT_SIGNAL_CONTROL_PROFILE_CHANGED,
+
+  /** \brief This signal is raised when a profile is changed by the user
+    1 uint32_t :  the profile type that has changed
+    no return
+    */
+  DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED,
 
   /** \brief This signal is raised when a new image is imported (not cloned)
     1 uint32_t :  the new image id
@@ -159,6 +209,28 @@ typedef enum dt_signal_t
     no return
    * */
   DT_SIGNAL_CAMERA_DETECTED,
+
+  /** \brief This signal is raised when dt_control_navigation_redraw() is called.
+    no param, no returned value
+  */
+  DT_SIGNAL_CONTROL_NAVIGATION_REDRAW,
+
+  /** \brief This signal is raised when dt_control_log_redraw() is called.
+    no param, no returned value
+  */
+  DT_SIGNAL_CONTROL_LOG_REDRAW,
+
+  /** \brief This signal is raised when dt_control_toast_redraw() is called.
+    no param, no returned value
+  */
+  DT_SIGNAL_CONTROL_TOAST_REDRAW,
+
+  /** \brief This signal is raised when new color picker data are available in the pixelpipe.
+    1 module
+    2 piece
+    no returned value
+  */
+  DT_SIGNAL_CONTROL_PICKERDATA_READY,
 
   /* do not touch !*/
   DT_SIGNAL_COUNT

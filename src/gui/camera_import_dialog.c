@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010--2014 henrik andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,8 +17,11 @@
 */
 
 #include "gui/camera_import_dialog.h"
+#include "common/metadata.h"
+#include "gui/import_metadata.h"
 #include "common/camera_control.h"
 #include "common/darktable.h"
+#include "common/debug.h"
 #include "common/exif.h"
 #include "common/utility.h"
 #include "common/variables.h"
@@ -84,6 +87,7 @@ typedef struct _camera_import_dialog_t
       GtkWidget *ignore_jpeg;
       GtkWidget *date_override;
       GtkWidget *date_entry;
+      dt_import_metadata_t *metadata;
     } general;
 
   } settings;
@@ -93,6 +97,14 @@ typedef struct _camera_import_dialog_t
   dt_camera_import_dialog_param_t *params;
 } _camera_import_dialog_t;
 
+enum
+{
+  NAME_COLUMN,
+  CREATOR_COLUMN,
+  PUBLISHER_COLUMN,
+  RIGHTS_COLUMN,
+  N_COLUMNS
+};
 
 static void _check_button_callback(GtkWidget *cb, gpointer user_data)
 {
@@ -138,7 +150,6 @@ static void _gcw_reset_callback(GtkDarktableButton *button, gpointer user_data)
   }
 }
 
-
 static void _entry_text_changed(_camera_gconf_widget_t *gcw, GtkEntryBuffer *entrybuffer)
 {
   const gchar *value = gtk_entry_buffer_get_text(entrybuffer);
@@ -180,13 +191,11 @@ static _camera_gconf_widget_t *_camera_import_gconf_widget(_camera_import_dialog
 
   GtkWidget *button = dtgtk_button_new(dtgtk_cairo_paint_store, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
   gtk_widget_set_tooltip_text(button, _("store value as default"));
-  gtk_widget_set_size_request(button, DT_PIXEL_APPLY_DPI(13), DT_PIXEL_APPLY_DPI(13));
   gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_gcw_store_callback), gcw);
 
   button = dtgtk_button_new(dtgtk_cairo_paint_reset, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
   gtk_widget_set_tooltip_text(button, _("reset value to default"));
-  gtk_widget_set_size_request(button, DT_PIXEL_APPLY_DPI(13), DT_PIXEL_APPLY_DPI(13));
   gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_gcw_reset_callback), gcw);
 
@@ -204,8 +213,6 @@ static _camera_gconf_widget_t *_camera_import_gconf_widget(_camera_import_dialog
   return gcw;
 }
 
-
-
 static void _camera_import_dialog_new(_camera_import_dialog_t *data)
 {
   data->dialog = gtk_dialog_new_with_buttons(_("import images from camera"), NULL, GTK_DIALOG_MODAL,
@@ -222,8 +229,7 @@ static void _camera_import_dialog_new(_camera_import_dialog_t *data)
   data->store = gtk_list_store_new(2, GDK_TYPE_PIXBUF, G_TYPE_STRING);
 
   // IMPORT PAGE
-  data->import.page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-  gtk_container_set_border_width(GTK_CONTAINER(data->import.page), 5);
+  data->import.page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
   // Top info
   data->import.info = gtk_label_new(_("please wait while prefetching thumbnails of images from camera..."));
@@ -266,11 +272,7 @@ static void _camera_import_dialog_new(_camera_import_dialog_t *data)
 
 
   // SETTINGS PAGE
-  data->settings.page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-  gtk_container_set_border_width(GTK_CONTAINER(data->settings.page), 5);
-
-  // general settings
-  gtk_box_pack_start(GTK_BOX(data->settings.page), gtk_label_new(_("general")), FALSE, FALSE, 0);
+  data->settings.page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
   // ignoring of jpegs. hack while we don't handle raw+jpeg in the same directories.
   data->settings.general.ignore_jpeg = gtk_check_button_new_with_label(_("ignore JPEG files"));
@@ -283,7 +285,15 @@ static void _camera_import_dialog_new(_camera_import_dialog_t *data)
   g_signal_connect(G_OBJECT(data->settings.general.ignore_jpeg), "clicked",
                    G_CALLBACK(_check_button_callback), data);
 
-  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+  // metadata
+
+  dt_import_metadata_t *metadata = data->settings.general.metadata;
+  metadata->box = data->settings.page;
+  dt_import_metadata_dialog_new(metadata);
+
+  // today's date
+
+  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   data->settings.general.date_override = gtk_check_button_new_with_label(_("override today's date"));
   gtk_box_pack_start(GTK_BOX(hbox), data->settings.general.date_override, FALSE, FALSE, 0);
   gtk_widget_set_tooltip_text(data->settings.general.date_override,
@@ -328,7 +338,7 @@ static gboolean _camera_storage_image_filename_gui_thread(gpointer user_data)
   gtk_list_store_set(params->store, &iter, 0, params->thumb, 1, params->file_info, -1);
 
   if(params->thumb) g_object_ref(params->thumb);
-  free(params->file_info);
+  g_free(params->file_info);
   free(params);
   return FALSE;
 }
@@ -506,6 +516,9 @@ static void _camera_import_dialog_run(_camera_import_dialog_t *data)
     gint result = gtk_dialog_run(GTK_DIALOG(data->dialog));
     if(result == GTK_RESPONSE_ACCEPT)
     {
+      dt_import_metadata_t *metadata = data->settings.general.metadata;
+      dt_import_metadata_evaluate(metadata);
+
       GtkTreeIter iter;
       all_good = TRUE;
       GtkTreeSelection *selection
@@ -550,6 +563,9 @@ static void _camera_import_dialog_run(_camera_import_dialog_t *data)
         GtkWidget *dialog
             = gtk_message_dialog_new(NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
                                      _("please use YYYY-MM-DD format for date override"));
+#ifdef GDK_WINDOWING_QUARTZ
+        dt_osx_disallow_fullscreen(dialog);
+#endif
         g_signal_connect_swapped(dialog, "response", G_CALLBACK(gtk_widget_destroy), dialog);
         gtk_dialog_run(GTK_DIALOG(dialog));
         all_good = FALSE;
@@ -571,6 +587,8 @@ void dt_camera_import_dialog_new(dt_camera_import_dialog_param_t *params)
   _camera_import_dialog_t data;
   memset(&data, 0, sizeof(_camera_import_dialog_t)); // needed to initialize pointers to null
   data.params = params;
+  dt_import_metadata_t metadata;
+  data.settings.general.metadata = &metadata;
   _camera_import_dialog_new(&data);
   _camera_import_dialog_run(&data);
   _camera_import_dialog_free(&data);

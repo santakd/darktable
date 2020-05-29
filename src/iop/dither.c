@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2012--2013 Ulrich Pegelow
+    Copyright (C) 2012-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -31,7 +31,6 @@
 #include "gui/gtk.h"
 #include "gui/presets.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
@@ -104,10 +103,9 @@ const char *name()
   return _("dithering");
 }
 
-
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("dithering", IOP_GROUP_CORRECT);
+  return IOP_GROUP_CORRECT;
 }
 
 int flags()
@@ -115,6 +113,22 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE;
 }
 
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_rgb;
+}
+
+void init_key_accels(dt_iop_module_so_t *self)
+{
+  dt_accel_register_combobox_iop(self, FALSE, NC_("accel", "method"));
+}
+
+void connect_key_accels(dt_iop_module_t *self)
+{
+  dt_iop_dither_gui_data_t *g = (dt_iop_dither_gui_data_t *)self->gui_data;
+
+  dt_accel_connect_combobox_iop(self, "method", GTK_WIDGET(g->dither_type));
+}
 
 void init_presets(dt_iop_module_so_t *self)
 {
@@ -308,7 +322,9 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
   }
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ch, height, ivoid, ovoid, width) \
+  schedule(static)
 #endif
   for(int j = 0; j < height; j++)
   {
@@ -372,7 +388,6 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
   }
 
   // last row
-  do
   {
     float *out = ((float *)ovoid) + (size_t)ch * (height - 1) * width;
 
@@ -390,7 +405,7 @@ static void process_floyd_steinberg(struct dt_iop_module_t *self, dt_dev_pixelpi
     // lower right pixel
     nearest_color(out + ch * (width - 1), err, f, rf);
 
-  } while(0);
+  }
 
   // copy alpha channel if needed
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
@@ -474,7 +489,9 @@ static void process_floyd_steinberg_sse2(struct dt_iop_module_t *self, dt_dev_pi
   }
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ch, height, ivoid, ovoid, width) \
+  schedule(static)
 #endif
   for(int j = 0; j < height; j++)
   {
@@ -538,7 +555,6 @@ static void process_floyd_steinberg_sse2(struct dt_iop_module_t *self, dt_dev_pi
   }
 
   // last row
-  do
   {
     float *out = ((float *)ovoid) + (size_t)ch * (height - 1) * width;
 
@@ -556,7 +572,7 @@ static void process_floyd_steinberg_sse2(struct dt_iop_module_t *self, dt_dev_pi
     // lower right pixel
     (void)nearest_color(out + ch * (width - 1), f, rf);
 
-  } while(0);
+  }
 
   // copy alpha channel if needed
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
@@ -583,7 +599,7 @@ static void encrypt_tea(unsigned int *arg)
 
 static float tpdf(unsigned int urandom)
 {
-  float frandom = (float)urandom / 0xFFFFFFFFu;
+  float frandom = (float)urandom / (float)0xFFFFFFFFu;
 
   return (frandom < 0.5f ? (sqrtf(2.0f * frandom) - 1.0f) : (1.0f - sqrtf(2.0f * (1.0f - frandom))));
 }
@@ -604,7 +620,9 @@ static void process_random(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   unsigned int *const tea_states = calloc(2 * dt_get_num_threads(), sizeof(unsigned int));
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ch, dither, height, ivoid, ovoid, tea_states, width) \
+  schedule(static)
 #endif
   for(int j = 0; j < height; j++)
   {
@@ -759,7 +777,6 @@ void init(dt_iop_module_t *module)
   module->params = calloc(1, sizeof(dt_iop_dither_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_dither_params_t));
   module->default_enabled = 0;
-  module->priority = 985; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_dither_params_t);
   module->gui_data = NULL;
   dt_iop_dither_params_t tmp
@@ -773,6 +790,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void gui_init(struct dt_iop_module_t *self)

@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2014 johannes hanika.
-    copyright (c) 2015-2016 Roman Lebedev.
+    Copyright (C) 2015-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,8 +32,13 @@
 #include "common/database.h"     // for dt_database_get
 #include "common/debug.h"        // for DT_DEBUG_SQLITE3_PREPARE_V2
 #include "common/mipmap_cache.h" // for dt_mipmap_size_t, etc
+#include "common/history.h"      // for dt_history_hash_set_mipmap
 #include "config.h"              // for GETTEXT_PACKAGE, etc
 #include "control/conf.h"        // for dt_conf_get_bool
+
+#ifdef __APPLE__
+#include "osx/osx.h"
+#endif
 
 #ifdef _WIN32
 #include "win/main_wrapper.h"
@@ -110,6 +114,8 @@ static int generate_thumbnail_cache(const dt_mipmap_size_t min_mip, const dt_mip
 
     // and immediately write thumbs to disc and remove from mipmap cache.
     dt_mimap_cache_evict(darktable.mipmap_cache, imgid);
+    // thumbnail in sync with image
+    dt_history_hash_set_mipmap(imgid);
   }
 
   sqlite3_finalize(stmt);
@@ -120,23 +126,25 @@ static int generate_thumbnail_cache(const dt_mipmap_size_t min_mip, const dt_mip
 
 static void usage(const char *progname)
 {
-  fprintf(
-      stderr,
-      "usage: %s [-h, --help; --version]\n"
-      "  [--min-mip <0-7> (default = 0)] [-m, --max-mip <0-7> (default = 2)]\n"
-      "  [--min-imgid <N>] [--max-imgid <N>]\n"
-      "  [--core <darktable options>]\n"
-      "\n"
-      "When multiple mipmap sizes are requested, the biggest one is computed\n"
-      "while the rest are quickly downsampled.\n"
-      "\n"
-      "The --min-imgid and --max-imgid specify the range of internal image ID\n"
-      "numbers to work on.\n",
-      progname);
+  fprintf(stderr,
+          "usage: %s [-h, --help; --version]\n"
+          "  [--min-mip <0-8> (default = 0)] [-m, --max-mip <0-8> (default = 2)]\n"
+          "  [--min-imgid <N>] [--max-imgid <N>]\n"
+          "  [--core <darktable options>]\n"
+          "\n"
+          "When multiple mipmap sizes are requested, the biggest one is computed\n"
+          "while the rest are quickly downsampled.\n"
+          "\n"
+          "The --min-imgid and --max-imgid specify the range of internal image ID\n"
+          "numbers to work on.\n",
+          progname);
 }
 
 int main(int argc, char *arg[])
 {
+#ifdef __APPLE__
+  dt_osx_prepare_environment();
+#endif
   bindtextdomain(GETTEXT_PACKAGE, DARKTABLE_LOCALEDIR);
   bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
   textdomain(GETTEXT_PACKAGE);
@@ -165,12 +173,12 @@ int main(int argc, char *arg[])
     else if((!strcmp(arg[k], "-m") || !strcmp(arg[k], "--max-mip")) && argc > k + 1)
     {
       k++;
-      max_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), 0), 7);
+      max_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_8);
     }
     else if(!strcmp(arg[k], "--min-mip") && argc > k + 1)
     {
       k++;
-      min_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), 0), 7);
+      min_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_8);
     }
     else if(!strcmp(arg[k], "--min-imgid") && argc > k + 1)
     {
@@ -207,10 +215,20 @@ int main(int argc, char *arg[])
 
   if(!dt_conf_get_bool("cache_disk_backend"))
   {
+    fprintf(stderr, _("warning: disk backend for thumbnail cache is disabled (cache_disk_backend)\nif you want "
+                      "to pre-generate thumbnails and for darktable to use them, you need to enable disk backend "
+                      "for thumbnail cache\nno thumbnails to be generated, done.\n"));
+    dt_cleanup();
+    free(m_arg);
+    exit(EXIT_FAILURE);
+  }
+
+  if(max_mip == 8 && !dt_conf_get_bool("cache_disk_backend_full"))
+  {
     fprintf(stderr,
-            _("warning: disk backend for thumbnail cache is disabled (cache_disk_backend)\nif you want "
-              "to pre-generate thumbnails and for darktable to use them, you need to enable disk backend "
-              "for thumbnail cache\nno thumbnails to be generated, done."));
+            _("warning: disk backend for full preview cache is disabled (cache_disk_backend_full)\nif you want "
+              "to pre-generate full preview and for darktable to use them, you need to enable disk backend "
+              "for full preview cache\nno thumbnails to be generated, done.\n"));
     dt_cleanup();
     free(m_arg);
     exit(EXIT_FAILURE);

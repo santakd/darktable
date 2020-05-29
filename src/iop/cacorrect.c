@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2011 johannes hanika.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,10 +23,13 @@
 #include "develop/imageop_math.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
+
+#if defined(__SSE__)
+#include <xmmintrin.h>
+#endif
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
@@ -43,14 +46,7 @@ typedef struct dt_iop_cacorrect_gui_data_t
 {
 } dt_iop_cacorrect_gui_data_t;
 
-typedef struct dt_iop_cacorrect_data_t
-{
-} dt_iop_cacorrect_data_t;
-
-typedef struct dt_iop_cacorrect_global_data_t
-{
-} dt_iop_cacorrect_global_data_t;
-
+dt_iop_cacorrect_gui_data_t dummy;
 
 // this returns a translatable name
 const char *name()
@@ -59,9 +55,9 @@ const char *name()
   return _("chromatic aberrations");
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("chromatic aberrations", IOP_GROUP_CORRECT);
+  return IOP_GROUP_CORRECT;
 }
 
 int flags()
@@ -69,11 +65,10 @@ int flags()
   return IOP_FLAGS_ONE_INSTANCE;
 }
 
-/** modify regions of interest (optional, per pixel ops don't need this) */
-// void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t
-// *roi_out, const dt_iop_roi_t *roi_in);
-// void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t
-// *roi_out, dt_iop_roi_t *roi_in);
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_RAW;
+}
 
 /*==================================================================================
  * begin raw therapee code, hg checkout of march 09, 2016 branch master.
@@ -476,7 +471,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1)
           {
-            for(int rr = 0; rr < border; rr++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
               for(int cc = ccmin; cc < ccmax; cc++)
               {
                 int c = FC(rr, cc, filters);
@@ -497,7 +492,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
           if(ccmax < cc1)
           {
             for(int rr = rrmin; rr < rrmax; rr++)
-              for(int cc = 0; cc < border; cc++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][rr * ts + ccmax + cc] = (in[(top + rr) * width + (width - cc - 2)]);
@@ -517,8 +512,8 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1 && ccmax < cc1)
           {
-            for(int rr = 0; rr < border; rr++)
-              for(int cc = 0; cc < border; cc++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][(rrmax + rr) * ts + ccmax + cc] = (in[(height - rr - 2) * width + (width - cc - 2)]);
@@ -528,7 +523,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
           if(rrmin > 0 && ccmax < cc1)
           {
             for(int rr = 0; rr < border; rr++)
-              for(int cc = 0; cc < border; cc++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][(rr)*ts + ccmax + cc] = (in[(border2 - rr) * width + (width - cc - 2)]);
@@ -537,7 +532,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1 && ccmin > 0)
           {
-            for(int rr = 0; rr < border; rr++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
               for(int cc = 0; cc < border; cc++)
               {
                 int c = FC(rr, cc, filters);
@@ -1133,7 +1128,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1)
           {
-            for(int rr = 0; rr < border; rr++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
               for(int cc = ccmin; cc < ccmax; cc++)
               {
                 int c = FC(rr, cc, filters);
@@ -1156,7 +1151,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
           if(ccmax < cc1)
           {
             for(int rr = rrmin; rr < rrmax; rr++)
-              for(int cc = 0; cc < border; cc++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][rr * ts + ccmax + cc] = (in[(top + rr) * width + (width - cc - 2)]);
@@ -1178,8 +1173,8 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1 && ccmax < cc1)
           {
-            for(int rr = 0; rr < border; rr++)
-              for(int cc = 0; cc < border; cc++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][(rrmax + rr) * ts + ccmax + cc] = (in[(height - rr - 2) * width + (width - cc - 2)]);
@@ -1190,7 +1185,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
           if(rrmin > 0 && ccmax < cc1)
           {
             for(int rr = 0; rr < border; rr++)
-              for(int cc = 0; cc < border; cc++)
+              for(int cc = 0; cc < MIN(border, cc1 - ccmax); cc++)
               {
                 int c = FC(rr, cc, filters);
                 rgb[c][(rr)*ts + ccmax + cc] = (in[(border2 - rr) * width + (width - cc - 2)]);
@@ -1200,7 +1195,7 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
 
           if(rrmax < rr1 && ccmin > 0)
           {
-            for(int rr = 0; rr < border; rr++)
+            for(int rr = 0; rr < MIN(border, rr1 - rrmax); rr++)
               for(int cc = 0; cc < border; cc++)
               {
                 int c = FC(rr, cc, filters);
@@ -1291,11 +1286,22 @@ static void CA_correct(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pie
             // some parameters for the bilinear interpolation
             shiftvfloor[c] = floor((float)lblockshifts[c >> 1][0]);
             shiftvceil[c] = ceil((float)lblockshifts[c >> 1][0]);
-            shiftvfrac[c] = lblockshifts[c >> 1][0] - shiftvfloor[c];
+            if (lblockshifts[c>>1][0] < 0.f) {
+              float tmp = shiftvfloor[c];
+              shiftvfloor[c] = shiftvceil[c];
+              shiftvceil[c] = tmp;
+            }
+            shiftvfrac[c] = fabsf(lblockshifts[c>>1][0] - shiftvfloor[c]);
 
             shifthfloor[c] = floor((float)lblockshifts[c >> 1][1]);
             shifthceil[c] = ceil((float)lblockshifts[c >> 1][1]);
-            shifthfrac[c] = lblockshifts[c >> 1][1] - shifthfloor[c];
+            if (lblockshifts[c>>1][1] < 0.f) {
+              float tmp = shifthfloor[c];
+              shifthfloor[c] = shifthceil[c];
+              shifthceil[c] = tmp;
+            }
+            shifthfrac[c] = fabsf(lblockshifts[c>>1][1] - shifthfloor[c]);
+
 
             GRBdir[0][c] = lblockshifts[c >> 1][0] > 0 ? 2 : -2;
             GRBdir[1][c] = lblockshifts[c >> 1][1] > 0 ? 2 : -2;
@@ -1512,7 +1518,7 @@ end:
 void init(dt_iop_module_t *module)
 {
   // we don't need global data:
-  module->data = NULL; // malloc(sizeof(dt_iop_cacorrect_global_data_t));
+  module->global_data = NULL; // malloc(sizeof(dt_iop_cacorrect_global_data_t));
   module->params = calloc(1, sizeof(dt_iop_cacorrect_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_cacorrect_params_t));
   // our module is disabled by default
@@ -1520,7 +1526,6 @@ void init(dt_iop_module_t *module)
   module->default_enabled = 0;
 
   // we come just before demosaicing.
-  module->priority = 73; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_cacorrect_params_t);
   module->gui_data = NULL;
 }
@@ -1529,29 +1534,27 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
-  free(module->data); // just to be sure
-  module->data = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
+  free(module->global_data); // just to be sure
+  module->global_data = NULL;
 }
 
 /** commit is the synch point between core and gui, so it copies params to pipe data. */
 void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
-  // dt_iop_cacorrect_params_t *p = (dt_iop_cacorrect_params_t *)params;
-  // dt_iop_cacorrect_data_t *d = (dt_iop_cacorrect_data_t *)piece->data;
   dt_image_t *img = &pipe->image;
-  if(!(img->flags & DT_IMAGE_RAW) || dt_image_is_monochrome(img)) piece->enabled = 0;
+  if(!dt_image_is_raw(img) || dt_image_is_monochrome(img)) piece->enabled = 0;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  piece->data = malloc(sizeof(dt_iop_cacorrect_data_t));
   self->commit_params(self, self->default_params, pipe, piece);
 }
 
 void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  free(piece->data);
   piece->data = NULL;
 }
 
@@ -1570,9 +1573,9 @@ void gui_update(dt_iop_module_t *self)
 
 void gui_init(dt_iop_module_t *self)
 {
-  self->gui_data = NULL;
   self->widget = gtk_label_new("");
   gtk_widget_set_halign(self->widget, GTK_ALIGN_START);
+  self->gui_data = &dummy;
   dt_gui_add_help_link(self->widget, dt_get_help_url(self->op));
 }
 

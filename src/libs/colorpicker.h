@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Robert Bieber.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,9 +35,9 @@ typedef struct dt_colorpicker_sample_t
   int locked;
 
   /** The actual picked colors */
-  uint8_t picked_color_rgb_mean[3];
-  uint8_t picked_color_rgb_min[3];
-  uint8_t picked_color_rgb_max[3];
+  float picked_color_rgb_mean[3];
+  float picked_color_rgb_min[3];
+  float picked_color_rgb_max[3];
 
   float picked_color_lab_mean[3];
   float picked_color_lab_min[3];
@@ -48,6 +48,7 @@ typedef struct dt_colorpicker_sample_t
   GtkWidget *color_patch;
   GtkWidget *output_label;
   GtkWidget *delete_button;
+  GtkWidget *patch_box;
   GdkRGBA rgb;
 } dt_colorpicker_sample_t;
 

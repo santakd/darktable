@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 
 #include "common/colorspaces.h"
 #include "common/darktable.h"
+#include "common/metadata_export.h"
 #include <gmodule.h>
 #include <gtk/gtk.h>
 #include <inttypes.h>
@@ -37,7 +38,8 @@
 typedef enum dt_imageio_format_flags_t
 {
   FORMAT_FLAGS_SUPPORT_XMP = 1,
-  FORMAT_FLAGS_NO_TMPFILE = 2
+  FORMAT_FLAGS_NO_TMPFILE = 2,
+  FORMAT_FLAGS_SUPPORT_LAYERS = 4
 } dt_imageio_format_flags_t;
 
 /**
@@ -49,7 +51,7 @@ typedef enum dt_imageio_format_flags_t
  */
 
 /*
- * custom data for the module. append private stuff after width and height.
+ * custom data for the module. append private stuff after these.
  * this will be inited once when the export button is hit, so the user can make
  * gui adjustments that won't affect the currently running export.
  */
@@ -62,6 +64,7 @@ typedef struct dt_imageio_module_data_t
 } dt_imageio_module_data_t;
 
 struct dt_imageio_module_format_t;
+struct dt_dev_pixelpipe_t;
 /* responsible for image encoding, such as jpg,png,etc */
 typedef struct dt_imageio_module_format_t
 {
@@ -117,7 +120,8 @@ typedef struct dt_imageio_module_format_t
   /* write to file, with exif if not NULL, and icc profile if supported. */
   int (*write_image)(dt_imageio_module_data_t *data, const char *filename, const void *in,
                      dt_colorspaces_color_profile_type_t over_type, const char *over_filename,
-                     void *exif, int exif_len, int imgid, int num, int total);
+                     void *exif, int exif_len, int imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
+                     const gboolean export_masks);
   /* flag that describes the available precision/levels of output format. mainly used for dithering. */
   int (*levels)(dt_imageio_module_data_t *data);
 
@@ -175,8 +179,8 @@ typedef struct dt_imageio_module_storage_t
   int (*store)(struct dt_imageio_module_storage_t *self, struct dt_imageio_module_data_t *self_data,
                const int imgid, dt_imageio_module_format_t *format, dt_imageio_module_data_t *fdata,
                const int num, const int total, const gboolean high_quality, const gboolean upscale,
-               dt_colorspaces_color_profile_type_t icc_type, const gchar *icc_filename,
-               dt_iop_color_intent_t icc_intent);
+               const gboolean export_masks, dt_colorspaces_color_profile_type_t icc_type, const gchar *icc_filename,
+               dt_iop_color_intent_t icc_intent, dt_export_metadata_t *metadata_flags);
   /* called once at the end (after exporting all images), if implemented. */
   void (*finalize_store)(struct dt_imageio_module_storage_t *self, dt_imageio_module_data_t *data);
 
@@ -189,6 +193,8 @@ typedef struct dt_imageio_module_storage_t
   int (*set_params)(struct dt_imageio_module_storage_t *self, const void *params, const int size);
 
   void (*export_dispatched)(struct dt_imageio_module_storage_t *self);
+
+  char *(*ask_user_confirmation)(struct dt_imageio_module_storage_t *self);
 
   luaA_Type parameter_lua_type;
 } dt_imageio_module_storage_t;

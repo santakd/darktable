@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2012 johannes hanika.
+    Copyright (C) 2012-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,9 +19,11 @@
 #pragma once
 
 #ifdef HAVE_OPENCL
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 
-#include "CL/cl.h"          // for cl_mem, _cl_mem
-#include "CL/cl_platform.h" // for cl_int
+#include <CL/cl.h>          // for cl_mem, _cl_mem
 #include <stddef.h>         // for size_t
 
 typedef struct dt_bilateral_cl_global_t

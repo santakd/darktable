@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010 -- 2014 Henrik Andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -286,6 +286,15 @@ void _camera_import_image_downloaded(const dt_camera_t *camera, const char *file
 
   dt_control_job_set_progress(t->job, t->fraction);
 
+  if(t->import_count + 1 == g_list_length(t->images))
+  {
+    // only redraw at the end, to not spam the cpu with exposure events
+    dt_control_queue_redraw_center();
+    dt_control_signal_raise(darktable.signals, DT_SIGNAL_TAG_CHANGED);
+
+    dt_control_signal_raise(darktable.signals, DT_SIGNAL_FILMROLLS_IMPORTED,
+                            dt_import_session_film_id(t->shared.session));
+  }
   t->import_count++;
 }
 
@@ -295,13 +304,12 @@ static const char *_camera_request_image_filename(const dt_camera_t *camera, con
   const gchar *file;
   struct dt_camera_shared_t *shared;
   shared = (dt_camera_shared_t *)data;
+  const gboolean use_filename = dt_conf_get_bool("session/use_filename");
 
-  /* update import session with original filename so that $(FILE_EXTENSION)
-   *     and alikes can be expanded. */
   dt_import_session_set_filename(shared->session, filename);
   if(exif_time)
     dt_import_session_set_exif_time(shared->session, *exif_time);
-  file = dt_import_session_filename(shared->session, FALSE);
+  file = dt_import_session_filename(shared->session, use_filename);
 
   if(file == NULL) return NULL;
 
@@ -391,7 +399,7 @@ dt_job_t *dt_camera_import_job_create(const char *jobcode, GList *images, struct
   dt_control_job_add_progress(job, _("import images from camera"), FALSE);
   dt_control_job_set_params(job, params, dt_camera_import_cleanup);
 
-  /* intitialize import session for camera import job */
+  /* initialize import session for camera import job */
   if(time_override != 0) dt_import_session_set_time(params->shared.session, time_override);
   dt_import_session_set_name(params->shared.session, jobcode);
 

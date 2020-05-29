@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011--2012 henrik andersson.
-    copyright (c) 2012--2013 ulrich pegelow.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,16 +18,17 @@
 
 #pragma once
 
+#include "common/iop_profile.h"
 #include "common/opencl.h"
 #include "develop/pixelpipe.h"
 #include "dtgtk/button.h"
 #include "dtgtk/gradientslider.h"
+#include "gui/color_picker_proxy.h"
 
-#define DEVELOP_BLEND_VERSION (7)
+#define DEVELOP_BLEND_VERSION (9)
 
 typedef enum dt_develop_blend_mode_t
 {
-  DEVELOP_BLEND_MASK_FLAG = 0x80,
   DEVELOP_BLEND_DISABLED = 0x00,
   DEVELOP_BLEND_NORMAL = 0x01, /* deprecated as it did clamping */
   DEVELOP_BLEND_LIGHTEN = 0x02,
@@ -69,11 +69,12 @@ typedef enum dt_develop_blend_mode_t
 
 typedef enum dt_develop_mask_mode_t
 {
-  DEVELOP_MASK_DISABLED = 0x00,
-  DEVELOP_MASK_ENABLED = 0x01,
-  DEVELOP_MASK_MASK = 0x02,
-  DEVELOP_MASK_CONDITIONAL = 0x04,
-  DEVELOP_MASK_BOTH = (DEVELOP_MASK_MASK | DEVELOP_MASK_CONDITIONAL)
+  DEVELOP_MASK_DISABLED = 0,                                                         // off
+  DEVELOP_MASK_ENABLED = 1,                                                          // uniformly
+  DEVELOP_MASK_MASK = 1 << 1,                                                        // drawn mask
+  DEVELOP_MASK_CONDITIONAL = 1 << 2,                                                 // parametric mask
+  DEVELOP_MASK_RASTER = 1 << 3,                                                      // raster mask
+  DEVELOP_MASK_MASK_CONDITIONAL = (DEVELOP_MASK_MASK | DEVELOP_MASK_CONDITIONAL)     // drawn & parametric
 } dt_develop_mask_mode_t;
 
 typedef enum dt_develop_mask_combine_mode_t
@@ -88,6 +89,12 @@ typedef enum dt_develop_mask_combine_mode_t
   DEVELOP_COMBINE_INV_EXCL = (DEVELOP_COMBINE_INV | DEVELOP_COMBINE_EXCL),
   DEVELOP_COMBINE_INV_INCL = (DEVELOP_COMBINE_INV | DEVELOP_COMBINE_INCL)
 } dt_develop_mask_combine_mode_t;
+
+typedef enum dt_develop_mask_feathering_guide_t
+{
+  DEVELOP_MASK_GUIDE_IN = 0x01,
+  DEVELOP_MASK_GUIDE_OUT = 0x02
+} dt_develop_mask_feathering_guide_t;
 
 typedef enum dt_develop_blendif_channels_t
 {
@@ -236,8 +243,8 @@ typedef struct dt_develop_blend_params6_t
   float blendif_parameters[4 * DEVELOP_BLENDIF_SIZE];
 } dt_develop_blend_params6_t;
 
-/** blend parameters current version */
-typedef struct dt_develop_blend_params_t
+/** blend legacy parameters version 7 */
+typedef struct dt_develop_blend_params7_t
 {
   /** what kind of masking to use: off, non-mask (uniformly), hand-drawn mask and/or conditional mask */
   uint32_t mask_mode;
@@ -257,8 +264,74 @@ typedef struct dt_develop_blend_params_t
   uint32_t reserved[4];
   /** blendif parameters */
   float blendif_parameters[4 * DEVELOP_BLENDIF_SIZE];
-} dt_develop_blend_params_t;
+} dt_develop_blend_params7_t;
 
+/** blend legacy parameters version 8 */
+typedef struct dt_develop_blend_params8_t
+{
+  /** what kind of masking to use: off, non-mask (uniformly), hand-drawn mask and/or conditional mask */
+  uint32_t mask_mode;
+  /** blending mode */
+  uint32_t blend_mode;
+  /** mixing opacity */
+  float opacity;
+  /** how masks are combined */
+  uint32_t mask_combine;
+  /** id of mask in current pipeline */
+  uint32_t mask_id;
+  /** blendif mask */
+  uint32_t blendif;
+  /** feathering radius */
+  float feathering_radius;
+  /** feathering guide */
+  uint32_t feathering_guide;
+  /** blur radius */
+  float blur_radius;
+  /** mask contrast enhancement */
+  float contrast;
+  /** mask brightness adjustment */
+  float brightness;
+  /** some reserved fields for future use */
+  uint32_t reserved[4];
+  /** blendif parameters */
+  float blendif_parameters[4 * DEVELOP_BLENDIF_SIZE];
+} dt_develop_blend_params8_t;
+
+/** blend parameters current version */
+typedef struct dt_develop_blend_params_t
+{
+  /** what kind of masking to use: off, non-mask (uniformly), hand-drawn mask and/or conditional mask
+   *  or raster mask */
+  uint32_t mask_mode;
+  /** blending mode */
+  uint32_t blend_mode;
+  /** mixing opacity */
+  float opacity;
+  /** how masks are combined */
+  uint32_t mask_combine;
+  /** id of mask in current pipeline */
+  uint32_t mask_id;
+  /** blendif mask */
+  uint32_t blendif;
+  /** feathering radius */
+  float feathering_radius;
+  /** feathering guide */
+  uint32_t feathering_guide;
+  /** blur radius */
+  float blur_radius;
+  /** mask contrast enhancement */
+  float contrast;
+  /** mask brightness adjustment */
+  float brightness;
+  /** some reserved fields for future use */
+  uint32_t reserved[4];
+  /** blendif parameters */
+  float blendif_parameters[4 * DEVELOP_BLENDIF_SIZE];
+  dt_dev_operation_t raster_mask_source;
+  int raster_mask_instance;
+  int raster_mask_id;
+  gboolean raster_mask_invert;
+} dt_develop_blend_params_t;
 
 
 typedef struct dt_blendop_cl_global_t
@@ -269,6 +342,7 @@ typedef struct dt_blendop_cl_global_t
   int kernel_blendop_Lab;
   int kernel_blendop_RAW;
   int kernel_blendop_rgb;
+  int kernel_blendop_mask_tone_curve;
   int kernel_blendop_set_mask;
   int kernel_blendop_display_channel;
 } dt_blendop_cl_global_t;
@@ -288,6 +362,9 @@ typedef struct dt_iop_blend_mode_t
   unsigned int mode;
 } dt_iop_blend_mode_t;
 
+
+#define DEVELOP_MASKS_NB_SHAPES 5
+
 /** blend gui data */
 typedef struct dt_iop_gui_blend_data_t
 {
@@ -296,38 +373,52 @@ typedef struct dt_iop_gui_blend_data_t
   int blendif_inited;
   int masks_support;
   int masks_inited;
+  int raster_inited;
   dt_iop_colorspace_type_t csp;
   dt_iop_module_t *module;
   GList *blend_modes;
   GList *masks_modes;
+  GList *masks_modes_toggles;
   GList *masks_combine;
   GList *masks_invert;
+  GList *masks_feathering_guide;
   GList *blend_modes_all;
   GtkWidget *iopw;
   GtkBox *top_box;
   GtkBox *bottom_box;
+  GtkBox *masks_modes_box;
   GtkBox *blendif_box;
   GtkBox *masks_box;
+  GtkBox *raster_box;
   GtkDarktableGradientSlider *upper_slider;
   GtkDarktableGradientSlider *lower_slider;
+  GtkLabel *upper_head;
+  GtkLabel *lower_head;
   GtkLabel *upper_label[8];
   GtkLabel *lower_label[8];
   GtkLabel *upper_picker_label;
   GtkLabel *lower_picker_label;
+  GtkWidget *selected_mask_mode;
   GtkWidget *upper_polarity;
   GtkWidget *lower_polarity;
   GtkWidget *colorpicker;
+  GtkWidget *colorpicker_set_values;
   GtkWidget *showmask;
   GtkWidget *suppress;
   void (*scale_print[8])(float value, char *string, int n);
-  GtkWidget *masks_modes_combo;
-  GtkWidget *blend_modes_combo;
   GtkWidget *masks_combine_combo;
+  GtkWidget *blend_modes_combo;
   GtkWidget *masks_invert_combo;
   GtkWidget *opacity_slider;
-  GtkWidget *radius_slider;
+  GtkWidget *masks_feathering_guide_combo;
+  GtkWidget *feathering_radius_slider;
+  GtkWidget *blur_radius_slider;
+  GtkWidget *contrast_slider;
+  GtkWidget *brightness_slider;
   int tab;
   int channels[8][2];
+  int altmode[8][2];
+  int (*altdisplay[8])(GtkWidget *, dt_iop_module_t *, int);
   dt_dev_pixelpipe_display_mask_t display_channel[8][2];
   dt_dev_pixelpipe_display_mask_t save_for_leave;
   int timeout_handle;
@@ -337,22 +428,21 @@ typedef struct dt_iop_gui_blend_data_t
   float increments[8];
 
   GtkWidget *masks_combo;
-  GtkWidget *masks_path;
-  GtkWidget *masks_circle;
-  GtkWidget *masks_ellipse;
-  GtkWidget *masks_gradient;
-  GtkWidget *masks_brush;
+  GtkWidget *masks_shapes[DEVELOP_MASKS_NB_SHAPES];
+  int masks_type[DEVELOP_MASKS_NB_SHAPES];
   GtkWidget *masks_edit;
   GtkWidget *masks_polarity;
   int *masks_combo_ids;
   int masks_shown;
+
+  GtkWidget *raster_combo;
+  GtkWidget *raster_polarity;
+
   int control_button_pressed;
   dt_pthread_mutex_t lock;
 } dt_iop_gui_blend_data_t;
 
 
-
-//#define DT_DEVELOP_BLEND_WITH_MASK(p) ((p->mode&DEVELOP_BLEND_MASK_FLAG)?1:0)
 
 /** global init of blendops */
 dt_blendop_cl_global_t *dt_develop_blend_init_cl_global(void);
@@ -386,6 +476,9 @@ void dt_iop_gui_update_blending(dt_iop_module_t *module);
 void dt_iop_gui_update_blendif(dt_iop_module_t *module);
 void dt_iop_gui_update_masks(dt_iop_module_t *module);
 void dt_iop_gui_cleanup_blending(dt_iop_module_t *module);
+void dt_iop_gui_blending_lose_focus(dt_iop_module_t *module);
+
+gboolean blend_color_picker_apply(dt_iop_module_t *module, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece);
 
 /** routine to translate from mode id to sequence in option list */
 int dt_iop_gui_blending_mode_seq(dt_iop_gui_blend_data_t *bd, int mode);

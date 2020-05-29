@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   copyright (c) 2012 Jeremy Rosen
+   Copyright (C) 2013-2020 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -927,7 +927,7 @@ void dt_lua_type_setmetafield_type(lua_State*L,luaA_Type type_id,const char* met
       ( !strcmp(method_name,"__call")&& dt_lua_typeisa_type(L,type_id,luaA_type_find(L,"lua_widget"))) ||
       ( !strcmp(method_name,"__gtk_signals")&& dt_lua_typeisa_type(L,type_id,luaA_type_find(L,"lua_widget"))) ||
       0) {
-    // Nothign to be done
+    // Nothing to be done
   } else {
     luaL_error(L,"metafield not handled :%s for type %s\n",method_name,luaA_typename(L,type_id));
   }

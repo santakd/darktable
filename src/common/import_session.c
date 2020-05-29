@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2014 Henrik Andersson.
+    Copyright (C) 2014-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -180,7 +180,7 @@ void dt_import_session_import(struct dt_import_session_t *self)
   int id = dt_image_import(self->film->id, self->current_filename, TRUE);
   if(id)
   {
-    dt_view_filmstrip_set_active_image(darktable.view_manager, id);
+    dt_control_signal_raise(darktable.signals, DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE, id);
     dt_control_queue_redraw();
   }
 }
@@ -230,17 +230,20 @@ const char *dt_import_session_name(struct dt_import_session_t *self)
   return self->vp->jobcode;
 }
 
-
-const char *dt_import_session_filename(struct dt_import_session_t *self, gboolean current)
+/* This returns a unique filename using session path **and** the filename.
+   If current is true we will use the original filename otherwise use the pattern.
+*/
+const char *dt_import_session_filename(struct dt_import_session_t *self, gboolean use_filename)
 {
   const char *path;
   char *fname, *previous_fname;
   char *pattern;
-
-  if(current && self->current_filename != NULL) return self->current_filename;
+  gchar *result_fname;
 
   /* expand next filename */
   g_free((void *)self->current_filename);
+  self->current_filename = NULL;
+
   pattern = _import_session_filename_pattern();
   if(pattern == NULL)
   {
@@ -250,7 +253,12 @@ const char *dt_import_session_filename(struct dt_import_session_t *self, gboolea
 
   /* verify that expanded path and filename yields a unique file */
   path = dt_import_session_path(self, TRUE);
-  gchar *result_fname = dt_variables_expand(self->vp, pattern, TRUE);
+
+  if(use_filename)
+    result_fname = g_strdup(self->vp->filename);
+  else
+    result_fname = dt_variables_expand(self->vp, pattern, TRUE);
+
   previous_fname = fname = g_build_path(G_DIR_SEPARATOR_S, path, result_fname, (char *)NULL);
   if(g_file_test(fname, G_FILE_TEST_EXISTS) == TRUE)
   {

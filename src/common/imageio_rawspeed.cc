@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2011 johannes hanika.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@ extern "C" {
 #include "common/file_location.h"
 #include "common/imageio_rawspeed.h"
 #include "imageio.h"
+#include "common/tags.h"
 #include <stdint.h>
 }
 
@@ -125,7 +126,9 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
   {
     dt_rawspeed_load_meta();
 
+    dt_pthread_mutex_lock(&darktable.readFile_mutex);
     m = f.readFile();
+    dt_pthread_mutex_unlock(&darktable.readFile_mutex);
 
     RawParser t(m.get());
     d = t.getDecoder(meta);
@@ -182,7 +185,7 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
       {"Canon EOS","Canon EOS Kiss Digital X"},
     };
 
-    for (uint32 i=0; i<(sizeof(legacy_aliases)/sizeof(legacy_aliases[1])); i++)
+    for(uint32_t i = 0; i < (sizeof(legacy_aliases) / sizeof(legacy_aliases[1])); i++)
       if (!strcmp(legacy_aliases[i].origname, r->metadata.model.c_str())) {
         g_strlcpy(img->camera_legacy_makermodel, legacy_aliases[i].mungedname, sizeof(img->camera_legacy_makermodel));
         break;
@@ -224,8 +227,21 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
     // Grab the WB
     for(int i = 0; i < 4; i++) img->wb_coeffs[i] = r->metadata.wbCoeffs[i];
 
+    // Get DefaultUserCrop
+    if (img->flags & DT_IMAGE_HAS_USERCROP)
+      dt_exif_img_check_usercrop(img, filename);
+
+    if(r->getDataType() == TYPE_FLOAT32)
+    {
+      img->flags |= DT_IMAGE_HDR;
+
+      // we assume that image is normalized before.
+      // FIXME: not true for hdrmerge DNG's.
+      for(int k = 0; k < 4; k++) img->buf_dsc.processed_maximum[k] = 1.0f;
+    }
+
     img->buf_dsc.filters = 0u;
-    if(!r->isCFA && !dt_image_is_monochrome(img))
+    if(!r->isCFA)
     {
       dt_imageio_retval_t ret = dt_imageio_open_rawspeed_sraw(img, r, mbuf);
       return ret;
@@ -254,7 +270,6 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
         break;
       default:
         return DT_IMAGEIO_FILE_CORRUPTED;
-        break;
     }
 
     // dimensions of uncropped image
@@ -288,14 +303,6 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
     {
       img->flags &= ~DT_IMAGE_LDR;
       img->flags |= DT_IMAGE_RAW;
-      if(r->getDataType() == TYPE_FLOAT32)
-      {
-        img->flags |= DT_IMAGE_HDR;
-
-        // we assume that image is normalized before.
-        // FIXME: not true for hdrmerge DNG's.
-        for(int k = 0; k < 4; k++) img->buf_dsc.processed_maximum[k] = 1.0f;
-      }
 
       // special handling for x-trans sensors
       if(img->buf_dsc.filters == 9u)
@@ -313,6 +320,8 @@ dt_imageio_retval_t dt_imageio_open_rawspeed(dt_image_t *img, const char *filena
           }
       }
     }
+    // if buf is NULL, we quit the fct here
+    if(!mbuf) return DT_IMAGEIO_OK;
 
     void *buf = dt_mipmap_cache_alloc(mbuf, img);
     if(!buf) return DT_IMAGEIO_CACHE_FULL;
@@ -359,7 +368,7 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img, RawImage r, d
   // sraw aren't real raw, but not ldr either (need white balance and stuff)
   img->flags &= ~DT_IMAGE_LDR;
   img->flags &= ~DT_IMAGE_RAW;
-
+  img->flags |= DT_IMAGE_S_RAW;
   img->width = r->dim.x;
   img->height = r->dim.y;
 
@@ -367,58 +376,107 @@ dt_imageio_retval_t dt_imageio_open_rawspeed_sraw(dt_image_t *img, RawImage r, d
   img->buf_dsc.channels = 4;
   img->buf_dsc.datatype = TYPE_FLOAT;
 
-  if(r->getDataType() != TYPE_USHORT16) return DT_IMAGEIO_FILE_CORRUPTED;
+  if(r->getDataType() != TYPE_USHORT16 && r->getDataType() != TYPE_FLOAT32) return DT_IMAGEIO_FILE_CORRUPTED;
 
   const uint32_t cpp = r->getCpp();
   if(cpp != 1 && cpp != 3 && cpp != 4) return DT_IMAGEIO_FILE_CORRUPTED;
+
+  // if buf is NULL, we quit the fct here
+  if(!mbuf) return DT_IMAGEIO_OK;
+
+  if(cpp == 1) img->flags |= DT_IMAGE_MONOCHROME;
 
   void *buf = dt_mipmap_cache_alloc(mbuf, img);
   if(!buf) return DT_IMAGEIO_CACHE_FULL;
 
   if(cpp == 1)
   {
-/*
- * monochrome image (e.g. Leica M9 monochrom),
- * we need to copy data from only channel to each of 3 channels
- */
+    /*
+     * monochrome image (e.g. Leica M9 monochrom),
+     * we need to copy data from only channel to each of 3 channels
+     */
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(r, img, buf)
-#endif
-    for(int j = 0; j < img->height; j++)
+    if(r->getDataType() == TYPE_USHORT16)
     {
-      const uint16_t *in = (uint16_t *) r->getData(0, j);
-      float *out = ((float *)buf) + (size_t)4 * j * img->width;
-
-      for(int i = 0; i < img->width; i++, in += cpp, out += 4)
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
+#endif
+      for(int j = 0; j < img->height; j++)
       {
-        for(int k = 0; k < 3; k++)
+        const uint16_t *in = (uint16_t *)r->getData(0, j);
+        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+
+        for(int i = 0; i < img->width; i++, in += cpp, out += 4)
         {
-          out[k] = (float)*in / (float)UINT16_MAX;
+          for(int k = 0; k < 3; k++)
+          {
+            out[k] = (float)*in / (float)UINT16_MAX;
+          }
+        }
+      }
+    }
+    else // r->getDataType() == TYPE_FLOAT32
+    {
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
+#endif
+      for(int j = 0; j < img->height; j++)
+      {
+        const float *in = (float *)r->getData(0, j);
+        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+
+        for(int i = 0; i < img->width; i++, in += cpp, out += 4)
+        {
+          for(int k = 0; k < 3; k++)
+          {
+            out[k] = *in;
+          }
         }
       }
     }
   }
-  else if(cpp == 3 || cpp == 4)
+  else // case cpp == 3 or 4
   {
-/*
- * standard 3-ch image
- * just copy 3 ch to 3 ch
- */
+    /*
+     * standard 3-ch image
+     * just copy 3 ch to 3 ch
+     */
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(r, img, buf)
-#endif
-    for(int j = 0; j < img->height; j++)
+    if(r->getDataType() == TYPE_USHORT16)
     {
-      const uint16_t *in = (uint16_t *) r->getData(0, j);
-      float *out = ((float *)buf) + (size_t)4 * j * img->width;
-
-      for(int i = 0; i < img->width; i++, in += cpp, out += 4)
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
+#endif
+      for(int j = 0; j < img->height; j++)
       {
-        for(int k = 0; k < 3; k++)
+        const uint16_t *in = (uint16_t *)r->getData(0, j);
+        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+
+        for(int i = 0; i < img->width; i++, in += cpp, out += 4)
         {
-          out[k] = (float)in[k] / (float)UINT16_MAX;
+          for(int k = 0; k < 3; k++)
+          {
+            out[k] = (float)in[k] / (float)UINT16_MAX;
+          }
+        }
+      }
+    }
+    else // r->getDataType() == TYPE_FLOAT32
+    {
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(cpp) shared(r, img, buf)
+#endif
+      for(int j = 0; j < img->height; j++)
+      {
+        const float *in = (float *)r->getData(0, j);
+        float *out = ((float *)buf) + (size_t)4 * j * img->width;
+
+        for(int i = 0; i < img->width; i++, in += cpp, out += 4)
+        {
+          for(int k = 0; k < 3; k++)
+          {
+            out[k] = in[k];
+          }
         }
       }
     }

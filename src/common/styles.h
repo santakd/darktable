@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010 henrik andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -37,13 +37,21 @@ typedef struct dt_style_t
   gchar *description;
 } dt_style_t;
 
+typedef enum dt_style_applymode_t
+{
+  DT_STYLE_HISTORY_APPEND = 0,
+  DT_STYLE_HISTORY_OVERWRITE = 1
+} dt_style_applymode_t;
+
 typedef struct dt_style_item_t
 {
   int num, selimg_num, enabled, multi_priority;
-  gchar *name, *operation;
-  int module_version;
+  int iop_order;
+  gchar *name, *operation, *multi_name;
+  int module_version, blendop_version;
   dt_iop_params_t *params;
   dt_develop_blend_params_t *blendop_params;
+  int32_t params_size, blendop_params_size;
 } dt_style_item_t;
 
 /** helpers that free a style or style_item. can be used in g_list_free_full() */
@@ -52,24 +60,28 @@ void dt_style_item_free(gpointer data);
 
 /** creates a new style from specified image, items are the history stack number of items to include in style
  */
-gboolean dt_styles_create_from_image(const char *name, const char *description, int32_t imgid, GList *items);
+gboolean dt_styles_create_from_image(const char *name, const char *description,
+                                     const int32_t imgid, GList *items, gboolean copy_iop_order);
 
 /** creates styles from selection */
-void dt_styles_create_from_selection(void);
+void dt_styles_create_from_list(GList *list);
 
 /** creates a new style from specified style, items are the style number of items to include in style */
 void dt_styles_create_from_style(const char *name, const char *newname, const char *description,
-                                 GList *filter, int imgid, GList *update);
+                                 GList *filter, const int32_t imgid, GList *update, gboolean copy_iop_order);
 
 /** update a style */
 void dt_styles_update(const char *name, const char *newname, const char *description, GList *filter,
-                      int imgid, GList *update);
+                      const int32_t imgid, GList *update, gboolean copy_iop_order);
 
 /** applies the style to selection of images */
-void dt_styles_apply_to_selection(const char *name, gboolean duplicate);
+void dt_styles_apply_to_list(const char *name, GList *list, gboolean duplicate);
+
+/** applies the item style to dev->history */
+void dt_styles_apply_style_item(dt_develop_t *dev, dt_style_item_t *style_item, GList **modules_used, const gboolean append);
 
 /** applies the style to image by imgid*/
-void dt_styles_apply_to_image(const char *name, gboolean dulpicate, int32_t imgid);
+void dt_styles_apply_to_image(const char *name, const gboolean dulpicate, const int32_t imgid);
 
 /** delete a style by name */
 void dt_styles_delete_by_name(const char *name);
@@ -79,6 +91,9 @@ dt_style_t *dt_styles_get_by_name(const char *name);
 
 /** check if style exists by name*/
 gboolean dt_styles_exists(const char *name);
+
+/** returns TRUE if the style has a module order defined */
+gboolean dt_styles_has_module_order(const char *name);
 
 /** get a list of styles based on filter string */
 GList *dt_styles_get_list(const char *filter);

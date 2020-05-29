@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2010-2011 Henrik Andersson, Tobias Ellinghaus.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -394,8 +394,6 @@ cairo_surface_t *dt_util_get_logo(float size)
   RsvgHandle *svg = rsvg_handle_new_from_file(dtlogo, &error);
   if(svg)
   {
-    cairo_t *cr;
-
     RsvgDimensionData dimension;
     rsvg_handle_get_dimensions(svg, &dimension);
 
@@ -424,7 +422,7 @@ cairo_surface_t *dt_util_get_logo(float size)
     }
     else
     {
-      cr = cairo_create(surface);
+      cairo_t *cr = cairo_create(surface);
       cairo_scale(cr, factor, factor);
       rsvg_handle_render_cairo(svg, cr);
       cairo_destroy(cr);
@@ -679,6 +677,51 @@ gchar *dt_util_normalize_path(const gchar *_input)
 #endif
 
   return filename;
+}
+
+guint dt_util_string_count_char(const char *text, const char needle)
+{
+  guint count = 0;
+  while(text[0])
+  {
+    if (text[0] == needle) count ++;
+    text ++;
+  }
+  return count;
+}
+
+GList *dt_util_str_to_glist(const gchar *separator, const gchar *text)
+{
+  if(text == NULL) return NULL;
+  GList *list = NULL;
+  gchar *item = NULL;
+  gchar *entry = g_strdup(text);
+  gchar *prev = entry;
+  int len = strlen(prev);
+  while (len)
+  {
+    gchar *next = g_strstr_len(prev, -1, separator);
+    if (next)
+    {
+      const gchar c = next[0];
+      next[0] = '\0';
+      item = g_strdup(prev);
+      next[0] = c;
+      prev = next + strlen(separator);
+      len = strlen(prev);
+      list = g_list_prepend(list, item);
+      if (!len) list = g_list_prepend(list, g_strdup(""));
+    }
+    else
+    {
+      item = g_strdup(prev);
+      len = 0;
+      list = g_list_prepend(list, item);
+    }
+  }
+  list = g_list_reverse(list);
+  g_free(entry);
+  return list;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

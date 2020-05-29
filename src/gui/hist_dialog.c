@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 henrik andersson.
+    Copyright (C) 2012-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -38,7 +38,20 @@ typedef enum _style_items_columns_t
   DT_HIST_ITEMS_NUM_COLS
 } _styles_columns_t;
 
-static GList *_gui_hist_get_active_items(dt_gui_hist_dialog_t *d)
+static gboolean _gui_hist_is_copy_module_order_set(dt_history_copy_item_t *d)
+{
+  /* first item is the copy-module */
+  GtkTreeIter iter;
+  GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(d->items));
+
+  gboolean active = FALSE;
+  gint num = 0;
+  if(gtk_tree_model_get_iter_first(model, &iter))
+    gtk_tree_model_get(model, &iter, DT_HIST_ITEMS_COL_ENABLED, &active, DT_HIST_ITEMS_COL_NUM, &num, -1);
+  return active && (num == -1);
+}
+
+static GList *_gui_hist_get_active_items(dt_history_copy_item_t *d)
 {
   GList *result = NULL;
 
@@ -49,17 +62,17 @@ static GList *_gui_hist_get_active_items(dt_gui_hist_dialog_t *d)
   {
     do
     {
-      gboolean active;
-      guint num = 0;
+      gboolean active = FALSE;
+      gint num = 0;
       gtk_tree_model_get(model, &iter, DT_HIST_ITEMS_COL_ENABLED, &active, DT_HIST_ITEMS_COL_NUM, &num, -1);
-      if(active) result = g_list_append(result, GUINT_TO_POINTER(num));
+      if(active && num >= 0) result = g_list_append(result, GINT_TO_POINTER(num));
 
     } while(gtk_tree_model_iter_next(model, &iter));
   }
   return result;
 }
 
-static void _gui_hist_set_items(dt_gui_hist_dialog_t *d, gboolean active)
+static void _gui_hist_set_items(dt_history_copy_item_t *d, gboolean active)
 {
   /* run through all items and set active status */
   GtkTreeIter iter;
@@ -73,7 +86,7 @@ static void _gui_hist_set_items(dt_gui_hist_dialog_t *d, gboolean active)
   }
 }
 
-static void _gui_hist_copy_response(GtkDialog *dialog, gint response_id, dt_gui_hist_dialog_t *g)
+static void _gui_hist_copy_response(GtkDialog *dialog, gint response_id, dt_history_copy_item_t *g)
 {
   switch(response_id)
   {
@@ -90,13 +103,14 @@ static void _gui_hist_copy_response(GtkDialog *dialog, gint response_id, dt_gui_
 
     case GTK_RESPONSE_OK:
       g->selops = _gui_hist_get_active_items(g);
+      g->copy_iop_order = _gui_hist_is_copy_module_order_set(g);
       break;
   }
 }
 
 static void _gui_hist_item_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
 {
-  dt_gui_hist_dialog_t *d = (dt_gui_hist_dialog_t *)data;
+  dt_history_copy_item_t *d = (dt_history_copy_item_t *)data;
 
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(d->items));
   GtkTreePath *path = gtk_tree_path_new_from_string(path_str);
@@ -131,29 +145,65 @@ static gboolean _gui_is_set(GList *selops, unsigned int num)
   return FALSE;
 }
 
-int dt_gui_hist_dialog_new(dt_gui_hist_dialog_t *d, int imgid, gboolean iscopy)
+void
+tree_on_row_activated (GtkTreeView        *treeview,
+                       GtkTreePath        *path,
+                       GtkTreeViewColumn  *col,
+                       gpointer            userdata)
+{
+  GtkDialog *dialog = GTK_DIALOG(userdata);
+  GtkTreeModel *model = gtk_tree_view_get_model(treeview);
+  GtkTreeIter   iter;
+
+  // unselect all items
+
+  if(gtk_tree_model_get_iter_first(model, &iter))
+  {
+    do
+    {
+      gtk_list_store_set(GTK_LIST_STORE(model), &iter, DT_HIST_ITEMS_COL_ENABLED, FALSE, -1);
+
+    } while(gtk_tree_model_iter_next(model, &iter));
+  }
+
+  // select now the one that got double-clicked
+
+  if (gtk_tree_model_get_iter(model, &iter, path))
+  {
+    gtk_list_store_set(GTK_LIST_STORE(model), &iter, DT_HIST_ITEMS_COL_ENABLED, TRUE, -1);
+    // and finally close the dialog
+    g_signal_emit_by_name(dialog, "response", GTK_RESPONSE_OK, NULL);
+  }
+}
+
+int dt_gui_hist_dialog_new(dt_history_copy_item_t *d, int imgid, gboolean iscopy)
 {
   int res;
   GtkWidget *window = dt_ui_main_window(darktable.gui->ui);
 
   GtkDialog *dialog = GTK_DIALOG(gtk_dialog_new_with_buttons(
-      _("select parts"), GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("select _all"), GTK_RESPONSE_YES, _("select _none"), GTK_RESPONSE_NONE, _("_ok"),
-      GTK_RESPONSE_OK, NULL));
+                                   iscopy ? _("select parts to copy") : _("select parts to paste"),
+                                   GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                                   _("_cancel"),      GTK_RESPONSE_CANCEL,
+                                   _("select _all"),  GTK_RESPONSE_YES,
+                                   _("select _none"), GTK_RESPONSE_NONE,
+                                   _("_ok"),          GTK_RESPONSE_OK,
+                                   NULL));
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(GTK_WIDGET(dialog));
 #endif
 
   GtkContainer *content_area = GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
-  GtkBox *box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 3));
-  gtk_widget_set_margin_start(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(5));
-  gtk_widget_set_margin_end(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(5));
-  gtk_widget_set_margin_top(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(5));
-  gtk_widget_set_margin_bottom(GTK_WIDGET(box), DT_PIXEL_APPLY_DPI(5));
-  gtk_container_add(content_area, GTK_WIDGET(box));
+
+  GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scroll), DT_PIXEL_APPLY_DPI(300));
 
   /* create the list of items */
   d->items = GTK_TREE_VIEW(gtk_tree_view_new());
+  gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(d->items));
+  gtk_box_pack_start(GTK_BOX(content_area), GTK_WIDGET(scroll), TRUE, TRUE, 0);
+
   GtkListStore *liststore
       = gtk_list_store_new(DT_HIST_ITEMS_NUM_COLS, G_TYPE_BOOLEAN, G_TYPE_STRING, G_TYPE_UINT);
 
@@ -177,22 +227,39 @@ int dt_gui_hist_dialog_new(dt_gui_hist_dialog_t *d, int imgid, gboolean iscopy)
   gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(d->items)), GTK_SELECTION_SINGLE);
   gtk_tree_view_set_model(GTK_TREE_VIEW(d->items), GTK_TREE_MODEL(liststore));
 
-  gtk_box_pack_start(box, GTK_WIDGET(d->items), TRUE, TRUE, 0);
-
   /* fill list with history items */
-  GtkTreeIter iter;
   GList *items = dt_history_get_items(imgid, FALSE);
   if(items)
   {
+    GtkTreeIter iter;
+
+    /* first item is for copying the module order, or if paste and was selected */
+    if(iscopy || d->copy_iop_order)
+    {
+      const dt_iop_order_t order = dt_ioppr_get_iop_order_version(imgid);
+      char *label = g_strdup_printf("%s (%s)", _("modules order"), dt_iop_order_string(order));
+      gtk_list_store_append(GTK_LIST_STORE(liststore), &iter);
+      gtk_list_store_set(GTK_LIST_STORE(liststore), &iter,
+                         DT_HIST_ITEMS_COL_ENABLED, TRUE,
+                         DT_HIST_ITEMS_COL_NAME, label,
+                         DT_HIST_ITEMS_COL_NUM, -1,
+                         -1);
+      g_free(label);
+    }
+
     do
     {
-      dt_history_item_t *item = (dt_history_item_t *)items->data;
+      const dt_history_item_t *item = (dt_history_item_t *)items->data;
 
-      gtk_list_store_append(GTK_LIST_STORE(liststore), &iter);
-      gtk_list_store_set(GTK_LIST_STORE(liststore), &iter, DT_HIST_ITEMS_COL_ENABLED,
-                         iscopy ? TRUE : _gui_is_set(d->selops, item->num), DT_HIST_ITEMS_COL_NAME,
-                         item->name, DT_HIST_ITEMS_COL_NUM, (guint)item->num, -1);
-
+      if(!(get_module_flags(item->op) & IOP_FLAGS_HIDDEN))
+      {
+        gtk_list_store_append(GTK_LIST_STORE(liststore), &iter);
+        gtk_list_store_set(GTK_LIST_STORE(liststore), &iter,
+                           DT_HIST_ITEMS_COL_ENABLED, iscopy ? TRUE : _gui_is_set(d->selops, item->num),
+                           DT_HIST_ITEMS_COL_NAME, item->name,
+                           DT_HIST_ITEMS_COL_NUM, (gint)item->num,
+                           -1);
+      }
     } while((items = g_list_next(items)));
     g_list_free_full(items, dt_history_item_free);
   }
@@ -202,6 +269,7 @@ int dt_gui_hist_dialog_new(dt_gui_hist_dialog_t *d, int imgid, gboolean iscopy)
     return GTK_RESPONSE_CANCEL;
   }
 
+  g_signal_connect(GTK_TREE_VIEW(d->items), "row-activated", (GCallback) tree_on_row_activated, GTK_WIDGET(dialog));
   g_object_unref(liststore);
 
   g_signal_connect(dialog, "response", G_CALLBACK(_gui_hist_copy_response), d);
@@ -218,10 +286,11 @@ int dt_gui_hist_dialog_new(dt_gui_hist_dialog_t *d, int imgid, gboolean iscopy)
   return res;
 }
 
-void dt_gui_hist_dialog_init(dt_gui_hist_dialog_t *d)
+void dt_gui_hist_dialog_init(dt_history_copy_item_t *d)
 {
   d->selops = NULL;
   d->copied_imageid = -1;
+  d->copy_iop_order = FALSE;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

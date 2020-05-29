@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2011 johannes hanika.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,7 +35,6 @@ extern "C" {
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include "common/iop_group.h"
 }
 #include "iop/Permutohedral.h"
 extern "C" {
@@ -70,14 +69,19 @@ const char *name()
   return _("denoise (bilateral filter)");
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("denoise (bilateral filter)", IOP_GROUP_CORRECT);
+  return IOP_GROUP_CORRECT;
 }
 
 int flags()
 {
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_SUPPORTS_BLENDING;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_rgb;
 }
 
 void init_key_accels(dt_iop_module_so_t *self)
@@ -124,9 +128,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   else if(rad <= 6)
   {
-    float *in = (float *)ivoid;
-    float *out = (float *)ovoid;
-
     static const size_t weights_size = 2 * (6 + 1) * 2 * (6 + 1);
     float mat[weights_size];
     const int wd = 2 * rad + 1;
@@ -144,12 +145,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     float *const weights_buf = (float *)malloc(weights_size * dt_get_num_threads() * sizeof(float));
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(m, mat, isig2col) private(in, out)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(ch, ivoid, ovoid, rad, roi_in, roi_out, wd, weights_buf) \
+    shared(m, mat, isig2col) \
+    schedule(static)
 #endif
     for(int j = rad; j < roi_out->height - rad; j++)
     {
-      in = ((float *)ivoid) + ch * ((size_t)j * roi_in->width + rad);
-      out = ((float *)ovoid) + ch * ((size_t)j * roi_out->width + rad);
+      const float *in = ((float *)ivoid) + ch * ((size_t)j * roi_in->width + rad);
+      float *out = ((float *)ovoid) + ch * ((size_t)j * roi_out->width + rad);
       float *weights = weights_buf + weights_size * dt_get_thread_num();
       float *w = weights + rad * wd + rad;
       float sumw;
@@ -159,7 +163,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
         for(int l = -rad; l <= rad; l++)
           for(int k = -rad; k <= rad; k++)
           {
-            float *inp = in + ch * (l * roi_in->width + k);
+	    const float *inp = in + ch * (l * roi_in->width + k);
             sumw += w[l * wd + k] = m[l * wd + k]
                                     * expf(-((in[0] - inp[0]) * (in[0] - inp[0]) * isig2col[0]
                                              + (in[1] - inp[1]) * (in[1] - inp[1]) * isig2col[1]
@@ -171,7 +175,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
         for(int l = -rad; l <= rad; l++)
           for(int k = -rad; k <= rad; k++)
           {
-            float *inp = in + ch * ((size_t)l * roi_in->width + k);
+            const float *inp = in + ch * ((size_t)l * roi_in->width + k);
             float pix_weight = w[(size_t)l * wd + k];
             for(int c = 0; c < 3; c++) out[c] += inp[c] * pix_weight;
           }
@@ -191,8 +195,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              ((float *)ivoid) + (size_t)ch * j * roi_in->width, (size_t)ch * sizeof(float) * roi_out->width);
     for(int j = rad; j < roi_out->height - rad; j++)
     {
-      in = ((float *)ivoid) + (size_t)ch * roi_out->width * j;
-      out = ((float *)ovoid) + (size_t)ch * roi_out->width * j;
+      const float *in = ((float *)ivoid) + (size_t)ch * roi_out->width * j;
+      float *out = ((float *)ovoid) + (size_t)ch * roi_out->width * j;
       for(int i = 0; i < rad; i++)
         for(int c = 0; c < 3; c++) out[ch * i + c] = in[ch * i + c];
       for(int i = roi_out->width - rad; i < roi_out->width; i++)
@@ -294,11 +298,11 @@ void gui_update(struct dt_iop_module_t *self)
   dt_iop_module_t *module = (dt_iop_module_t *)self;
   dt_iop_bilateral_gui_data_t *g = (dt_iop_bilateral_gui_data_t *)self->gui_data;
   dt_iop_bilateral_params_t *p = (dt_iop_bilateral_params_t *)module->params;
-  dt_bauhaus_slider_set(g->scale1, p->sigma[0]);
+  dt_bauhaus_slider_set_soft(g->scale1, p->sigma[0]);
   // dt_bauhaus_slider_set(g->scale2, p->sigma[1]);
-  dt_bauhaus_slider_set(g->scale3, p->sigma[2]);
-  dt_bauhaus_slider_set(g->scale4, p->sigma[3]);
-  dt_bauhaus_slider_set(g->scale5, p->sigma[4]);
+  dt_bauhaus_slider_set_soft(g->scale3, p->sigma[2]);
+  dt_bauhaus_slider_set_soft(g->scale4, p->sigma[3]);
+  dt_bauhaus_slider_set_soft(g->scale5, p->sigma[4]);
 }
 
 void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
@@ -324,7 +328,6 @@ void init(dt_iop_module_t *module)
   module->params = (dt_iop_params_t *)malloc(sizeof(dt_iop_bilateral_params_t));
   module->default_params = (dt_iop_params_t *)malloc(sizeof(dt_iop_bilateral_params_t));
   module->default_enabled = 0;
-  module->priority = 308; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_bilateral_params_t);
   module->gui_data = NULL;
   dt_iop_bilateral_params_t tmp = (dt_iop_bilateral_params_t){ { 15.0, 15.0, 0.005, 0.005, 0.005 } };
@@ -336,6 +339,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void gui_init(dt_iop_module_t *self)
@@ -348,9 +353,13 @@ void gui_init(dt_iop_module_t *self)
   dt_gui_add_help_link(self->widget, dt_get_help_url(self->op));
 
   g->scale1 = dt_bauhaus_slider_new_with_range(self, 1.0, 30.0, 1.0, p->sigma[0], 1);
+  dt_bauhaus_slider_enable_soft_boundaries(g->scale1, 1.0, 50.0);
   g->scale3 = dt_bauhaus_slider_new_with_range(self, 0.0001, .1, 0.001, p->sigma[2], 4);
+  dt_bauhaus_slider_enable_soft_boundaries(g->scale3, 0.0001, 1.0);
   g->scale4 = dt_bauhaus_slider_new_with_range(self, 0.0001, .1, 0.001, p->sigma[3], 4);
+  dt_bauhaus_slider_enable_soft_boundaries(g->scale4, 0.0001, 1.0);
   g->scale5 = dt_bauhaus_slider_new_with_range(self, 0.0001, .1, 0.001, p->sigma[4], 4);
+  dt_bauhaus_slider_enable_soft_boundaries(g->scale5, 0.0001, 1.0);
   gtk_widget_set_tooltip_text(g->scale1, _("spatial extent of the gaussian"));
   gtk_widget_set_tooltip_text(g->scale3, _("how much to blur red"));
   gtk_widget_set_tooltip_text(g->scale4, _("how much to blur green"));

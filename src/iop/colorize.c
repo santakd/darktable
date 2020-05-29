@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -25,9 +25,12 @@
 #include "develop/develop.h"
 #include "develop/imageop.h"
 #include "gui/accelerators.h"
+#include "gui/color_picker_proxy.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
+#ifdef GDK_WINDOWING_QUARTZ
+#include "osx/osx.h"
+#endif
 
 #include <assert.h>
 #include <gtk/gtk.h>
@@ -89,9 +92,14 @@ int flags()
   return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("colorize", IOP_GROUP_EFFECT);
+  return IOP_GROUP_EFFECT;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_Lab;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -115,6 +123,8 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 
 void init_key_accels(dt_iop_module_so_t *self)
 {
+  dt_accel_register_slider_iop(self, FALSE, NC_("accel", "hue"));
+  dt_accel_register_slider_iop(self, FALSE, NC_("accel", "saturation"));
   dt_accel_register_slider_iop(self, FALSE, NC_("accel", "lightness"));
   dt_accel_register_slider_iop(self, FALSE, NC_("accel", "source mix"));
 }
@@ -123,6 +133,8 @@ void connect_key_accels(dt_iop_module_t *self)
 {
   dt_iop_colorize_gui_data_t *g = (dt_iop_colorize_gui_data_t *)self->gui_data;
 
+  dt_accel_connect_slider_iop(self, "hue", GTK_WIDGET(g->gslider1));
+  dt_accel_connect_slider_iop(self, "saturation", GTK_WIDGET(g->gslider2));
   dt_accel_connect_slider_iop(self, "lightness", GTK_WIDGET(g->scale1));
   dt_accel_connect_slider_iop(self, "source mix", GTK_WIDGET(g->scale2));
 }
@@ -141,12 +153,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float Lmlmix = L - (mix * 100.0f) / 2.0f;
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) private(in, out) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(a, b, ch, ivoid, Lmlmix, mix, ovoid, roi_out) \
+  private(in, out) \
+  schedule(static)
 #endif
   for(int k = 0; k < roi_out->height; k++)
   {
 
-    int stride = ch * roi_out->width;
+    const int stride = ch * roi_out->width;
 
     in = (float *)ivoid + (size_t)k * stride;
     out = (float *)ovoid + (size_t)k * stride;
@@ -166,7 +181,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
                const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_colorize_data_t *data = (dt_iop_colorize_data_t *)piece->data;
-  dt_iop_colorize_global_data_t *gd = (dt_iop_colorize_global_data_t *)self->data;
+  dt_iop_colorize_global_data_t *gd = (dt_iop_colorize_global_data_t *)self->global_data;
 
   cl_int err = -999;
   const int devid = piece->pipe->devid;
@@ -228,6 +243,7 @@ static void lightness_callback(GtkWidget *slider, gpointer user_data)
   if(self->dt->gui->reset) return;
   dt_iop_colorize_params_t *p = (dt_iop_colorize_params_t *)self->params;
   p->lightness = dt_bauhaus_slider_get(slider);
+  dt_iop_color_picker_reset(self, TRUE);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -237,6 +253,7 @@ static void source_lightness_mix_callback(GtkWidget *slider, gpointer user_data)
   if(self->dt->gui->reset) return;
   dt_iop_colorize_params_t *p = (dt_iop_colorize_params_t *)self->params;
   p->source_lightness_mix = dt_bauhaus_slider_get(slider);
+  dt_iop_color_picker_reset(self, TRUE);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -254,6 +271,7 @@ static void hue_callback(GtkWidget *slider, gpointer user_data)
   gtk_widget_queue_draw(GTK_WIDGET(g->gslider2));
 
   p->hue = hue;
+  dt_iop_color_picker_reset(self, TRUE);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -263,64 +281,45 @@ static void saturation_callback(GtkWidget *slider, gpointer user_data)
   dt_iop_colorize_params_t *p = (dt_iop_colorize_params_t *)self->params;
 
   p->saturation = dt_bauhaus_slider_get(slider);
+  dt_iop_color_picker_reset(self, TRUE);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-#if 0 // TODO: could bind those to quad callback, if needed.
-static void
-colorpick_button_callback(GtkButton *button,gpointer user_data)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
 {
-  GtkColorSelectionDialog  *csd=(GtkColorSelectionDialog  *)user_data;
-  gtk_dialog_response(GTK_DIALOG(csd),(GTK_WIDGET(button)==csd->ok_button)?GTK_RESPONSE_ACCEPT:0);
-}
-
-static void
-colorpick_callback (GtkDarktableButton *button, gpointer user_data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   dt_iop_colorize_gui_data_t *g = (dt_iop_colorize_gui_data_t *)self->gui_data;
-  if(self->dt->gui->reset) return;
   dt_iop_colorize_params_t *p = (dt_iop_colorize_params_t *)self->params;
 
-  GtkColorSelectionDialog  *csd = GTK_COLOR_SELECTION_DIALOG(gtk_color_selection_dialog_new(_("select tone color")));
-  g_signal_connect (G_OBJECT (csd->ok_button), "clicked",
-                    G_CALLBACK (colorpick_button_callback), csd);
-  g_signal_connect (G_OBJECT (csd->cancel_button), "clicked",
-                    G_CALLBACK (colorpick_button_callback), csd);
+  // convert picker RGB 2 HSL
+  float H = .0f, S = .0f, L = .0f;
+  float XYZ[3] = { 0.0f };
+  float rgb[3] = { 0.0f };
+  dt_Lab_to_XYZ(self->picked_color, XYZ);
+  dt_XYZ_to_sRGB(XYZ, rgb);
+  rgb2hsl(rgb, &H, &S, &L);
 
-  GtkColorSelection *cs = GTK_COLOR_SELECTION(gtk_color_selection_dialog_get_color_selection(csd));
-  GdkRGBA c;
-  float color[3],h,s,l;
-
-  h = p->hue;
-  s = p->saturation;
-  l=0.5;
-  hsl2rgb(color,h,s,l);
-
-  c.red   = color[0];
-  c.green = color[1];
-  c.blue  = color[2];
-
-  gtk_color_selection_set_current_color(cs,&c);
-
-  if(gtk_dialog_run(GTK_DIALOG(csd))==GTK_RESPONSE_ACCEPT)
+  if(fabsf(p->hue - H) < 0.0001f && fabsf(p->saturation - S) < 0.0001f)
   {
-    gtk_color_selection_get_current_color(cs,&c);
-    color[0] = c.red;
-    color[1] = c.green;
-    color[2] = c.blue;
-    rgb2hsl(color,&h,&s,&l);
-    l=0.5;
-    hsl2rgb(color,h,s,l);
-
-    dtgtk_gradient_slider_set_value(g->gslider1, h);
-    dtgtk_gradient_slider_set_value(g->gslider2, s);
+    // interrupt infinite loops
+    return;
   }
 
-  gtk_widget_destroy(GTK_WIDGET(csd));
+  p->hue        = H;
+  p->saturation = S;
+
+  ++darktable.gui->reset;
+  dt_bauhaus_slider_set(g->gslider1, p->hue);
+  dt_bauhaus_slider_set(g->gslider2, p->saturation);
+  update_saturation_slider_end_color(g->gslider2, p->hue);
+  --darktable.gui->reset;
+
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
-#endif
+
+void gui_reset(struct dt_iop_module_t *self)
+{
+  dt_iop_color_picker_reset(self, TRUE);
+}
 
 void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
@@ -375,24 +374,14 @@ void gui_update(struct dt_iop_module_t *self)
   dt_iop_colorize_gui_data_t *g = (dt_iop_colorize_gui_data_t *)self->gui_data;
   dt_iop_colorize_params_t *p = (dt_iop_colorize_params_t *)module->params;
 
+  dt_iop_color_picker_reset(self, TRUE);
+
   dt_bauhaus_slider_set(g->gslider1, p->hue);
   dt_bauhaus_slider_set(g->gslider2, p->saturation);
   dt_bauhaus_slider_set(g->scale1, p->lightness);
   dt_bauhaus_slider_set(g->scale2, p->source_lightness_mix);
 
   update_saturation_slider_end_color(g->gslider2, p->hue);
-
-#if 0 // could update quad drawing color here
-  float color[3];
-  hsl2rgb(color,p->hue,p->saturation,0.5);
-
-  GdkRGBA c;
-  c.red = color[0];
-  c.green = color[1];
-  c.blue = color[2];
-
-  gtk_widget_modify_fg(GTK_WIDGET(g->colorpick1),GTK_STATE_NORMAL,&c);
-#endif
 }
 
 void init(dt_iop_module_t *module)
@@ -400,7 +389,6 @@ void init(dt_iop_module_t *module)
   module->params = calloc(1, sizeof(dt_iop_colorize_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_colorize_params_t));
   module->default_enabled = 0;
-  module->priority = 470; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_colorize_params_t);
   module->gui_data = NULL;
   dt_iop_colorize_params_t tmp = (dt_iop_colorize_params_t){ 0, 0.5, 50, 50, module->version() };
@@ -412,6 +400,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 void gui_init(struct dt_iop_module_t *self)
@@ -435,8 +425,7 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_stop(g->gslider1, 0.830f, 1.0f, 0.0f, 1.0f);
   dt_bauhaus_slider_set_stop(g->gslider1, 1.0f, 1.0f, 0.0f, 0.0f);
   gtk_widget_set_tooltip_text(g->gslider1, _("select the hue tone"));
-
-  gtk_box_pack_start(GTK_BOX(self->widget), g->gslider1, TRUE, TRUE, 0);
+  dt_color_picker_new(self, DT_COLOR_PICKER_POINT, g->gslider1);
 
   /* saturation slider */
   g->gslider2 = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, 0.01f, 0.0f, 2);
@@ -446,7 +435,8 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_stop(g->gslider2, 1.0f, 1.0f, 1.0f, 1.0f);
   gtk_widget_set_tooltip_text(g->gslider2, _("select the saturation shadow tone"));
 
-  gtk_box_pack_start(GTK_BOX(self->widget), g->gslider2, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->gslider1), TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->gslider2), TRUE, TRUE, 0);
 
   // Additional parameters
   g->scale1 = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 0.1, p->lightness * 100.0, 2);

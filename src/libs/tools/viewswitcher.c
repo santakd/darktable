@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011 Henrik Andersson.
-    copyright (c) 2016 tobias ellinghaus.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -99,7 +98,7 @@ void gui_init(dt_lib_module_t *self)
   dt_lib_viewswitcher_t *d = (dt_lib_viewswitcher_t *)g_malloc0(sizeof(dt_lib_viewswitcher_t));
   self->data = (void *)d;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(5));
+  self->widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   d->dropdown = NULL;
   GtkTreeIter tree_iter;
   GtkListStore *model = NULL;
@@ -125,7 +124,7 @@ void gui_init(dt_lib_module_t *self)
         GtkWidget *sep = gtk_label_new("|");
         gtk_widget_set_halign(sep, GTK_ALIGN_START);
         gtk_widget_set_name(sep, "view_label");
-        gtk_box_pack_start(GTK_BOX(self->widget), sep, FALSE, FALSE, DT_PIXEL_APPLY_DPI(5));
+        gtk_box_pack_start(GTK_BOX(self->widget), sep, FALSE, FALSE, 0);
       }
     }
     else

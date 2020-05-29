@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,7 +26,6 @@
 #include "gui/accelerators.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
-#include "common/iop_group.h"
 
 #include <gtk/gtk.h>
 #include <inttypes.h>
@@ -52,6 +51,8 @@ DT_MODULE_INTROSPECTION(1, dt_iop_colortransfer_params_t)
 #define HISTN (1 << 11)
 #define MAXN 5
 
+typedef float float2[2];
+
 typedef enum dt_iop_colortransfer_flag_t
 {
   ACQUIRE = 0,
@@ -68,8 +69,8 @@ typedef struct dt_iop_colortransfer_params_t
   // hist matching table
   float hist[HISTN];
   // n-means (max 5?) with mean/variance
-  float mean[MAXN][2];
-  float var[MAXN][2];
+  float2 mean[MAXN];
+  float2 var[MAXN];
   // number of gaussians used.
   int n;
 } dt_iop_colortransfer_params_t;
@@ -90,8 +91,8 @@ typedef struct dt_iop_colortransfer_data_t
   // same as params. (need duplicate because database table preset contains params_t)
   dt_iop_colortransfer_flag_t flag;
   float hist[HISTN];
-  float mean[MAXN][2];
-  float var[MAXN][2];
+  float2 mean[MAXN];
+  float2 var[MAXN];
   int n;
 } dt_iop_colortransfer_data_t;
 
@@ -101,14 +102,19 @@ const char *name()
   return _("color transfer");
 }
 
-int groups()
+int default_group()
 {
-  return dt_iop_get_group("color transfer", IOP_GROUP_COLOR);
+  return IOP_GROUP_COLOR;
 }
 
 int flags()
 {
   return IOP_FLAGS_DEPRECATED | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_PREVIEW_NON_OPENCL;
+}
+
+int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+{
+  return iop_cs_Lab;
 }
 
 #if 0
@@ -177,10 +183,7 @@ static void invert_histogram(const int *hist, float *inv_hist)
   // HISTN-1)]/(float)HISTN, inv_hist[(int)CLAMP(HISTN*i/100.0, 0, HISTN-1)]);
 }
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic warning "-Wvla"
-
-static void get_cluster_mapping(const int n, float mi[n][2], float mo[n][2], int mapio[n])
+static void get_cluster_mapping(const int n, float2 *mi, float2 *mo, int *mapio)
 {
   for(int ki = 0; ki < n; ki++)
   {
@@ -200,7 +203,7 @@ static void get_cluster_mapping(const int n, float mi[n][2], float mo[n][2], int
   }
 }
 
-static void get_clusters(const float *col, const int n, float mean[n][2], float *weight)
+static void get_clusters(const float *col, const int n, float2 *mean, float *weight)
 {
   float Mdist = 0.0f, mdist = FLT_MAX;
   for(int k = 0; k < n; k++)
@@ -219,7 +222,7 @@ static void get_clusters(const float *col, const int n, float mean[n][2], float 
     for(int k = 0; k < n; k++) weight[k] /= sum;
 }
 
-static int get_cluster(const float *col, const int n, float mean[n][2])
+static int get_cluster(const float *col, const int n, float2 *mean)
 {
   float mdist = FLT_MAX;
   int cluster = 0;
@@ -236,15 +239,15 @@ static int get_cluster(const float *col, const int n, float mean[n][2])
   return cluster;
 }
 
-static void kmeans(const float *col, const dt_iop_roi_t *const roi, const int n, float mean_out[n][2],
-                   float var_out[n][2])
+static void kmeans(const float *col, const dt_iop_roi_t *const roi, const int n, float2 *mean_out,
+                   float2 *var_out)
 {
   // TODO: check params here:
   const int nit = 10;                                 // number of iterations
   const int samples = roi->width * roi->height * 0.2; // samples: only a fraction of the buffer.
 
-  float(*const mean)[2] = malloc(2 * n * sizeof(float));
-  float(*const var)[2] = malloc(2 * n * sizeof(float));
+  float2 *const mean = malloc(n * sizeof(float2));
+  float2 *const var = malloc(n * sizeof(float2));
   int *const cnt = malloc(n * sizeof(int));
 
   // init n clusters for a, b channels at random
@@ -260,11 +263,15 @@ static void kmeans(const float *col, const dt_iop_roi_t *const roi, const int n,
     for(int k = 0; k < n; k++) cnt[k] = 0;
 // randomly sample col positions inside roi
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(col, mean_out)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(cnt, mean, n, roi, samples, var) \
+    shared(col, mean_out) \
+    schedule(static)
 #endif
     for(int s = 0; s < samples; s++)
     {
-      const int j = dt_points_get() * roi->height, i = dt_points_get() * roi->width;
+      const int j = dt_points_get() * roi->height;
+      const int i = dt_points_get() * roi->width;
       // for each sample: determine cluster, update new mean, update var
       for(int k = 0; k < n; k++)
       {
@@ -320,8 +327,6 @@ static void kmeans(const float *col, const dt_iop_roi_t *const roi, const int n,
   }
 }
 
-#pragma GCC diagnostic pop
-
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -350,7 +355,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       dt_iop_colortransfer_params_t *p = (dt_iop_colortransfer_params_t *)self->params;
       p->flag = ACQUIRE2;
     }
-    memcpy(out, in, (size_t)sizeof(float) * ch * roi_out->width * roi_out->height);
+    memcpy(out, in, sizeof(float) * ch * roi_out->width * roi_out->height);
   }
   else if(data->flag == APPLY)
   {
@@ -358,7 +363,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     int hist[HISTN];
     capture_histogram(in, roi_in, hist);
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(data, in, out, hist)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(ch, roi_out) \
+    shared(data, in, out, hist) \
+    schedule(static)
 #endif
     for(int k = 0; k < roi_out->height; k++)
     {
@@ -373,8 +381,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
 
     // cluster input buffer
-    float(*const mean)[2] = malloc(2 * data->n * sizeof(float));
-    float(*const var)[2] = malloc(2 * data->n * sizeof(float));
+    float2 *const mean = malloc(data->n * sizeof(float2));
+    float2 *const var = malloc(data->n * sizeof(float2));
 
     kmeans(in, roi_in, data->n, mean, var);
 
@@ -385,7 +393,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 // for all pixels: find input cluster, transfer to mapped target cluster
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(data, in, out)
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(ch, mapio, mean, roi_out, var) \
+    shared(data, in, out) \
+    schedule(static) 
 #endif
     for(int k = 0; k < roi_out->height; k++)
     {
@@ -422,7 +433,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   else
   {
-    memcpy(out, in, (size_t)sizeof(float) * ch * roi_out->width * roi_out->height);
+    memcpy(out, in, sizeof(float) * ch * roi_out->width * roi_out->height);
   }
 }
 
@@ -561,7 +572,6 @@ void init(dt_iop_module_t *module)
   module->params = calloc(1, sizeof(dt_iop_colortransfer_params_t));
   module->default_params = calloc(1, sizeof(dt_iop_colortransfer_params_t));
   module->default_enabled = 0;
-  module->priority = 485; // module order created by iop_dependencies.py, do not edit!
   module->params_size = sizeof(dt_iop_colortransfer_params_t);
   module->gui_data = NULL;
   dt_iop_colortransfer_params_t tmp;
@@ -578,6 +588,8 @@ void cleanup(dt_iop_module_t *module)
 {
   free(module->params);
   module->params = NULL;
+  free(module->default_params);
+  module->default_params = NULL;
 }
 
 #if 0
@@ -667,7 +679,7 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), g->area, TRUE, TRUE, 0);
   g_signal_connect (G_OBJECT (g->area), "draw", G_CALLBACK (cluster_preview_draw), self);
 
-  GtkBox *box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5));
+  GtkBox *box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(box), TRUE, TRUE, 0);
   GtkWidget *button;
   g->spinbutton = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(1, MAXN, 1));

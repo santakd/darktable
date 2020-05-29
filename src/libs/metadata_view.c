@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2011-2012 Henrik Andersson.
+    Copyright (C) 2011-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 #include "common/debug.h"
 #include "common/image_cache.h"
 #include "common/metadata.h"
+#include "common/tags.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/develop.h"
@@ -50,6 +51,10 @@ enum
   md_internal_version,
   md_internal_fullpath,
   md_internal_local_copy,
+  md_internal_import_timestamp,
+  md_internal_change_timestamp,
+  md_internal_export_timestamp,
+  md_internal_print_timestamp,
 #if SHOW_FLAGS
   md_internal_flags,
 #endif
@@ -60,6 +65,7 @@ enum
   md_exif_lens,
   md_exif_aperture,
   md_exif_exposure,
+  md_exif_exposure_bias,
   md_exif_focal_length,
   md_exif_focus_distance,
   md_exif_iso,
@@ -72,14 +78,16 @@ enum
   md_height,
 
   /* xmp */
-  md_xmp_title,
-  md_xmp_creator,
-  md_xmp_rights,
+  md_xmp_metadata,
 
   /* geotagging */
-  md_geotagging_lat,
+  md_geotagging_lat = md_xmp_metadata + DT_METADATA_NUMBER,
   md_geotagging_lon,
   md_geotagging_ele,
+
+  /* tags */
+  md_tag_names,
+  md_categories,
 
   /* entries, do not touch! */
   md_size
@@ -98,6 +106,10 @@ static void _lib_metatdata_view_init_labels()
   _md_labels[md_internal_version] = _("version");
   _md_labels[md_internal_fullpath] = _("full path");
   _md_labels[md_internal_local_copy] = _("local copy");
+  _md_labels[md_internal_import_timestamp] = _("import timestamp");
+  _md_labels[md_internal_change_timestamp] = _("change timestamp");
+  _md_labels[md_internal_export_timestamp] = _("export timestamp");
+  _md_labels[md_internal_print_timestamp] = _("print timestamp");
 #if SHOW_FLAGS
   _md_labels[md_internal_flags] = _("flags");
 #endif
@@ -108,6 +120,7 @@ static void _lib_metatdata_view_init_labels()
   _md_labels[md_exif_lens] = _("lens");
   _md_labels[md_exif_aperture] = _("aperture");
   _md_labels[md_exif_exposure] = _("exposure");
+  _md_labels[md_exif_exposure_bias] = _("exposure bias");
   _md_labels[md_exif_focal_length] = _("focal length");
   _md_labels[md_exif_focus_distance] = _("focus distance");
   _md_labels[md_exif_iso] = _("ISO");
@@ -119,21 +132,31 @@ static void _lib_metatdata_view_init_labels()
   _md_labels[md_height] = _("export height");
 
   /* xmp */
-  _md_labels[md_xmp_title] = _("title");
-  _md_labels[md_xmp_creator] = _("creator");
-  _md_labels[md_xmp_rights] = _("copyright");
+  for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
+  {
+    const uint32_t keyid = dt_metadata_get_keyid_by_display_order(i);
+    const gchar *name = dt_metadata_get_name(keyid);
+    _md_labels[md_xmp_metadata+i] = _(name);
+  }
 
   /* geotagging */
   _md_labels[md_geotagging_lat] = _("latitude");
   _md_labels[md_geotagging_lon] = _("longitude");
   _md_labels[md_geotagging_ele] = _("elevation");
-}
 
+  /* tags */
+  _md_labels[md_tag_names] = _("tags");
+  _md_labels[md_categories] = _("categories");
+}
 
 typedef struct dt_lib_metadata_view_t
 {
+  GtkLabel *name[md_size];
   GtkLabel *metadata[md_size];
+  GtkWidget *scrolled_window;
 } dt_lib_metadata_view_t;
+
+static gboolean view_onMouseScroll(GtkWidget *view, GdkEventScroll *event, dt_lib_metadata_view_t *d);
 
 const char *name(dt_lib_module_t *self)
 {
@@ -267,8 +290,45 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     dt_image_full_path(img->id, pathname, sizeof(pathname), &from_cache);
     _metadata_update_value(d->metadata[md_internal_fullpath], pathname);
 
-    snprintf(value, sizeof(value), "%s", (img->flags & DT_IMAGE_LOCAL_COPY) ? _("yes") : _("no"));
+    g_strlcpy(value, (img->flags & DT_IMAGE_LOCAL_COPY) ? _("yes") : _("no"), sizeof(value));
     _metadata_update_value(d->metadata[md_internal_local_copy], value);
+
+    if (img->import_timestamp >=0)
+    {
+      char datetime[200];
+      // just %c is too long and includes a time zone that we don't know from exif
+      strftime(datetime, sizeof(datetime), "%a %x %X", localtime(&img->import_timestamp));
+      _metadata_update_value(d->metadata[md_internal_import_timestamp], datetime);
+    }
+    else
+      _metadata_update_value(d->metadata[md_internal_import_timestamp], "-");
+
+    if (img->change_timestamp >=0)
+    {
+      char datetime[200];
+      strftime(datetime, sizeof(datetime), "%a %x %X", localtime(&img->change_timestamp));
+      _metadata_update_value(d->metadata[md_internal_change_timestamp], datetime);
+    }
+    else
+      _metadata_update_value(d->metadata[md_internal_change_timestamp], "-");
+
+    if (img->export_timestamp >=0)
+    {
+      char datetime[200];
+      strftime(datetime, sizeof(datetime), "%a %x %X", localtime(&img->export_timestamp));
+      _metadata_update_value(d->metadata[md_internal_export_timestamp], datetime);
+    }
+    else
+      _metadata_update_value(d->metadata[md_internal_export_timestamp], "-");
+
+    if (img->print_timestamp >=0)
+    {
+      char datetime[200];
+      strftime(datetime, sizeof(datetime), "%a %x %X", localtime(&img->print_timestamp));
+      _metadata_update_value(d->metadata[md_internal_print_timestamp], datetime);
+    }
+    else
+      _metadata_update_value(d->metadata[md_internal_print_timestamp], "-");
 
     // TODO: decide if this should be removed for a release. maybe #ifdef'ing to only add it to git compiles?
 
@@ -398,6 +458,7 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
         { N_("GraphicsMagick"), 'g'},
         { N_("rawspeed"), 'r'},
         { N_("netpnm"), 'n'},
+        { N_("avif"), 'a'},
       };
 
       int loader = (unsigned int)img->loader < sizeof(loaders) / sizeof(*loaders) ? img->loader : 0;
@@ -435,6 +496,16 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     else
       snprintf(value, sizeof(value), "%.1f''", img->exif_exposure);
     _metadata_update_value(d->metadata[md_exif_exposure], value);
+
+    if(isnan(img->exif_exposure_bias))
+    {
+      _metadata_update_value(d->metadata[md_exif_exposure_bias], NODATA_STRING);
+    }
+    else
+    {
+      snprintf(value, sizeof(value), _("%+.2f EV"), img->exif_exposure_bias);
+      _metadata_update_value(d->metadata[md_exif_exposure_bias], value);
+    }
 
     snprintf(value, sizeof(value), "%.0f mm", img->exif_focal_length);
     _metadata_update_value(d->metadata[md_exif_focal_length], value);
@@ -479,40 +550,41 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     _metadata_update_value(d->metadata[md_width], value);
 
     /* XMP */
-    GList *res;
-    if((res = dt_metadata_get(img->id, "Xmp.dc.title", NULL)) != NULL)
+    for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
     {
-      snprintf(value, sizeof(value), "%s", (char *)res->data);
-      _filter_non_printable(value, sizeof(value));
-      g_list_free_full(res, &g_free);
+      const uint32_t keyid = dt_metadata_get_keyid_by_display_order(i);
+      const gchar *key = dt_metadata_get_key(keyid);
+      const gchar *name = dt_metadata_get_name(keyid);
+      gchar *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
+      const gboolean hidden = dt_conf_get_int(setting) & DT_METADATA_FLAG_HIDDEN;
+      g_free(setting);
+      const int meta_type = dt_metadata_get_type(keyid);
+      if(meta_type == DT_METADATA_TYPE_INTERNAL || hidden)
+      {
+        gtk_widget_hide(GTK_WIDGET(d->name[md_xmp_metadata+i]));
+        gtk_widget_hide(GTK_WIDGET(d->metadata[md_xmp_metadata+i]));
+        g_strlcpy(value, NODATA_STRING, sizeof(value));
+      }
+      else
+      {
+        gtk_widget_show(GTK_WIDGET(d->name[md_xmp_metadata+i]));
+        gtk_widget_show(GTK_WIDGET(d->metadata[md_xmp_metadata+i]));
+        GList *res = dt_metadata_get(img->id, key, NULL);
+        if(res)
+        {
+          g_strlcpy(value, (char *)res->data, sizeof(value));
+          _filter_non_printable(value, sizeof(value));
+          g_list_free_full(res, &g_free);
+        }
+        else
+          g_strlcpy(value, NODATA_STRING, sizeof(value));
+      }
+      _metadata_update_value(d->metadata[md_xmp_metadata+i], value);
     }
-    else
-      g_strlcpy(value, NODATA_STRING, sizeof(value));
-    _metadata_update_value(d->metadata[md_xmp_title], value);
-
-    if((res = dt_metadata_get(img->id, "Xmp.dc.creator", NULL)) != NULL)
-    {
-      snprintf(value, sizeof(value), "%s", (char *)res->data);
-      _filter_non_printable(value, sizeof(value));
-      g_list_free_full(res, &g_free);
-    }
-    else
-      g_strlcpy(value, NODATA_STRING, sizeof(value));
-    _metadata_update_value(d->metadata[md_xmp_creator], value);
-
-    if((res = dt_metadata_get(img->id, "Xmp.dc.rights", NULL)) != NULL)
-    {
-      snprintf(value, sizeof(value), "%s", (char *)res->data);
-      _filter_non_printable(value, sizeof(value));
-      g_list_free_full(res, &g_free);
-    }
-    else
-      g_strlcpy(value, NODATA_STRING, sizeof(value));
-    _metadata_update_value(d->metadata[md_xmp_rights], value);
 
     /* geotagging */
     /* latitude */
-    if(isnan(img->latitude))
+    if(isnan(img->geoloc.latitude))
     {
       _metadata_update_value(d->metadata[md_geotagging_lat], NODATA_STRING);
     }
@@ -520,19 +592,19 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     {
       if(dt_conf_get_bool("plugins/lighttable/metadata_view/pretty_location"))
       {
-        gchar *latitude = dt_util_latitude_str(img->latitude);
+        gchar *latitude = dt_util_latitude_str(img->geoloc.latitude);
         _metadata_update_value(d->metadata[md_geotagging_lat], latitude);
         g_free(latitude);
       }
       else
       {
-        gchar NS = img->latitude < 0 ? 'S' : 'N';
-        snprintf(value, sizeof(value), "%c %09.6f", NS, fabs(img->latitude));
+        const gchar NS = img->geoloc.latitude < 0 ? 'S' : 'N';
+        snprintf(value, sizeof(value), "%c %09.6f", NS, fabs(img->geoloc.latitude));
         _metadata_update_value(d->metadata[md_geotagging_lat], value);
       }
     }
     /* longitude */
-    if(isnan(img->longitude))
+    if(isnan(img->geoloc.longitude))
     {
       _metadata_update_value(d->metadata[md_geotagging_lon], NODATA_STRING);
     }
@@ -540,19 +612,19 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     {
       if(dt_conf_get_bool("plugins/lighttable/metadata_view/pretty_location"))
       {
-        gchar *longitude = dt_util_longitude_str(img->longitude);
+        gchar *longitude = dt_util_longitude_str(img->geoloc.longitude);
         _metadata_update_value(d->metadata[md_geotagging_lon], longitude);
         g_free(longitude);
       }
       else
       {
-        gchar EW = img->longitude < 0 ? 'W' : 'E';
-        snprintf(value, sizeof(value), "%c %010.6f", EW, fabs(img->longitude));
+        const gchar EW = img->geoloc.longitude < 0 ? 'W' : 'E';
+        snprintf(value, sizeof(value), "%c %010.6f", EW, fabs(img->geoloc.longitude));
         _metadata_update_value(d->metadata[md_geotagging_lon], value);
       }
     }
     /* elevation */
-    if(isnan(img->elevation))
+    if(isnan(img->geoloc.elevation))
     {
       _metadata_update_value(d->metadata[md_geotagging_ele], NODATA_STRING);
     }
@@ -560,16 +632,66 @@ static void _metadata_view_update_values(dt_lib_module_t *self)
     {
       if(dt_conf_get_bool("plugins/lighttable/metadata_view/pretty_location"))
       {
-        gchar *elevation = dt_util_elevation_str(img->elevation);
+        gchar *elevation = dt_util_elevation_str(img->geoloc.elevation);
         _metadata_update_value(d->metadata[md_geotagging_ele], elevation);
         g_free(elevation);
       }
       else
       {
-        snprintf(value, sizeof(value), "%.2f %s", img->elevation, _("m"));
+        snprintf(value, sizeof(value), "%.2f %s", img->geoloc.elevation, _("m"));
         _metadata_update_value(d->metadata[md_geotagging_ele], value);
       }
     }
+
+    /* tags */
+    GList *tags = NULL;
+    char *tagstring = NULL;
+    char *categoriesstring = NULL;
+    if(dt_tag_get_attached(mouse_over_id, &tags, TRUE))
+    {
+      gint length = 0;
+      for(GList *taglist = tags; taglist; taglist = g_list_next(taglist))
+      {
+        const char *tagname = ((dt_tag_t *)taglist->data)->leave;
+        if (!(((dt_tag_t *)taglist->data)->flags & DT_TF_CATEGORY))
+        {
+          // tags - just keywords
+          length = length + strlen(tagname) + 2;
+          if(length < 45)
+            tagstring = dt_util_dstrcat(tagstring, "%s, ", tagname);
+          else
+          {
+            tagstring = dt_util_dstrcat(tagstring, "\n%s, ", tagname);
+            length = strlen(tagname) + 2;
+          }
+        }
+        else
+        {
+          // categories - needs parent category to make sense
+          char *category = g_strdup(((dt_tag_t *)taglist->data)->tag);
+          char *catend = g_strrstr(category, "|");
+          if (catend)
+          {
+            catend[0] = '\0';
+            char *catstart = g_strrstr(category, "|");
+            catstart = catstart ? catstart + 1 : category;
+            categoriesstring = dt_util_dstrcat(categoriesstring, categoriesstring ? "\n%s: %s " : "%s: %s ",
+                  catstart, ((dt_tag_t *)taglist->data)->leave);
+          }
+          else
+            categoriesstring = dt_util_dstrcat(categoriesstring, categoriesstring ? "\n%s" : "%s",
+                  ((dt_tag_t *)taglist->data)->leave);
+          g_free(category);
+        }
+      }
+      if(tagstring) tagstring[strlen(tagstring)-2] = '\0';
+    }
+    _metadata_update_value(d->metadata[md_tag_names], tagstring ? tagstring : NODATA_STRING);
+    _metadata_update_value(d->metadata[md_categories], categoriesstring ? categoriesstring : NODATA_STRING);
+
+    g_free(tagstring);
+    g_free(categoriesstring);
+    dt_tag_free_result(&tags);
 
     /* release img */
     dt_image_cache_read_release(darktable.image_cache, img);
@@ -634,7 +756,7 @@ static gboolean _jump_to_accel(GtkAccelGroup *accel_group, GObject *acceleratabl
   return TRUE;
 }
 
-/* calback for the mouse over image change signal */
+/* callback for the mouse over image change signal */
 static void _mouse_over_image_callback(gpointer instance, gpointer user_data)
 {
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
@@ -659,9 +781,21 @@ void gui_init(dt_lib_module_t *self)
   self->data = (void *)d;
   _lib_metatdata_view_init_labels();
 
-  self->widget = gtk_grid_new();
+  GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+  GtkWidget *child_grid_window = gtk_grid_new();
+  gtk_container_add(GTK_CONTAINER(scrolled_window), child_grid_window);
+
+  d->scrolled_window = GTK_WIDGET(scrolled_window);
+  self->widget = d->scrolled_window;
+  
   dt_gui_add_help_link(self->widget, dt_get_help_url(self->plugin_name));
-  gtk_grid_set_column_spacing(GTK_GRID(self->widget), DT_PIXEL_APPLY_DPI(5));
+  gtk_grid_set_column_spacing(GTK_GRID(child_grid_window), DT_PIXEL_APPLY_DPI(5));
+  
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(d->scrolled_window), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(d->scrolled_window), DT_PIXEL_APPLY_DPI(300));
+  gint height = dt_conf_get_int("plugins/lighttable/metadata_view/windowheight");
+  gtk_widget_set_size_request(d->scrolled_window, -1, DT_PIXEL_APPLY_DPI(height));
+
 //   GtkWidget *last = NULL;
 
   /* initialize the metadata name/value labels */
@@ -670,6 +804,7 @@ void gui_init(dt_lib_module_t *self)
     GtkWidget *evb = gtk_event_box_new();
     gtk_widget_set_name(evb, "brightbg");
     GtkLabel *name = GTK_LABEL(gtk_label_new(_md_labels[k]));
+    d->name[k] = name;
     d->metadata[k] = GTK_LABEL(gtk_label_new("-"));
     gtk_label_set_selectable(d->metadata[k], TRUE);
     gtk_container_add(GTK_CONTAINER(evb), GTK_WIDGET(d->metadata[k]));
@@ -680,8 +815,8 @@ void gui_init(dt_lib_module_t *self)
     }
     gtk_widget_set_halign(GTK_WIDGET(name), GTK_ALIGN_START);
     gtk_widget_set_halign(GTK_WIDGET(d->metadata[k]), GTK_ALIGN_START);
-    gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(name), 0, k, 1, 1);
-    gtk_grid_attach_next_to(GTK_GRID(self->widget), GTK_WIDGET(evb), GTK_WIDGET(name), GTK_POS_RIGHT, 1, 1);
+    gtk_grid_attach(GTK_GRID(child_grid_window), GTK_WIDGET(name), 0, k, 1, 1);
+    gtk_grid_attach_next_to(GTK_GRID(child_grid_window), GTK_WIDGET(evb), GTK_WIDGET(name), GTK_POS_RIGHT, 1, 1);
   }
 
   /* lets signup for mouse over image change signals */
@@ -696,6 +831,12 @@ void gui_init(dt_lib_module_t *self)
      image in darkroom when enter */
   dt_control_signal_connect(darktable.signals, DT_SIGNAL_DEVELOP_INITIALIZE,
                             G_CALLBACK(_mouse_over_image_callback), self);
+
+  /* signup for tags changes */
+  dt_control_signal_connect(darktable.signals, DT_SIGNAL_TAG_CHANGED,
+                            G_CALLBACK(_mouse_over_image_callback), self);
+  /* adaptable window size */
+  g_signal_connect(G_OBJECT(self->widget), "scroll-event", G_CALLBACK(view_onMouseScroll), d);
 }
 
 void gui_cleanup(dt_lib_module_t *self)
@@ -704,6 +845,28 @@ void gui_cleanup(dt_lib_module_t *self)
   g_free(self->data);
   self->data = NULL;
 }
+
+static gboolean view_onMouseScroll(GtkWidget *view, GdkEventScroll *event, dt_lib_metadata_view_t *d)
+{
+  if(event->state & GDK_CONTROL_MASK)
+  {
+    const gint increment = DT_PIXEL_APPLY_DPI(10.0);
+    const gint min_height = gtk_scrolled_window_get_min_content_height(GTK_SCROLLED_WINDOW(d->scrolled_window));
+    const gint max_height = DT_PIXEL_APPLY_DPI(1000.0);
+    gint width, height;
+
+    gtk_widget_get_size_request(GTK_WIDGET(d->scrolled_window), &width, &height);
+    height = height + increment*event->delta_y;
+    height = (height < min_height) ? min_height : (height > max_height) ? max_height : height;
+
+    gtk_widget_set_size_request(GTK_WIDGET(d->scrolled_window), -1, height);
+    dt_conf_set_int("plugins/lighttable/metadata_view/windowheight", height);
+
+    return TRUE;
+  }
+  return FALSE;
+}
+
 #ifdef USE_LUA
 static int lua_update_widgets(lua_State*L)
 {

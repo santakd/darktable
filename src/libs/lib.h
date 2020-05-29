@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
-    copyright (c) 2011 henrik andersson.
+    Copyright (C) 2009-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -47,9 +46,9 @@ typedef struct dt_lib_t
     struct
     {
       struct dt_lib_module_t *module;
-      uint8_t *picked_color_rgb_mean;
-      uint8_t *picked_color_rgb_min;
-      uint8_t *picked_color_rgb_max;
+      float *picked_color_rgb_mean;
+      float *picked_color_rgb_min;
+      float *picked_color_rgb_max;
       float *picked_color_lab_mean;
       float *picked_color_lab_min;
       float *picked_color_lab_max;
@@ -61,6 +60,7 @@ typedef struct dt_lib_t
       void (*update_panel)(struct dt_lib_module_t *self);
       void (*update_samples)(struct dt_lib_module_t *self);
       void (*set_sample_area)(struct dt_lib_module_t *self, float size);
+      void (*set_sample_box_area)(struct dt_lib_module_t *self, const float *const size);
       void (*set_sample_point)(struct dt_lib_module_t *self, float x, float y);
     } colorpicker;
 
@@ -85,7 +85,7 @@ typedef struct dt_lib_module_t
   GtkWidget *expander;
 
   /** version */
-  int (*version)();
+  int (*version)(void);
   /** get name of the module, to be translated. */
   const char *(*name)(struct dt_lib_module_t *self);
   /** get the views which the module should be loaded in. */
@@ -175,6 +175,8 @@ void dt_lib_presets_add(const char *name, const char *plugin_name, const int32_t
 
 /** set the colorpicker area selection tool and size, size 0.0 - 1.0 */
 void dt_lib_colorpicker_set_area(dt_lib_t *lib, float size);
+/** set the colorpicker area selection tool and size, box[k] 0.0 - 1.0 */
+void dt_lib_colorpicker_set_box_area(dt_lib_t *lib, const float *const box);
 
 /** set the colorpicker point selection tool and position */
 void dt_lib_colorpicker_set_point(dt_lib_t *lib, float x, float y);

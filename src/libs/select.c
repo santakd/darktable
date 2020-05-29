@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2010 johannes hanika.
-    copyright (c) 2010--2011 henrik andersson.
+    Copyright (C) 2010-2020 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -92,9 +91,8 @@ void gui_init(dt_lib_module_t *self)
   self->data = d;
   self->widget = gtk_grid_new();
   dt_gui_add_help_link(self->widget, "select.html#select_usage");
+
   GtkGrid *grid = GTK_GRID(self->widget);
-  gtk_grid_set_row_spacing(grid, DT_PIXEL_APPLY_DPI(5));
-  gtk_grid_set_column_spacing(grid, DT_PIXEL_APPLY_DPI(5));
   gtk_grid_set_column_homogeneous(grid, TRUE);
   int line = 0;
   GtkWidget *button;
@@ -133,7 +131,7 @@ void gui_init(dt_lib_module_t *self)
   ellipsize_button(button);
   d->select_untouched_button = button;
   gtk_widget_set_tooltip_text(button, _("select untouched images in\ncurrent collection"));
-  gtk_grid_attach(grid, button, 0, line, 1, 1);
+  gtk_grid_attach(grid, button, 0, line, 2, 1);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(4));
 }
 #undef ellipsize_button
