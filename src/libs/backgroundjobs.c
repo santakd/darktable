@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -91,8 +91,7 @@ void gui_init(dt_lib_module_t *self)
 
   // iterate over darktable.control->progress_system.list and add everything that is already there and update
   // its gui_data!
-  GList *iter = darktable.control->progress_system.list;
-  while(iter)
+  for(const GList *iter = darktable.control->progress_system.list; iter; iter = g_list_next(iter))
   {
     dt_progress_t *progress = (dt_progress_t *)iter->data;
     void *gui_data = dt_control_progress_get_gui_data(progress);
@@ -102,7 +101,6 @@ void gui_init(dt_lib_module_t *self)
     dt_control_progress_set_gui_data(progress, gui_data);
     if(dt_control_progress_cancellable(progress)) _lib_backgroundjobs_cancellable(self, gui_data, progress);
     _lib_backgroundjobs_updated(self, gui_data, dt_control_progress_get_progress(progress));
-    iter = g_list_next(iter);
   }
 
   dt_pthread_mutex_unlock(&darktable.control->progress_system.mutex);
@@ -200,11 +198,9 @@ static gboolean _destroyed_gui_thread(gpointer user_data)
     gtk_container_remove(GTK_CONTAINER(params->self->widget), params->instance->widget);
   params->instance->widget = NULL;
 
-  /* if jobbox is empty lets hide */
-  GList *childs = gtk_container_get_children(GTK_CONTAINER(params->self->widget));
-  if(!childs) gtk_widget_hide(params->self->widget);
-
-  g_list_free(childs);
+  /* if jobbox is empty let's hide */
+  if(!dt_gui_container_has_children(GTK_CONTAINER(params->self->widget)))
+    gtk_widget_hide(params->self->widget);
 
   // free data
   free(params->instance);
@@ -239,7 +235,7 @@ static gboolean _cancellable_gui_thread(gpointer user_data)
   _cancellable_gui_thread_t *params = (_cancellable_gui_thread_t *)user_data;
 
   GtkBox *hbox = GTK_BOX(params->instance->hbox);
-  GtkWidget *button = dtgtk_button_new(dtgtk_cairo_paint_cancel, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+  GtkWidget *button = dtgtk_button_new(dtgtk_cairo_paint_cancel, CPF_STYLE_FLAT, NULL);
   g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_lib_backgroundjobs_cancel_callback_new), params->progress);
   gtk_box_pack_start(hbox, GTK_WIDGET(button), FALSE, FALSE, 0);
   gtk_widget_show_all(button);

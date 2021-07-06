@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2014-2020 darktable developers.
+   Copyright (C) 2014-2021 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -80,9 +80,10 @@ int dt_lua_init_early_view(lua_State *L)
 int dt_lua_init_view(lua_State *L)
 {
   lua_pushcfunction(L, dt_lua_event_multiinstance_register);
+  lua_pushcfunction(L, dt_lua_event_multiinstance_destroy);
   lua_pushcfunction(L, dt_lua_event_multiinstance_trigger);
   dt_lua_event_add(L, "view-changed");
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED,
                             G_CALLBACK(on_view_changed), NULL);
   return 0;
 }

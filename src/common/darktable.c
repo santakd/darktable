@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2020 darktable developers.
+    Copyright (C) 2009-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -39,6 +39,7 @@
 #include "common/camera_control.h"
 #endif
 #include "bauhaus/bauhaus.h"
+#include "common/action.h"
 #include "common/cpuid.h"
 #include "common/file_location.h"
 #include "common/film.h"
@@ -58,15 +59,19 @@
 #include "control/control.h"
 #include "control/crawler.h"
 #include "control/jobs/control_jobs.h"
+#include "control/jobs/film_jobs.h"
 #include "control/signal.h"
 #include "develop/blend.h"
 #include "develop/imageop.h"
+#include "gui/accelerators.h"
 #include "gui/gtk.h"
 #include "gui/guides.h"
 #include "gui/presets.h"
 #include "libs/lib.h"
 #include "lua/init.h"
 #include "views/view.h"
+#include "conf_gen.h"
+
 #include <errno.h>
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -119,10 +124,17 @@ static int usage(const char *argv0)
   printf("  --cachedir <user cache directory>\n");
   printf("  --conf <key>=<value>\n");
   printf("  --configdir <user config directory>\n");
-  printf("  -d {all,cache,camctl,camsupport,control,dev,fswatch,input,lighttable,\n");
-  printf("      lua,masks,memory,nan,opencl,perf,pwstorage,print,sql,ioporder,\n");
-  printf("      imageio}\n");
+  printf("  -d {all,cache,camctl,camsupport,control,dev,fswatch,imageio,input,\n");
+  printf("      ioporder,lighttable,lua,masks,memory,nan,opencl,params,perf,demosaic\n");
+  printf("      pwstorage,print,signal,sql,undo}\n");
+  printf("  --d-signal <signal> \n");
+  printf("  --d-signal-act <all,raise,connect,disconnect");
+#ifdef DT_HAVE_SIGNAL_TRACE
+  printf(",print-trace");
+#endif
+  printf(">\n");
   printf("  --datadir <data directory>\n");
+  printf("  --enforce-tiling\n");
 #ifdef HAVE_OPENCL
   printf("  --disable-opencl\n");
 #endif
@@ -154,6 +166,51 @@ static int usage(const char *argv0)
   return 1;
 }
 
+gboolean dt_is_dev_version()
+{
+  // a dev version as an odd number after the first dot
+  char *p = (char *)darktable_package_string;
+  while(*p && (*p != '.')) p++;
+  if(p && (*p != '\0'))
+  {
+    p++;
+    const int val = *p - '0';
+    return val % 2 == 0 ? FALSE : TRUE;
+  }
+  return FALSE;
+}
+
+char *dt_version_major_minor()
+{
+  char ver[100] = { 0 };
+  g_strlcpy(ver, darktable_package_string, sizeof(ver));
+  int count = -1;
+  char *start = ver;
+  for(char *p = ver; *p; p++)
+  {
+    // first look for a number
+    if(count == -1)
+    {
+      if(*p >= '0' && *p <= '9')
+      {
+        count++;
+        start = p;
+      }
+    }
+    // then check for <major>.<minor>
+    else
+    {
+      if(*p == '.' || *p == '+') count++;
+      if(count == 2)
+      {
+        *p = '\0';
+        break;
+      }
+    }
+  }
+  return g_strdup(start);
+}
+
 gboolean dt_supported_image(const gchar *filename)
 {
   gboolean supported = FALSE;
@@ -170,64 +227,9 @@ gboolean dt_supported_image(const gchar *filename)
   return supported;
 }
 
-static void strip_semicolons_from_keymap(const char *path)
-{
-  char pathtmp[PATH_MAX] = { 0 };
-  FILE *fin = g_fopen(path, "rb");
-  FILE *fout;
-
-  if(!fin) return;
-
-  snprintf(pathtmp, sizeof(pathtmp), "%s_tmp", path);
-  fout = g_fopen(pathtmp, "wb");
-
-  if(!fout)
-  {
-    fclose(fin);
-    return;
-  }
-
-  int c = '\0';
-  // First ignoring the first three lines
-  for(int i = 0; i < 3; i++)
-  {
-    while(c != '\n' && c != '\r' && c != EOF) c = fgetc(fin);
-    while(c == '\n' || c == '\r') c = fgetc(fin);
-    ungetc(c, fin);
-  }
-
-  // Then ignore the first two characters of each line, copying the rest out
-  while(c != EOF)
-  {
-    fseek(fin, 2, SEEK_CUR);
-    while(c != '\n' && c != '\r' && c != EOF)
-    {
-      c = fgetc(fin);
-      if(c != '\n' && c != '\r' && c != EOF) fputc(c, fout);
-    }
-    while(c == '\n' || c == '\r')
-    {
-      fputc(c, fout);
-      c = fgetc(fin);
-    }
-    ungetc(c, fin);
-  }
-
-  fclose(fin);
-  fclose(fout);
-
-  GFile *gpath = g_file_new_for_path(path);
-  GFile *gpathtmp = g_file_new_for_path(pathtmp);
-
-  g_file_delete(gpath, NULL, NULL);
-  g_file_move(gpathtmp, gpath, 0, NULL, NULL, NULL, NULL);
-  g_object_unref(gpath);
-  g_object_unref(gpathtmp);
-}
-
 int dt_load_from_string(const gchar *input, gboolean open_image_in_dr, gboolean *single_image)
 {
-  int id = 0;
+  int32_t id = 0;
   if(input == NULL || input[0] == '\0') return 0;
 
   char *filename = dt_util_normalize_path(input);
@@ -259,7 +261,7 @@ int dt_load_from_string(const gchar *input, gboolean open_image_in_dr, gboolean 
     gchar *directory = g_path_get_dirname((const gchar *)filename);
     dt_film_t film;
     const int filmid = dt_film_new(&film, directory);
-    id = dt_image_import(filmid, filename, TRUE);
+    id = dt_image_import(filmid, filename, TRUE, TRUE);
     g_free(directory);
     if(id)
     {
@@ -378,56 +380,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
   // make sure that stack/frame limits are good (musl)
   dt_set_rlimits();
-
-  // we have to have our share dir in XDG_DATA_DIRS,
-  // otherwise GTK+ won't find our logo for the about screen (and maybe other things)
-  {
-    const gchar *xdg_data_dirs = g_getenv("XDG_DATA_DIRS");
-    gchar *new_xdg_data_dirs = NULL;
-    gboolean set_env = TRUE;
-    if(xdg_data_dirs != NULL && *xdg_data_dirs != '\0')
-    {
-      // check if DARKTABLE_SHAREDIR is already in there
-      gboolean found = FALSE;
-      gchar **tokens = g_strsplit(xdg_data_dirs, G_SEARCHPATH_SEPARATOR_S, 0);
-      // xdg_data_dirs is neither NULL nor empty => tokens != NULL
-      for(char **iter = tokens; *iter != NULL; iter++)
-        if(!strcmp(DARKTABLE_SHAREDIR, *iter))
-        {
-          found = TRUE;
-          break;
-        }
-      g_strfreev(tokens);
-      if(found)
-        set_env = FALSE;
-      else
-        new_xdg_data_dirs = g_strjoin(G_SEARCHPATH_SEPARATOR_S, DARKTABLE_SHAREDIR, xdg_data_dirs, NULL);
-    }
-    else
-    {
-#ifndef _WIN32
-      // see http://standards.freedesktop.org/basedir-spec/latest/ar01s03.html for a reason to use those as a
-      // default
-      if(!g_strcmp0(DARKTABLE_SHAREDIR, "/usr/local/share")
-         || !g_strcmp0(DARKTABLE_SHAREDIR, "/usr/local/share/")
-         || !g_strcmp0(DARKTABLE_SHAREDIR, "/usr/share") || !g_strcmp0(DARKTABLE_SHAREDIR, "/usr/share/"))
-        new_xdg_data_dirs = g_strdup("/usr/local/share/" G_SEARCHPATH_SEPARATOR_S "/usr/share/");
-      else
-        new_xdg_data_dirs = g_strdup_printf("%s" G_SEARCHPATH_SEPARATOR_S "/usr/local/share/" G_SEARCHPATH_SEPARATOR_S
-                                            "/usr/share/", DARKTABLE_SHAREDIR);
-#else
-      set_env = FALSE;
-#endif
-    }
-
-    if(set_env) g_setenv("XDG_DATA_DIRS", new_xdg_data_dirs, 1);
-    g_free(new_xdg_data_dirs);
-  }
-
-  setlocale(LC_ALL, "");
-  bindtextdomain(GETTEXT_PACKAGE, DARKTABLE_LOCALEDIR);
-  bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
-  textdomain(GETTEXT_PACKAGE);
 
   // init all pointers to 0:
   memset(&darktable, 0, sizeof(darktable_t));
@@ -611,14 +563,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
       else if(!strcmp(argv[k], "--localedir") && argc > k + 1)
       {
         localedir_from_command = argv[++k];
-        bindtextdomain(GETTEXT_PACKAGE, localedir_from_command);
         argv[k-1] = NULL;
         argv[k] = NULL;
       }
       else if(argv[k][1] == 'd' && argc > k + 1)
       {
         if(!strcmp(argv[k + 1], "all"))
-          darktable.unmuted = 0xffffffff; // enable all debug information
+          darktable.unmuted = 0xffffffff & ~DT_DEBUG_TILING; // enable all debug information except the enforce-tiling flag
         else if(!strcmp(argv[k + 1], "cache"))
           darktable.unmuted |= DT_DEBUG_CACHE; // enable debugging for lib/film/cache module
         else if(!strcmp(argv[k + 1], "control"))
@@ -653,10 +604,101 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
           darktable.unmuted |= DT_DEBUG_CAMERA_SUPPORT; // camera support warnings are reported on console
         else if(!strcmp(argv[k + 1], "ioporder"))
           darktable.unmuted |= DT_DEBUG_IOPORDER; // iop order information are reported on console
-        else if(!strcmp(argv[k + 1], "imageio")) {
-          darktable.unmuted |= DT_DEBUG_IMAGEIO; // image importing or exporting mesages on console
-        } else
+        else if(!strcmp(argv[k + 1], "imageio"))
+          darktable.unmuted |= DT_DEBUG_IMAGEIO; // image importing or exporting messages on console
+        else if(!strcmp(argv[k + 1], "undo"))
+          darktable.unmuted |= DT_DEBUG_UNDO; // undo/redo
+        else if(!strcmp(argv[k + 1], "signal"))
+          darktable.unmuted |= DT_DEBUG_SIGNAL; // signal information on console
+        else if(!strcmp(argv[k + 1], "params"))
+          darktable.unmuted |= DT_DEBUG_PARAMS; // iop module params checks on console
+        else if(!strcmp(argv[k + 1], "demosaic"))
+          darktable.unmuted |= DT_DEBUG_DEMOSAIC;
+        else
           return usage(argv[0]);
+        k++;
+        argv[k-1] = NULL;
+        argv[k] = NULL;
+      }
+      else if(!strcmp(argv[k], "--d-signal-act") && argc > k + 1)
+      {
+        if(!strcmp(argv[k + 1], "all"))
+          darktable.unmuted_signal_dbg_acts = 0xffffffff; // enable all signal debug information
+        else if(!strcmp(argv[k + 1], "raise"))
+          darktable.unmuted_signal_dbg_acts |= DT_DEBUG_SIGNAL_ACT_RAISE; // enable debugging for signal raising
+        else if(!strcmp(argv[k + 1], "connect"))
+          darktable.unmuted_signal_dbg_acts |= DT_DEBUG_SIGNAL_ACT_CONNECT; // enable debugging for signal connection
+        else if(!strcmp(argv[k + 1], "disconnect"))
+          darktable.unmuted_signal_dbg_acts |= DT_DEBUG_SIGNAL_ACT_DISCONNECT; // enable debugging for signal disconnection
+        else if(!strcmp(argv[k + 1], "print-trace"))
+        {
+#ifdef DT_HAVE_SIGNAL_TRACE
+          darktable.unmuted_signal_dbg_acts |= DT_DEBUG_SIGNAL_ACT_PRINT_TRACE; // enable printing of signal tracing
+#else
+          fprintf(stderr, "[signal] print-trace not available, skipping\n");
+#endif
+        }
+        else
+          return usage(argv[0]);
+        k++;
+        argv[k-1] = NULL;
+        argv[k] = NULL;
+      }
+      else if(!strcmp(argv[k], "--d-signal") && argc > k + 1)
+      {
+        gchar *str = g_ascii_strup(argv[k+1], -1);
+
+        #define CHKSIGDBG(sig) else if(!g_strcmp0(str, #sig)) do {darktable.unmuted_signal_dbg[sig] = TRUE;} while (0)
+        if(!g_strcmp0(str, "ALL"))
+        {
+          for(int sig=0; sig<DT_SIGNAL_COUNT; sig++)
+            darktable.unmuted_signal_dbg[sig] = TRUE;
+        }
+        CHKSIGDBG(DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_ACTIVE_IMAGES_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_REDRAW_ALL);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_REDRAW_CENTER);
+        CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE);
+        CHKSIGDBG(DT_SIGNAL_COLLECTION_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_SELECTION_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_TAG_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_METADATA_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_IMAGE_INFO_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_STYLE_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_IMAGES_ORDER_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_FILMROLLS_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_FILMROLLS_IMPORTED);
+        CHKSIGDBG(DT_SIGNAL_FILMROLLS_REMOVED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_INITIALIZE);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_MIPMAP_UPDATED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_PREVIEW2_PIPE_FINISHED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_HISTORY_WILL_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_HISTORY_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_MODULE_REMOVE);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_MODULE_MOVED);
+        CHKSIGDBG(DT_SIGNAL_DEVELOP_IMAGE_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_PROFILE_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED);
+        CHKSIGDBG(DT_SIGNAL_IMAGE_IMPORT);
+        CHKSIGDBG(DT_SIGNAL_IMAGE_EXPORT_TMPFILE);
+        CHKSIGDBG(DT_SIGNAL_IMAGEIO_STORAGE_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_PREFERENCES_CHANGE);
+        CHKSIGDBG(DT_SIGNAL_CAMERA_DETECTED);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_NAVIGATION_REDRAW);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_LOG_REDRAW);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_TOAST_REDRAW);
+        CHKSIGDBG(DT_SIGNAL_CONTROL_PICKERDATA_READY);
+        CHKSIGDBG(DT_SIGNAL_METADATA_UPDATE);
+        else
+        {
+          fprintf(stderr, "unknown signal name: '%s'. use 'ALL' to enable debug for all or use full signal name\n", str);
+          return usage(argv[0]);
+        }
+        g_free(str);
+        #undef CHKSIGDBG
         k++;
         argv[k-1] = NULL;
         argv[k] = NULL;
@@ -709,6 +751,11 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 #endif
         argv[k] = NULL;
       }
+      else if(!strcmp(argv[k], "--enforce-tiling"))
+      {
+        darktable.unmuted |= DT_DEBUG_TILING;
+        argv[k] = NULL;
+      }
       else if(!strcmp(argv[k], "--"))
       {
         // "--" confuses the argument parser of glib/gtk. remove it.
@@ -746,11 +793,70 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     }
   }
 
+  // get valid directories
+  dt_loc_init(datadir_from_command, moduledir_from_command, localedir_from_command, configdir_from_command, cachedir_from_command, tmpdir_from_command);
+
   if(darktable.unmuted & DT_DEBUG_MEMORY)
   {
     fprintf(stderr, "[memory] at startup\n");
     dt_print_mem_usage();
   }
+
+  char sharedir[PATH_MAX] = { 0 };
+  dt_loc_get_sharedir(sharedir, sizeof(sharedir));
+
+  // we have to have our share dir in XDG_DATA_DIRS,
+  // otherwise GTK+ won't find our logo for the about screen (and maybe other things)
+  {
+    const gchar *xdg_data_dirs = g_getenv("XDG_DATA_DIRS");
+    gchar *new_xdg_data_dirs = NULL;
+    gboolean set_env = TRUE;
+    if(xdg_data_dirs != NULL && *xdg_data_dirs != '\0')
+    {
+      // check if sharedir is already in there
+      gboolean found = FALSE;
+      gchar **tokens = g_strsplit(xdg_data_dirs, G_SEARCHPATH_SEPARATOR_S, 0);
+      // xdg_data_dirs is neither NULL nor empty => tokens != NULL
+      for(char **iter = tokens; *iter != NULL; iter++)
+        if(!strcmp(sharedir, *iter))
+        {
+          found = TRUE;
+          break;
+        }
+      g_strfreev(tokens);
+      if(found)
+        set_env = FALSE;
+      else
+        new_xdg_data_dirs = g_strjoin(G_SEARCHPATH_SEPARATOR_S, sharedir, xdg_data_dirs, NULL);
+    }
+    else
+    {
+#ifndef _WIN32
+      // see http://standards.freedesktop.org/basedir-spec/latest/ar01s03.html for a reason to use those as a
+      // default
+      if(!g_strcmp0(sharedir, "/usr/local/share")
+         || !g_strcmp0(sharedir, "/usr/local/share/")
+         || !g_strcmp0(sharedir, "/usr/share") || !g_strcmp0(sharedir, "/usr/share/"))
+        new_xdg_data_dirs = g_strdup("/usr/local/share/" G_SEARCHPATH_SEPARATOR_S "/usr/share/");
+      else
+        new_xdg_data_dirs = g_strdup_printf("%s" G_SEARCHPATH_SEPARATOR_S "/usr/local/share/" G_SEARCHPATH_SEPARATOR_S
+                                            "/usr/share/", sharedir);
+#else
+      set_env = FALSE;
+#endif
+    }
+
+    if(set_env) g_setenv("XDG_DATA_DIRS", new_xdg_data_dirs, 1);
+    dt_print(DT_DEBUG_DEV, "new_xdg_data_dirs: %s\n", new_xdg_data_dirs);
+    g_free(new_xdg_data_dirs);
+  }
+
+  setlocale(LC_ALL, "");
+  char localedir[PATH_MAX] = { 0 };
+  dt_loc_get_localedir(localedir, sizeof(localedir));
+  bindtextdomain(GETTEXT_PACKAGE, localedir);
+  bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
+  textdomain(GETTEXT_PACKAGE);
 
   if(init_gui)
   {
@@ -764,16 +870,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 #ifdef _OPENMP
   omp_set_num_threads(darktable.num_openmp_threads);
 #endif
-  dt_loc_init_datadir(datadir_from_command);
-  dt_loc_init_plugindir(moduledir_from_command);
-  dt_loc_init_localedir(localedir_from_command);
-  if(dt_loc_init_tmp_dir(tmpdir_from_command))
-  {
-    fprintf(stderr, "error: invalid temporary directory: %s\n", darktable.tmpdir);
-    return usage(argv[0]);
-  }
-  dt_loc_init_user_config_dir(configdir_from_command);
-  dt_loc_init_user_cache_dir(cachedir_from_command);
 
 #ifdef USE_LUA
   dt_lua_init_early(L);
@@ -794,6 +890,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   // set the interface language and prepare selection for prefs
   darktable.l10n = dt_l10n_init(init_gui);
 
+  dt_confgen_init();
+
   // we need this REALLY early so that error messages can be shown, however after gtk_disable_setlocale
   if(init_gui)
   {
@@ -805,13 +903,15 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 #endif
     gtk_init(&argc, &argv);
 
+    darktable.themes = NULL;
+
     // execute a performance check and configuration if needed
     int last_configure_version = dt_conf_get_int("performance_configuration_version_completed");
     if(last_configure_version < DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION)
     {
       // ask the user whether he/she would like
       // dt to make changes in the settings
-      gboolean run_configure = dt_gui_show_standalone_yes_no_dialog(
+      const gboolean run_configure = dt_gui_show_standalone_yes_no_dialog(
           _("darktable - run performance configuration?"),
           _("we have an updated performance configuration logic - executing that might improve the performance of "
             "darktable.\nthis will potentially overwrite some of your existing settings - especially in case you "
@@ -874,7 +974,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   }
 
   //db maintenance on startup (if configured to do so)
-  dt_database_maybe_maintenance(darktable.db, init_gui, FALSE);
+  if(dt_database_maybe_maintenance(darktable.db, init_gui, FALSE))
+  {
+    dt_database_perform_maintenance(darktable.db);
+  }
+
+  // init darktable tags table
+  dt_set_darktable_tags();
 
   // Initialize the signal system
   darktable.signals = dt_control_signal_init();
@@ -897,8 +1003,14 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     if(dbfilename_from_command && !strcmp(dbfilename_from_command, ":memory:"))
       dt_gui_presets_init(); // init preset db schema.
     darktable.control->running = 0;
-    darktable.control->accelerators = NULL;
     dt_pthread_mutex_init(&darktable.control->run_mutex, NULL);
+  }
+
+  // we initialize grouping early because it's needed for collection init
+  if(init_gui)
+  {
+    darktable.gui = (dt_gui_gtk_t *)calloc(1, sizeof(dt_gui_gtk_t));
+    darktable.gui->grouping = dt_conf_get_bool("ui_last/grouping");
   }
 
   // initialize collection query
@@ -914,8 +1026,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   darktable.pwstorage = dt_pwstorage_new();
 
   darktable.guides = dt_guides_init();
-
-  darktable.themes = NULL;
 
 #ifdef HAVE_GRAPHICSMAGICK
   /* GraphicsMagick init */
@@ -952,7 +1062,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
   if(init_gui)
   {
-    darktable.gui = (dt_gui_gtk_t *)calloc(1, sizeof(dt_gui_gtk_t));
     if(dt_gui_gtk_init(darktable.gui))
     {
       fprintf(stderr, "ERROR: can't init gui, aborting.\n");
@@ -995,6 +1104,9 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   // set up the list of exiv2 metadata
   dt_exif_set_exiv2_taglist();
 
+  // init metadata flags
+  dt_metadata_init();
+
   if(init_gui)
   {
 #ifdef HAVE_GPHOTO2
@@ -1010,22 +1122,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
     // init the gui part of views
     dt_view_manager_gui_init(darktable.view_manager);
-    // Loading the keybindings
-    char keyfile[PATH_MAX] = { 0 };
 
-    // First dump the default keymapping
-    snprintf(keyfile, sizeof(keyfile), "%s/keyboardrc_default", datadir);
-    gtk_accel_map_save(keyfile);
+    // Then load any shortcuts if available
+    dt_shortcuts_load(FALSE); //
 
-    // Removing extraneous semi-colons from the default keymap
-    strip_semicolons_from_keymap(keyfile);
-
-    // Then load any modified keys if available
-    snprintf(keyfile, sizeof(keyfile), "%s/keyboardrc", datadir);
-    if(g_file_test(keyfile, G_FILE_TEST_EXISTS))
-      gtk_accel_map_load(keyfile);
-    else
-      gtk_accel_map_save(keyfile); // Save the default keymap if none is present
+    // Save the shortcuts including defaults
+    dt_shortcuts_save(TRUE);
 
     // initialize undo struct
     darktable.undo = dt_undo_init();
@@ -1072,28 +1174,15 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 #ifndef MAC_INTEGRATION
     // load image(s) specified on cmdline.
     // this has to happen after lua is initialized as image import can run lua code
-    // If only one image is listed, attempt to load it in darkroom
-    int last_id = 0;
-    gboolean only_single_images = TRUE;
-    int loaded_images = 0;
-
-    for(int i = 1; i < argc; i++)
+    if (argc == 2)
     {
-      gboolean single_image = FALSE;
-      if(argv[i] == NULL || *argv[i] == '\0') continue;
-      int new_id = dt_load_from_string(argv[i], FALSE, &single_image);
-      if(new_id > 0)
-      {
-        last_id = new_id;
-        loaded_images++;
-        if(!single_image) only_single_images = FALSE;
-      }
+      // If only one image is listed, attempt to load it in darkroom
+      (void)dt_load_from_string(argv[1], TRUE, NULL);
     }
-
-    if(loaded_images == 1 && only_single_images)
+    else if (argc > 2)
     {
-      dt_control_set_mouse_over_id(last_id);
-      dt_ctl_switch_mode_to("darkroom");
+      // when multiple names are given, fire up a background job to import them
+      dt_control_add_job(darktable.control, DT_JOB_QUEUE_USER_BG, dt_pathlist_import_create(argc,argv));
     }
 #endif
   }
@@ -1114,7 +1203,15 @@ void dt_cleanup()
 {
   const int init_gui = (darktable.gui != NULL);
 
-  dt_database_maybe_maintenance(darktable.db, init_gui, TRUE);
+  // last chance to ask user for any input...
+
+  const gboolean perform_maintenance = dt_database_maybe_maintenance(darktable.db, init_gui, TRUE);
+  const gboolean perform_snapshot = dt_database_maybe_snapshot(darktable.db);
+  gchar **snaps_to_remove = NULL;
+  if(perform_snapshot)
+  {
+    snaps_to_remove = dt_database_snaps_to_remove(darktable.db);
+  }
 
 #ifdef HAVE_PRINT
   dt_printers_abort_discovery();
@@ -1123,8 +1220,14 @@ void dt_cleanup()
 #ifdef USE_LUA
   dt_lua_finalize_early();
 #endif
+
+  // anything that asks user for input should be placed before this line
+
   if(init_gui)
   {
+    // hide main window and do rest of the cleanup in the background
+    gtk_widget_hide(dt_ui_main_window(darktable.gui->ui));
+
     dt_ctl_switch_mode_to("");
     dt_dbus_destroy(darktable.dbus);
 
@@ -1168,6 +1271,7 @@ void dt_cleanup()
   free(darktable.opencl);
 #ifdef HAVE_GPHOTO2
   dt_camctl_destroy((dt_camctl_t *)darktable.camctl);
+  darktable.camctl = NULL;
 #endif
   dt_pwstorage_destroy(darktable.pwstorage);
 
@@ -1179,12 +1283,44 @@ void dt_cleanup()
 
   dt_guides_cleanup(darktable.guides);
 
+  if(perform_maintenance)
+  {
+    dt_database_cleanup_busy_statements(darktable.db);
+    dt_database_perform_maintenance(darktable.db);
+  }
+
   dt_database_optimize(darktable.db);
+  if(perform_snapshot)
+  {
+    if(dt_database_snapshot(darktable.db) && snaps_to_remove)
+    {
+      int i = 0;
+      while(snaps_to_remove[i])
+      {
+        // make file to remove writable, mostly problem on windows.
+        g_chmod(snaps_to_remove[i], S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+
+        dt_print(DT_DEBUG_SQL, "[db backup] removing old snap: %s... ", snaps_to_remove[i]);
+        const int retunlink = g_remove(snaps_to_remove[i++]);
+        dt_print(DT_DEBUG_SQL, "%s\n", retunlink == 0 ? "success" : "failed!");
+      }
+    }
+  }
+  if(snaps_to_remove)
+  {
+    g_strfreev(snaps_to_remove);
+  }
   dt_database_destroy(darktable.db);
 
   if(init_gui)
   {
     dt_bauhaus_cleanup();
+  }
+
+  if (darktable.noiseprofile_parser)
+  {
+    g_object_unref(darktable.noiseprofile_parser);
+    darktable.noiseprofile_parser = NULL;
   }
 
   dt_capabilities_cleanup();
@@ -1234,6 +1370,14 @@ void *dt_alloc_align(size_t alignment, size_t size)
   return malloc(aligned_size);
 #elif defined(_WIN32)
   return _aligned_malloc(aligned_size, alignment);
+#elif defined(_DEBUG)
+  // for a debug build, ensure that we get a crash if we use plain free() to release the allocated memory, by
+  // returning a pointer which isn't a valid memory block address
+  void *ptr = NULL;
+  if(posix_memalign(&ptr, alignment, aligned_size + alignment)) return NULL;
+  short *offset = (short*)(((char*)ptr) + alignment - sizeof(short));
+  *offset = alignment;
+  return ((char*)ptr) + alignment ;
 #else
   void *ptr = NULL;
   if(posix_memalign(&ptr, alignment, aligned_size)) return NULL;
@@ -1258,6 +1402,16 @@ size_t dt_round_size_sse(const size_t size)
 void dt_free_align(void *mem)
 {
   _aligned_free(mem);
+}
+#elif defined(_DEBUG)
+void dt_free_align(void *mem)
+{
+  // on a debug build, we deliberately offset the returned pointer from dt_alloc_align, so eliminate the offset
+  if (mem)
+  {
+    short offset = ((short*)mem)[-1];
+    free(((char*)mem)-offset);
+  }
 }
 #endif
 
@@ -1296,15 +1450,141 @@ void dt_show_times_f(const dt_times_t *start, const char *prefix, const char *su
   }
 }
 
+static inline int _get_num_atom_cores()
+{
+#if defined(__linux__)
+  int count = 0;
+  char line[256];
+  FILE *f = g_fopen("/proc/cpuinfo", "r");
+  if(f)
+  {
+    while(!feof(f))
+    {
+      if(fgets(line, sizeof(line), f))
+      {
+        if(!strncmp(line, "model name", 10))
+        {
+          if(strstr(line, "Atom"))
+          {
+            count++;
+          }
+        }
+      }
+    }
+    fclose(f);
+  }
+  return count;
+#elif defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  int ret, hw_ncpu;
+  int mib[2] = { CTL_HW, HW_MODEL };
+  char *hw_model, *index;
+  size_t length;
+
+  /* Query hw.model to get the required buffer length and allocate the
+   * buffer. */
+  ret = sysctl(mib, 2, NULL, &length, NULL, 0);
+  if(ret != 0)
+  {
+    return 0;
+  }
+
+  hw_model = (char *)malloc(length + 1);
+  if(hw_model == NULL)
+  {
+    return 0;
+  }
+
+  /* Query hw.model again, this time with the allocated buffer. */
+  ret = sysctl(mib, 2, hw_model, &length, NULL, 0);
+  if(ret != 0)
+  {
+    free(hw_model);
+    return 0;
+  }
+  hw_model[length] = '\0';
+
+  /* Check if the processor model name contains "Atom". */
+  index = strstr(hw_model, "Atom");
+  free(hw_model);
+  if(index == NULL)
+  {
+    return 0;
+  }
+
+  /* Get the number of cores, using hw.ncpu sysctl. */
+  mib[1] = HW_NCPU;
+  hw_ncpu = 0;
+  length = sizeof(hw_ncpu);
+  ret = sysctl(mib, 2, &hw_ncpu, &length, NULL, 0);
+  if(ret != 0)
+  {
+    return 0;
+  }
+
+  return hw_ncpu;
+#else
+  return 0;
+#endif
+}
+
+static inline size_t _get_total_memory()
+{
+#if defined(__linux__)
+  FILE *f = g_fopen("/proc/meminfo", "rb");
+  if(!f) return 0;
+  size_t mem = 0;
+  char *line = NULL;
+  size_t len = 0;
+  if(getline(&line, &len, f) != -1) mem = atol(line + 10);
+  fclose(f);
+  if(len > 0) free(line);
+  return mem;
+#elif defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__)            \
+    || defined(__OpenBSD__)
+#if defined(__APPLE__)
+  int mib[2] = { CTL_HW, HW_MEMSIZE };
+#elif defined(HW_PHYSMEM64)
+  int mib[2] = { CTL_HW, HW_PHYSMEM64 };
+#else
+  int mib[2] = { CTL_HW, HW_PHYSMEM };
+#endif
+  uint64_t physical_memory;
+  size_t length = sizeof(uint64_t);
+  sysctl(mib, 2, (void *)&physical_memory, &length, (void *)NULL, 0);
+  return physical_memory / 1024;
+#elif defined _WIN32
+  MEMORYSTATUSEX memInfo;
+  memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+  GlobalMemoryStatusEx(&memInfo);
+  return memInfo.ullTotalPhys / (uint64_t)1024;
+#else
+  // assume 2GB until we have a better solution.
+  fprintf(stderr, "Unknown memory size. Assuming 2GB\n");
+  return 2097152;
+#endif
+}
+
+int dt_worker_threads()
+{
+  const int atom_cores = _get_num_atom_cores();
+  const size_t threads = dt_get_num_threads();
+  const size_t mem = _get_total_memory();
+  if(mem >= (8lu << 20) && threads >= 4 && atom_cores == 0)
+    return 4;
+  else if(threads >= 2 && atom_cores == 0)
+    return 2;
+  return 1;
+}
+
 void dt_configure_performance()
 {
-  const int atom_cores = dt_get_num_atom_cores();
-  const int threads = dt_get_num_threads();
-  const size_t mem = dt_get_total_memory();
+  const int atom_cores = _get_num_atom_cores();
+  const size_t threads = dt_get_num_threads();
+  const size_t mem = _get_total_memory();
   const size_t bits = CHAR_BIT * sizeof(void *);
   gchar *demosaic_quality = dt_conf_get_string("plugins/darkroom/demosaic/quality");
 
-  fprintf(stderr, "[defaults] found a %zu-bit system with %zu kb ram and %d cores (%d atom based)\n",
+  fprintf(stderr, "[defaults] found a %zu-bit system with %zu kb ram and %zu cores (%d atom based)\n",
           bits, mem, threads, atom_cores);
   if(mem >= (8lu << 20) && threads > 4 && atom_cores == 0)
   {
@@ -1312,13 +1592,12 @@ void dt_configure_performance()
     // But respect if user has set higher values manually earlier
     fprintf(stderr, "[defaults] setting very high quality defaults\n");
 
-    dt_conf_set_int("worker_threads", MAX(8, dt_conf_get_int("worker_threads")));
     // if machine has at least 8GB RAM, use half of the total memory size
     dt_conf_set_int("host_memory_limit", MAX(mem >> 11, dt_conf_get_int("host_memory_limit")));
     dt_conf_set_int("singlebuffer_limit", MAX(16, dt_conf_get_int("singlebuffer_limit")));
     if(demosaic_quality == NULL || !strcmp(demosaic_quality, "always bilinear (fast)"))
-      dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most PPG (reasonable)");
-    dt_conf_set_bool("plugins/lighttable/low_quality_thumbnails", FALSE);
+      dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most RCD (reasonable)");
+    dt_conf_set_bool("ui/performance", FALSE);
   }
   else if(mem > (2lu << 20) && threads >= 4 && atom_cores == 0)
   {
@@ -1326,34 +1605,31 @@ void dt_configure_performance()
     // But respect if user has set higher values manually earlier
     fprintf(stderr, "[defaults] setting high quality defaults\n");
 
-    dt_conf_set_int("worker_threads", MAX(8, dt_conf_get_int("worker_threads")));
     dt_conf_set_int("host_memory_limit", MAX(1500, dt_conf_get_int("host_memory_limit")));
     dt_conf_set_int("singlebuffer_limit", MAX(16, dt_conf_get_int("singlebuffer_limit")));
     if(demosaic_quality == NULL ||!strcmp(demosaic_quality, "always bilinear (fast)"))
-      dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most PPG (reasonable)");
-    dt_conf_set_bool("plugins/lighttable/low_quality_thumbnails", FALSE);
+      dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most RCD (reasonable)");
+    dt_conf_set_bool("ui/performance", FALSE);
   }
   else if(mem < (1lu << 20) || threads <= 2 || atom_cores > 0)
   {
     // CONFIG 3: For less than 1GB RAM or 2 or less cores, or for atom processors
     // use very low/conservative settings
     fprintf(stderr, "[defaults] setting very conservative defaults\n");
-    dt_conf_set_int("worker_threads", 1);
     dt_conf_set_int("host_memory_limit", 500);
     dt_conf_set_int("singlebuffer_limit", 8);
     dt_conf_set_string("plugins/darkroom/demosaic/quality", "always bilinear (fast)");
-    dt_conf_set_bool("plugins/lighttable/low_quality_thumbnails", TRUE);
+    dt_conf_set_bool("ui/performance", TRUE);
   }
   else
   {
     // CONFIG 4: for everything else use explicit defaults
     fprintf(stderr, "[defaults] setting normal defaults\n");
 
-    dt_conf_set_int("worker_threads", 2);
     dt_conf_set_int("host_memory_limit", 1500);
     dt_conf_set_int("singlebuffer_limit", 16);
-    dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most PPG (reasonable)");
-    dt_conf_set_bool("plugins/lighttable/low_quality_thumbnails", FALSE);
+    dt_conf_set_string("plugins/darkroom/demosaic/quality", "at most RCD (reasonable)");
+    dt_conf_set_bool("ui/performance", FALSE);
   }
 
   g_free(demosaic_quality);
@@ -1367,15 +1643,12 @@ void dt_configure_performance()
 
 int dt_capabilities_check(char *capability)
 {
-  GList *capabilities = darktable.capabilities;
-
-  while(capabilities)
+  for(GList *capabilities = darktable.capabilities; capabilities; capabilities = g_list_next(capabilities))
   {
     if(!strcmp(capabilities->data, capability))
     {
       return TRUE;
     }
-    capabilities = g_list_next(capabilities);
   }
   return FALSE;
 }
@@ -1408,6 +1681,92 @@ void dt_capabilities_cleanup()
     darktable.capabilities = g_list_delete_link(darktable.capabilities, darktable.capabilities);
 }
 
+
+void dt_print_mem_usage()
+{
+#if defined(__linux__)
+  char *line = NULL;
+  size_t len = 128;
+  char vmsize[64];
+  char vmpeak[64];
+  char vmrss[64];
+  char vmhwm[64];
+  FILE *f;
+
+  char pidstatus[128];
+  snprintf(pidstatus, sizeof(pidstatus), "/proc/%u/status", (uint32_t)getpid());
+
+  f = g_fopen(pidstatus, "r");
+  if(!f) return;
+
+  /* read memory size data from /proc/pid/status */
+  while(getline(&line, &len, f) != -1)
+  {
+    if(!strncmp(line, "VmPeak:", 7))
+      g_strlcpy(vmpeak, line + 8, sizeof(vmpeak));
+    else if(!strncmp(line, "VmSize:", 7))
+      g_strlcpy(vmsize, line + 8, sizeof(vmsize));
+    else if(!strncmp(line, "VmRSS:", 6))
+      g_strlcpy(vmrss, line + 8, sizeof(vmrss));
+    else if(!strncmp(line, "VmHWM:", 6))
+      g_strlcpy(vmhwm, line + 8, sizeof(vmhwm));
+  }
+  free(line);
+  fclose(f);
+
+  fprintf(stderr, "[memory] max address space (vmpeak): %15s"
+                  "[memory] cur address space (vmsize): %15s"
+                  "[memory] max used memory   (vmhwm ): %15s"
+                  "[memory] cur used memory   (vmrss ): %15s",
+          vmpeak, vmsize, vmhwm, vmrss);
+
+#elif defined(__APPLE__)
+  struct task_basic_info t_info;
+  mach_msg_type_number_t t_info_count = TASK_BASIC_INFO_COUNT;
+
+  if(KERN_SUCCESS != task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&t_info, &t_info_count))
+  {
+    fprintf(stderr, "[memory] task memory info unknown.\n");
+    return;
+  }
+
+  // Report in kB, to match output of /proc on Linux.
+  fprintf(stderr, "[memory] max address space (vmpeak): %15s\n"
+                  "[memory] cur address space (vmsize): %12llu kB\n"
+                  "[memory] max used memory   (vmhwm ): %15s\n"
+                  "[memory] cur used memory   (vmrss ): %12llu kB\n",
+          "unknown", (uint64_t)t_info.virtual_size / 1024, "unknown", (uint64_t)t_info.resident_size / 1024);
+#elif defined (_WIN32)
+  //Based on: http://stackoverflow.com/questions/63166/how-to-determine-cpu-and-memory-consumption-from-inside-a-process
+  MEMORYSTATUSEX memInfo;
+  memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+  GlobalMemoryStatusEx(&memInfo);
+  // DWORDLONG totalVirtualMem = memInfo.ullTotalPageFile;
+
+  // Virtual Memory currently used by current process:
+  PROCESS_MEMORY_COUNTERS_EX pmc;
+  GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc));
+  size_t virtualMemUsedByMe = pmc.PagefileUsage;
+  size_t virtualMemUsedByMeMax = pmc.PeakPagefileUsage;
+
+  // Max Physical Memory currently used by current process
+  size_t physMemUsedByMeMax = pmc.PeakWorkingSetSize;
+
+  // Physical Memory currently used by current process
+  size_t physMemUsedByMe = pmc.WorkingSetSize;
+
+
+  fprintf(stderr, "[memory] max address space (vmpeak): %12llu kB\n"
+                  "[memory] cur address space (vmsize): %12llu kB\n"
+                  "[memory] max used memory   (vmhwm ): %12llu kB\n"
+                  "[memory] cur used memory   (vmrss ): %12llu Kb\n",
+          virtualMemUsedByMeMax / 1024, virtualMemUsedByMe / 1024, physMemUsedByMeMax / 1024,
+          physMemUsedByMe / 1024);
+
+#else
+  fprintf(stderr, "dt_print_mem_usage() currently unsupported on this platform\n");
+#endif
+}
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

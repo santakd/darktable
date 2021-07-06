@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   This file is part of darktable,
-#   copyright (c) 2019 pascal obry
+#   Copyright (C) 2019-2020 darktable developers.
 #
 #   darktable is free software: you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -49,7 +49,8 @@ ALL_DEVELOPERS=("Aldric Renaudin"
                 "Tobias Ellinghaus"
                 "Ulrich Pegelow"
                 "johannes hanika"
-                "parafin")
+                "parafin"
+                "Aurélien PIERRE")
 
 function short-log()
 {
@@ -78,7 +79,12 @@ function for-submodule()
         SRANGE=$SHEAD
     else
         local SBASE=$(git log --patch -1 $BASE -- $SUBPATH | grep "Subproject commit" | tail -1 | cut -d' ' -f3)
-        SRANGE="$SBASE..$SHEAD"
+
+        if [[ -z $SBASE ]]; then
+            SRANGE="$SHEAD"
+        else
+            SRANGE="$SBASE..$SHEAD"
+        fi
     fi
 
     (

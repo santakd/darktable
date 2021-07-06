@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/develop.h"
+#include "develop/imageop_gui.h"
 #include "dtgtk/drawingarea.h"
 #include "gui/accelerators.h"
 #include "gui/draw.h"
@@ -46,8 +47,9 @@ DT_MODULE_INTROSPECTION(1, dt_iop_lowlight_params_t)
 
 typedef struct dt_iop_lowlight_params_t
 {
-  float blueness;
-  float transition_x[DT_IOP_LOWLIGHT_BANDS], transition_y[DT_IOP_LOWLIGHT_BANDS];
+  float blueness; // $MIN: 0.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "blue shift"
+  float transition_x[DT_IOP_LOWLIGHT_BANDS];
+  float transition_y[DT_IOP_LOWLIGHT_BANDS]; // $DEFAULT: 0.5
 } dt_iop_lowlight_params_t;
 
 typedef struct dt_iop_lowlight_gui_data_t
@@ -61,7 +63,6 @@ typedef struct dt_iop_lowlight_gui_data_t
   dt_iop_lowlight_params_t drag_params;
   int dragging;
   int x_move;
-  int timeout_handle;
   float draw_xs[DT_IOP_LOWLIGHT_RES], draw_ys[DT_IOP_LOWLIGHT_RES];
   float draw_min_xs[DT_IOP_LOWLIGHT_RES], draw_min_ys[DT_IOP_LOWLIGHT_RES];
   float draw_max_xs[DT_IOP_LOWLIGHT_RES], draw_max_ys[DT_IOP_LOWLIGHT_RES];
@@ -85,6 +86,15 @@ const char *name()
   return _("lowlight vision");
 }
 
+const char *description(struct dt_iop_module_t *self)
+{
+  return dt_iop_set_description(self, _("simulate human night vision"),
+                                      _("creative"),
+                                      _("non-linear, Lab, display-referred"),
+                                      _("linear, XYZ"),
+                                      _("non-linear, Lab, display-referred"));
+}
+
 int flags()
 {
   return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
@@ -92,24 +102,12 @@ int flags()
 
 int default_group()
 {
-  return IOP_GROUP_EFFECT;
+  return IOP_GROUP_EFFECT | IOP_GROUP_EFFECTS;
 }
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   return iop_cs_Lab;
-}
-
-
-void init_key_accels(dt_iop_module_so_t *self)
-{
-  dt_accel_register_slider_iop(self, FALSE, NC_("accel", "blue shift"));
-}
-
-void connect_key_accels(dt_iop_module_t *self)
-{
-  dt_iop_lowlight_gui_data_t *g = (dt_iop_lowlight_gui_data_t *)self->gui_data;
-  dt_accel_connect_slider_iop(self, "blue shift", g->scale_blueness);
 }
 
 static float lookup(const float *lut, const float i)
@@ -146,7 +144,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   {
     float *in = (float *)i + ch * k;
     float *out = (float *)o + ch * k;
-    float XYZ[3], XYZ_s[3];
+    float DT_ALIGNED_PIXEL XYZ[4], XYZ_s[4];
     float V;
     float w;
 
@@ -289,35 +287,17 @@ void gui_update(struct dt_iop_module_t *self)
   dt_iop_lowlight_gui_data_t *g = (dt_iop_lowlight_gui_data_t *)self->gui_data;
   dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->params;
   dt_bauhaus_slider_set(g->scale_blueness, p->blueness);
-  if(g->timeout_handle)
-  {
-    g_source_remove(g->timeout_handle);
-    g->timeout_handle = 0;
-  }
+  dt_iop_cancel_history_update(self);
   gtk_widget_queue_draw(self->widget);
 }
 
 void init(dt_iop_module_t *module)
 {
-  module->params = calloc(1, sizeof(dt_iop_lowlight_params_t));
-  module->default_params = calloc(1, sizeof(dt_iop_lowlight_params_t));
-  module->default_enabled = 0; // we're a rather slow and rare op.
-  module->params_size = sizeof(dt_iop_lowlight_params_t);
-  module->gui_data = NULL;
-  dt_iop_lowlight_params_t tmp;
-  for(int k = 0; k < DT_IOP_LOWLIGHT_BANDS; k++) tmp.transition_x[k] = k / (DT_IOP_LOWLIGHT_BANDS - 1.0);
-  for(int k = 0; k < DT_IOP_LOWLIGHT_BANDS; k++) tmp.transition_y[k] = 0.5f;
-  tmp.blueness = 0.0f;
-  memcpy(module->params, &tmp, sizeof(dt_iop_lowlight_params_t));
-  memcpy(module->default_params, &tmp, sizeof(dt_iop_lowlight_params_t));
-}
+  dt_iop_default_init(module);
 
-void cleanup(dt_iop_module_t *module)
-{
-  free(module->params);
-  module->params = NULL;
-  free(module->default_params);
-  module->default_params = NULL;
+  dt_iop_lowlight_params_t *d = module->default_params;
+
+  for(int k = 0; k < DT_IOP_LOWLIGHT_BANDS; k++) d->transition_x[k] = k / (DT_IOP_LOWLIGHT_BANDS - 1.0);
 }
 
 void init_presets(dt_iop_module_so_t *self)
@@ -341,7 +321,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 0.0f;
-  dt_gui_presets_add_generic(_("daylight"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("daylight"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -358,7 +339,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 30.0f;
-  dt_gui_presets_add_generic(_("indoor bright"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("indoor bright"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -375,7 +357,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 30.0f;
-  dt_gui_presets_add_generic(_("indoor dim"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("indoor dim"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -392,7 +375,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 40.0f;
-  dt_gui_presets_add_generic(_("indoor dark"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("indoor dark"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -409,7 +393,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 50.0f;
-  dt_gui_presets_add_generic(_("twilight"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("twilight"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -426,7 +411,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 30.0f;
-  dt_gui_presets_add_generic(_("night street lit"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("night street lit"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -443,7 +429,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 30.0f;
-  dt_gui_presets_add_generic(_("night street"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("night street"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.150000;
@@ -460,7 +447,8 @@ void init_presets(dt_iop_module_so_t *self)
   p.transition_y[5] = 1.000000;
 
   p.blueness = 40.0f;
-  dt_gui_presets_add_generic(_("night street dark"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("night street dark"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -478,7 +466,8 @@ void init_presets(dt_iop_module_so_t *self)
 
 
   p.blueness = 50.0f;
-  dt_gui_presets_add_generic(_("night"), self->op, self->version(), &p, sizeof(p), 1);
+  dt_gui_presets_add_generic(_("night"), self->op,
+                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "COMMIT", NULL, NULL, NULL);
 }
@@ -686,17 +675,6 @@ static gboolean lowlight_draw(GtkWidget *widget, cairo_t *crf, gpointer user_dat
   return TRUE;
 }
 
-static gboolean postponed_value_change(gpointer data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)data;
-  dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data;
-
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
-  c->timeout_handle = 0;
-
-  return FALSE;
-}
-
 static gboolean lowlight_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpointer user_data)
 {
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
@@ -726,10 +704,7 @@ static gboolean lowlight_motion_notify(GtkWidget *widget, GdkEventMotion *event,
       dt_iop_lowlight_get_params(p, c->mouse_x, c->mouse_y + c->mouse_pick, c->mouse_radius);
     }
     gtk_widget_queue_draw(widget);
-    const int delay = CLAMP(darktable.develop->average_delay * 3 / 2, 10, 1000);
-
-    if(!c->timeout_handle)
-      c->timeout_handle = g_timeout_add(delay, postponed_value_change, self);
+    dt_iop_queue_history_update(self, FALSE);
   }
   else if(event->y > height)
   {
@@ -751,18 +726,6 @@ static gboolean lowlight_motion_notify(GtkWidget *widget, GdkEventMotion *event,
     c->x_move = -1;
     gtk_widget_queue_draw(widget);
   }
-  gint x, y;
-#if GTK_CHECK_VERSION(3, 20, 0)
-  gdk_window_get_device_position(event->window,
-      gdk_seat_get_pointer(gdk_display_get_default_seat(
-          gdk_window_get_display(event->window))),
-      &x, &y, 0);
-#else
-  gdk_window_get_device_position(event->window,
-                                 gdk_device_manager_get_client_pointer(
-                                     gdk_display_get_device_manager(gdk_window_get_display(event->window))),
-                                 &x, &y, NULL);
-#endif
   return TRUE;
 }
 
@@ -774,7 +737,6 @@ static gboolean lowlight_button_press(GtkWidget *widget, GdkEventButton *event, 
     // reset current curve
     dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->params;
     dt_iop_lowlight_params_t *d = (dt_iop_lowlight_params_t *)self->default_params;
-    /*   dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data; */
     for(int k = 0; k < DT_IOP_LOWLIGHT_BANDS; k++)
     {
       p->transition_x[k] = d->transition_x[k];
@@ -826,31 +788,32 @@ static gboolean lowlight_scrolled(GtkWidget *widget, GdkEventScroll *event, gpoi
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data;
 
-  if(((event->state & gtk_accelerator_get_default_mod_mask()) == darktable.gui->sidebar_scroll_mask) != dt_conf_get_bool("darkroom/ui/sidebar_scroll_default")) return FALSE;
-  gdouble delta_y;
-  if(dt_gui_get_scroll_deltas(event, NULL, &delta_y))
+  if(dt_gui_ignore_scroll(event)) return FALSE;
+
+  int delta_y;
+  if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
   {
-    c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.2 / DT_IOP_LOWLIGHT_BANDS, 1.0);
-    gtk_widget_queue_draw(widget);
+    if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
+    {
+      //adjust aspect
+      const int aspect = dt_conf_get_int("plugins/darkroom/lowlight/aspect_percent");
+      dt_conf_set_int("plugins/darkroom/lowlight/aspect_percent", aspect + delta_y);
+      dtgtk_drawing_area_set_aspect_ratio(widget, aspect / 100.0);
+    }
+    else
+    {
+      c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.2 / DT_IOP_LOWLIGHT_BANDS, 1.0);
+      gtk_widget_queue_draw(widget);
+    }
   }
 
   return TRUE;
 }
 
-static void blueness_callback(GtkWidget *slider, gpointer user_data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
-  if(self->dt->gui->reset) return;
-  dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->params;
-  p->blueness = dt_bauhaus_slider_get(slider);
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
-}
-
 void gui_init(struct dt_iop_module_t *self)
 {
-  self->gui_data = malloc(sizeof(dt_iop_lowlight_gui_data_t));
-  dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data;
-  dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->params;
+  dt_iop_lowlight_gui_data_t *c = IOP_GUI_ALLOC(lowlight);
+  dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->default_params;
 
   c->transition_curve = dt_draw_curve_new(0.0, 1.0, CATMULL_ROM);
   (void)dt_draw_curve_add_point(c->transition_curve, p->transition_x[DT_IOP_LOWLIGHT_BANDS - 2] - 1.0,
@@ -862,19 +825,20 @@ void gui_init(struct dt_iop_module_t *self)
   c->mouse_x = c->mouse_y = c->mouse_pick = -1.0;
   c->dragging = 0;
   c->x_move = -1;
-  c->timeout_handle = 0;
+  self->timeout_handle = 0;
   c->mouse_radius = 1.0 / DT_IOP_LOWLIGHT_BANDS;
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-  dt_gui_add_help_link(self->widget, dt_get_help_url(self->op));
 
-  c->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(0.75));
-
+  const float aspect = dt_conf_get_int("plugins/darkroom/lowlight/aspect_percent") / 100.0;
+  c->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(aspect));
+  g_object_set_data(G_OBJECT(c->area), "iop-instance", self);
+  dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(c->area), NULL);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->area), FALSE, FALSE, 0);
 
-  gtk_widget_add_events(GTK_WIDGET(c->area), GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
-                                             | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
-                                             | GDK_LEAVE_NOTIFY_MASK | darktable.gui->scroll_mask);
+  gtk_widget_add_events(GTK_WIDGET(c->area), GDK_POINTER_MOTION_MASK | darktable.gui->scroll_mask
+                                           | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
+                                           | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
   g_signal_connect(G_OBJECT(c->area), "draw", G_CALLBACK(lowlight_draw), self);
   g_signal_connect(G_OBJECT(c->area), "button-press-event", G_CALLBACK(lowlight_button_press), self);
   g_signal_connect(G_OBJECT(c->area), "button-release-event", G_CALLBACK(lowlight_button_release), self);
@@ -882,23 +846,18 @@ void gui_init(struct dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(c->area), "leave-notify-event", G_CALLBACK(lowlight_leave_notify), self);
   g_signal_connect(G_OBJECT(c->area), "scroll-event", G_CALLBACK(lowlight_scrolled), self);
 
-  c->scale_blueness = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 1.0, p->blueness, 2);
-  dt_bauhaus_widget_set_label(c->scale_blueness, NULL, _("blue shift"));
+  c->scale_blueness = dt_bauhaus_slider_from_params(self, "blueness");
   dt_bauhaus_slider_set_format(c->scale_blueness, "%0.2f%%");
   gtk_widget_set_tooltip_text(c->scale_blueness, _("blueness in shadows"));
-
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->scale_blueness), TRUE, TRUE, 0);
-
-  g_signal_connect(G_OBJECT(c->scale_blueness), "value-changed", G_CALLBACK(blueness_callback), self);
 }
 
 void gui_cleanup(struct dt_iop_module_t *self)
 {
   dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data;
   dt_draw_curve_destroy(c->transition_curve);
-  if(c->timeout_handle) g_source_remove(c->timeout_handle);
-  free(self->gui_data);
-  self->gui_data = NULL;
+  dt_iop_cancel_history_update(self);
+
+  IOP_GUI_FREE;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

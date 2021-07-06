@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -98,9 +98,8 @@ void dt_style_item_free(gpointer data)
 static gboolean _apply_style_shortcut_callback(GtkAccelGroup *accel_group, GObject *acceleratable,
                                                guint keyval, GdkModifierType modifier, gpointer data)
 {
-  GList *imgs = dt_view_get_images_to_act_on(TRUE);
+  const GList *imgs = dt_view_get_images_to_act_on(TRUE, TRUE, FALSE);
   dt_styles_apply_to_list(data, imgs, FALSE);
-  g_list_free(imgs);
   return TRUE;
 }
 
@@ -159,16 +158,16 @@ static void _dt_style_cleanup_multi_instance(int id)
 
     d->rowid = sqlite3_column_int(stmt, 0);
     d->mi = last_mi;
-    list = g_list_append(list, d);
+    list = g_list_prepend(list, d);
   }
   sqlite3_finalize(stmt);
+  list = g_list_reverse(list);   // list was built in reverse order, so un-reverse it
 
   /* 2. now update all multi_instance values previously recorded */
 
-  list = g_list_first(list);
-  while(list)
+  for(GList *list_iter = list; list_iter; list_iter = g_list_next(list_iter))
   {
-    struct _data *d = (struct _data *)list->data;
+    struct _data *d = (struct _data *)list_iter->data;
 
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                 "UPDATE data.style_items SET multi_priority=?1 WHERE rowid=?2", -1, &stmt, NULL);
@@ -176,10 +175,9 @@ static void _dt_style_cleanup_multi_instance(int id)
     DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, d->rowid);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-
-    list = g_list_next(list);
   }
 
+  /* 3. free the list we built in step 1 */
   g_list_free_full(list, free);
 }
 
@@ -275,11 +273,11 @@ static void _dt_style_update_from_image(int id, int imgid, GList *filter, GList 
         {
           if(k != 0) g_strlcat(query, ",", sizeof(query));
           snprintf(tmp, sizeof(tmp), "%s=(SELECT %s FROM main.history WHERE imgid=%d AND num=%d)", fields[k],
-                   fields[k], imgid, GPOINTER_TO_INT(upd->data));
+                   fields[k], imgid, GPOINTER_TO_INT(list->data));
           g_strlcat(query, tmp, sizeof(query));
         }
         snprintf(tmp, sizeof(tmp), " WHERE styleid=%d AND data.style_items.num=%d", id,
-                 GPOINTER_TO_INT(list->data));
+                 GPOINTER_TO_INT(upd->data));
         g_strlcat(query, tmp, sizeof(query));
       }
       // update only, so we want to insert the new style item
@@ -307,17 +305,53 @@ static void _dt_style_update_from_image(int id, int imgid, GList *filter, GList 
   }
 }
 
-void dt_styles_update(const char *name, const char *newname, const char *newdescription, GList *filter,
-                      const int32_t imgid, GList *update, gboolean copy_iop_order)
+static void  _dt_style_update_iop_order(const gchar *name, const int id, const int32_t imgid,
+                                        const gboolean copy_iop_order, const gboolean update_iop_order)
 {
   sqlite3_stmt *stmt;
-  int id = 0;
-  gchar *desc = NULL;
 
-  id = dt_styles_get_id_by_name(name);
+  GList *iop_list = dt_styles_module_order_list(name);
+
+  // if we update or if the style does not contains an order then the
+  // copy must be done using the imgid iop-order.
+
+  if(update_iop_order || iop_list == NULL)
+    iop_list = dt_ioppr_get_iop_order_list(imgid, FALSE);
+
+  gchar *iop_list_txt = dt_ioppr_serialize_text_iop_order_list(iop_list);
+
+  if(copy_iop_order || update_iop_order)
+  {
+    // copy from style name to style id
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "UPDATE data.styles SET iop_list=?1 WHERE id=?2", -1, &stmt, NULL);
+    DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 1, iop_list_txt, -1, SQLITE_TRANSIENT);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, id);
+  }
+  else
+  {
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "UPDATE data.styles SET iop_list=NULL WHERE id=?1", -1, &stmt, NULL);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, id);
+  }
+
+  g_list_free_full(iop_list, free);
+  g_free(iop_list_txt);
+
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
+void dt_styles_update(const char *name, const char *newname, const char *newdescription, GList *filter,
+                      const int32_t imgid, GList *update,
+                      const gboolean copy_iop_order, const gboolean update_iop_order)
+{
+  sqlite3_stmt *stmt;
+
+  const int id = dt_styles_get_id_by_name(name);
   if(id == 0) return;
 
-  desc = dt_styles_get_description(name);
+  gchar *desc = dt_styles_get_description(name);
 
   if((g_strcmp0(name, newname)) || (g_strcmp0(desc, newdescription)))
   {
@@ -332,16 +366,15 @@ void dt_styles_update(const char *name, const char *newname, const char *newdesc
 
   if(filter)
   {
-    GList *list = filter;
     char tmp[64];
     char include[2048] = { 0 };
     g_strlcat(include, "num NOT IN (", sizeof(include));
-    do
+    for(GList *list = filter; list; list = g_list_next(list))
     {
-      if(list != g_list_first(list)) g_strlcat(include, ",", sizeof(include));
+      if(list != filter) g_strlcat(include, ",", sizeof(include));
       snprintf(tmp, sizeof(tmp), "%d", GPOINTER_TO_INT(list->data));
       g_strlcat(include, tmp, sizeof(include));
-    } while((list = g_list_next(list)));
+    }
     g_strlcat(include, ")", sizeof(include));
 
     char query[4096] = { 0 };
@@ -354,6 +387,8 @@ void dt_styles_update(const char *name, const char *newname, const char *newdesc
 
   _dt_style_update_from_image(id, imgid, filter, update);
 
+  _dt_style_update_iop_order(name, id, imgid, copy_iop_order, update_iop_order);
+
   _dt_style_cleanup_multi_instance(id);
 
   /* backup style to disk */
@@ -364,72 +399,59 @@ void dt_styles_update(const char *name, const char *newname, const char *newdesc
 
   dt_styles_save_to_file(newname, stylesdir, TRUE);
 
-  /* delete old accelerator and create a new one */
-  // TODO: should better use dt_accel_rename_global() to keep the old accel_key untouched, but it seems to be
-  // buggy
   if(g_strcmp0(name, newname))
   {
-    char tmp_accel[1024];
-    snprintf(tmp_accel, sizeof(tmp_accel), C_("accel", "styles/apply %s"), name);
-    dt_accel_deregister_global(tmp_accel);
+    gchar *old_name = g_strdup_printf(C_("accel", "styles/apply %s"), name);
+    gchar *new_name = g_strdup_printf(C_("accel", "apply %s"), newname); // don't include full path
 
-    gchar *tmp_name = g_strdup(newname); // freed by _destroy_style_shortcut_callback
-    snprintf(tmp_accel, sizeof(tmp_accel), C_("accel", "styles/apply %s"), newname);
-    dt_accel_register_global(tmp_accel, 0, 0);
-    GClosure *closure;
-    closure = g_cclosure_new(G_CALLBACK(_apply_style_shortcut_callback), tmp_name,
-                             _destroy_style_shortcut_callback);
-    dt_accel_connect_global(tmp_accel, closure);
+    // change closure first, with full old path
+    GClosure *closure = g_cclosure_new(G_CALLBACK(_apply_style_shortcut_callback), g_strdup(newname),
+                                       _destroy_style_shortcut_callback);
+    dt_accel_connect_global(old_name, closure);
+
+    dt_accel_rename_global(old_name, new_name);
+    g_free(old_name);
+    g_free(new_name);
   }
 
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
 
   g_free(desc);
 }
 
 void dt_styles_create_from_style(const char *name, const char *newname, const char *description,
-                                 GList *filter, const int32_t imgid, GList *update, gboolean copy_iop_order)
+                                 GList *filter, const int32_t imgid, GList *update,
+                                 const gboolean copy_iop_order, const gboolean update_iop_order)
 {
   sqlite3_stmt *stmt;
   int id = 0;
-  int oldid = 0;
 
-  oldid = dt_styles_get_id_by_name(name);
+  const int oldid = dt_styles_get_id_by_name(name);
   if(oldid == 0) return;
 
-  GList *iop_list = NULL;
-
-  if(copy_iop_order)
-  {
-    iop_list = dt_styles_module_order_list(name);
-  }
-
   /* create the style header */
-  if(!dt_styles_create_style_header(newname, description, iop_list)) return;
-
-  g_list_free_full(iop_list, g_free);
+  if(!dt_styles_create_style_header(newname, description, NULL)) return;
 
   if((id = dt_styles_get_id_by_name(newname)) != 0)
   {
     if(filter)
     {
-      GList *list = filter;
       char tmp[64];
       char include[2048] = { 0 };
       g_strlcat(include, "num IN (", sizeof(include));
-      do
+      for(GList *list = filter; list; list = g_list_next(list))
       {
-        if(list != g_list_first(list)) g_strlcat(include, ",", sizeof(include));
+        if(list != filter) g_strlcat(include, ",", sizeof(include));
         snprintf(tmp, sizeof(tmp), "%d", GPOINTER_TO_INT(list->data));
         g_strlcat(include, tmp, sizeof(include));
-      } while((list = g_list_next(list)));
+      }
       g_strlcat(include, ")", sizeof(include));
       char query[4096] = { 0 };
 
       snprintf(query, sizeof(query),
                "INSERT INTO data.style_items "
-               "  (styleid,num,module,operation,op_params,enabled,blendop_params,blendop_"
-               "   version,multi_priority,multi_name)"
+               "  (styleid,num,module,operation,op_params,enabled,blendop_params,blendop_version,"
+               "   multi_priority,multi_name)"
                " SELECT ?1, num,module,operation,op_params,enabled,blendop_params,blendop_version,"
                "   multi_priority,multi_name"
                " FROM data.style_items"
@@ -440,10 +462,10 @@ void dt_styles_create_from_style(const char *name, const char *newname, const ch
     else
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                   "INSERT INTO data.style_items "
-                                  "  (styleid,num,module,operation,op_params,enabled,blendop_params,blendop_"
-                                  "   version,multi_priority,multi_name)"
-                                  " SELECT ?1, num,module,operation,op_params,enabled,blendop_params,blendop_version,"
-                                  "   multi_priority,multi_name"
+                                  "  (styleid,num,module,operation,op_params,enabled,blendop_params,"
+                                  "   blendop_version,multi_priority,multi_name)"
+                                  " SELECT ?1, num,module,operation,op_params,enabled,blendop_params,"
+                                  "        blendop_version,multi_priority,multi_name"
                                   " FROM data.style_items"
                                   " WHERE styleid=?2",
                                   -1, &stmt, NULL);
@@ -455,6 +477,8 @@ void dt_styles_create_from_style(const char *name, const char *newname, const ch
     /* insert items from imgid if defined */
 
     _dt_style_update_from_image(id, imgid, filter, update);
+
+    _dt_style_update_iop_order(name, id, imgid, copy_iop_order, update_iop_order);
 
     _dt_style_cleanup_multi_instance(id);
 
@@ -475,7 +499,7 @@ void dt_styles_create_from_style(const char *name, const char *newname, const ch
                              _destroy_style_shortcut_callback);
     dt_accel_connect_global(tmp_accel, closure);
     dt_control_log(_("style named '%s' successfully created"), newname);
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
   }
 }
 
@@ -501,16 +525,15 @@ gboolean dt_styles_create_from_image(const char *name, const char *description,
     /* create the style_items from source image history stack */
     if(filter)
     {
-      GList *list = filter;
       char tmp[64];
       char include[2048] = { 0 };
       g_strlcat(include, "num IN (", sizeof(include));
-      do
+      for(GList *list = filter; list; list = g_list_next(list))
       {
-        if(list != g_list_first(list)) g_strlcat(include, ",", sizeof(include));
+        if(list != filter) g_strlcat(include, ",", sizeof(include));
         snprintf(tmp, sizeof(tmp), "%d", GPOINTER_TO_INT(list->data));
         g_strlcat(include, tmp, sizeof(include));
-      } while((list = g_list_next(list)));
+      }
 
       g_strlcat(include, ")", sizeof(include));
       char query[4096] = { 0 };
@@ -558,52 +581,120 @@ gboolean dt_styles_create_from_image(const char *name, const char *description,
     closure = g_cclosure_new(G_CALLBACK(_apply_style_shortcut_callback), tmp_name,
                              _destroy_style_shortcut_callback);
     dt_accel_connect_global(tmp_accel, closure);
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
     return TRUE;
   }
   return FALSE;
 }
 
-void dt_styles_apply_to_list(const char *name, GList *list, gboolean duplicate)
+void dt_styles_apply_to_list(const char *name, const GList *list, gboolean duplicate)
 {
   gboolean selected = FALSE;
 
-  /* write current history changes so nothing gets lost, do that only in the darkroom as there is nothing to
-     be
-     save when in the lighttable (and it would write over current history stack) */
+  /* write current history changes so nothing gets lost,
+     do that only in the darkroom as there is nothing to be saved
+     when in the lighttable (and it would write over current history stack) */
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(cv->view((dt_view_t *)cv) == DT_VIEW_DARKROOM) dt_dev_write_history(darktable.develop);
+  if(cv->view(cv) == DT_VIEW_DARKROOM) dt_dev_write_history(darktable.develop);
 
   const int mode = dt_conf_get_int("plugins/lighttable/style/applymode");
+  const gboolean is_overwrite = (mode == DT_STYLE_HISTORY_OVERWRITE);
 
   /* for each selected image apply style */
   dt_undo_start_group(darktable.undo, DT_UNDO_LT_HISTORY);
-  GList *l = g_list_first(list);
-  while(l)
+
+  dt_undo_lt_history_t *hist = NULL;
+
+  for(const GList *l = list; l; l = g_list_next(l))
   {
-    const int imgid = GPOINTER_TO_INT(l->data);
-    if(mode == DT_STYLE_HISTORY_OVERWRITE)
-      dt_history_delete_on_image_ext(imgid, FALSE);
-    dt_styles_apply_to_image(name, duplicate, imgid);
+    const int32_t imgid = GPOINTER_TO_INT(l->data);
+    if(is_overwrite)
+    {
+      hist = dt_history_snapshot_item_init();
+      hist->imgid = imgid;
+      dt_history_snapshot_undo_create(hist->imgid, &hist->before, &hist->before_history_end);
+
+      dt_undo_disable_next(darktable.undo);
+      if(!duplicate) dt_history_delete_on_image_ext(imgid, FALSE);
+    }
+
+    dt_styles_apply_to_image(name, duplicate, is_overwrite, imgid);
+
+    if(is_overwrite)
+    {
+      dt_history_snapshot_undo_create(hist->imgid, &hist->after, &hist->after_history_end);
+      dt_undo_record(darktable.undo, NULL, DT_UNDO_LT_HISTORY, (dt_undo_data_t)hist,
+                     dt_history_snapshot_undo_pop, dt_history_snapshot_undo_lt_history_data_free);
+    }
+
     selected = TRUE;
-    l = g_list_next(l);
+  }
+
+  dt_undo_end_group(darktable.undo);
+
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
+
+  if(!selected) dt_control_log(_("no image selected!"));
+  dt_control_log(_("style %s successfully applied!"), name);
+}
+
+void dt_multiple_styles_apply_to_list(GList *styles, const GList *list, gboolean duplicate)
+{
+  /* write current history changes so nothing gets lost,
+     do that only in the darkroom as there is nothing to be saved
+     when in the lighttable (and it would write over current history stack) */
+  const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
+  if(cv->view((dt_view_t *)cv) == DT_VIEW_DARKROOM) dt_dev_write_history(darktable.develop);
+
+  if(!styles && !list)
+  {
+    dt_control_log(_("no images nor styles selected!"));
+    return;
+  }
+  else if(!styles)
+  {
+    dt_control_log(_("no styles selected!"));
+    return;
+  }
+  else if(!list)
+  {
+    dt_control_log(_("no image selected!"));
+    return;
+  }
+
+  const int mode = dt_conf_get_int("plugins/lighttable/style/applymode");
+  const gboolean is_overwrite = (mode == DT_STYLE_HISTORY_OVERWRITE);
+
+  /* for each selected image apply style */
+  dt_undo_start_group(darktable.undo, DT_UNDO_LT_HISTORY);
+  for(const GList *l = list; l; l = g_list_next(l))
+  {
+    const int32_t imgid = GPOINTER_TO_INT(l->data);
+    if(is_overwrite && !duplicate)
+      dt_history_delete_on_image_ext(imgid, FALSE);
+
+    for (GList *style = styles; style; style = g_list_next(style))
+    {
+      dt_styles_apply_to_image((char*)style->data, duplicate, is_overwrite, imgid);
+    }
   }
   dt_undo_end_group(darktable.undo);
 
-  if(!selected) dt_control_log(_("no image selected!"));
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
+
+  const guint styles_cnt = g_list_length(styles);
+  dt_control_log(ngettext("style successfully applied!", "styles successfully applied!", styles_cnt));
 }
 
-void dt_styles_create_from_list(GList *list)
+void dt_styles_create_from_list(const GList *list)
 {
   gboolean selected = FALSE;
   /* for each image create style */
-  GList *l = g_list_first(list);
-  while(l)
+  for(const GList *l = list; l; l = g_list_next(l))
   {
     const int imgid = GPOINTER_TO_INT(l->data);
     dt_gui_styles_dialog_new(imgid);
     selected = TRUE;
-    l = g_list_next(l);
   }
 
   if(!selected) dt_control_log(_("no image selected!"));
@@ -617,6 +708,8 @@ void dt_styles_apply_style_item(dt_develop_t *dev, dt_style_item_t *style_item, 
   if(mod_src)
   {
     dt_iop_module_t *module = (dt_iop_module_t *)calloc(1, sizeof(dt_iop_module_t));
+
+    module->dev = dev;
 
     if(dt_iop_load_module(module, mod_src->so, dev))
     {
@@ -707,7 +800,7 @@ void dt_styles_apply_style_item(dt_develop_t *dev, dt_style_item_t *style_item, 
   }
 }
 
-void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const int32_t imgid)
+void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const gboolean overwrite, const int32_t imgid)
 {
   int id = 0;
   sqlite3_stmt *stmt;
@@ -719,7 +812,13 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
     if(duplicate)
     {
       newimgid = dt_image_duplicate(imgid);
-      if(newimgid != -1) dt_history_copy_and_paste_on_image(imgid, newimgid, FALSE, NULL, TRUE);
+      if(newimgid != -1)
+      {
+        if(overwrite)
+          dt_history_delete_on_image_ext(newimgid, FALSE);
+        else
+          dt_history_copy_and_paste_on_image(imgid, newimgid, FALSE, NULL, TRUE, TRUE);
+      }
     }
     else
       newimgid = imgid;
@@ -734,12 +833,23 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
     dt_dev_init(dev_dest, FALSE);
 
     dev_dest->iop = dt_iop_load_modules_ext(dev_dest, TRUE);
+    dev_dest->image_storage.id = imgid;
 
+    // now let's deal with the iop-order (possibly merging style & target lists)
     GList *iop_list = dt_styles_module_order_list(name);
     if(iop_list)
     {
+      // the style has an iop-order, we need to merge the multi-instance from target image
+      // get target image iop-order list:
+      GList *img_iop_order_list = dt_ioppr_get_iop_order_list(newimgid, FALSE);
+      // get multi-instance modules if any:
+      GList *mi = dt_ioppr_extract_multi_instances_list(img_iop_order_list);
+      // if some where found merge them with the style list
+      if(mi) iop_list = dt_ioppr_merge_multi_instance_iop_order_list(iop_list, mi);
+      // finally we have the final list for the image
       dt_ioppr_write_iop_order_list(iop_list, newimgid);
       g_list_free_full(iop_list, g_free);
+      g_list_free_full(img_iop_order_list, g_free);
     }
 
     dt_dev_read_history_ext(dev_dest, newimgid, TRUE);
@@ -783,18 +893,17 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
       memcpy(style_item->blendop_params, (void *)sqlite3_column_blob(stmt, 5), style_item->blendop_params_size);
       style_item->iop_order = 0;
 
-      si_list = g_list_append(si_list, style_item);
+      si_list = g_list_prepend(si_list, style_item);
     }
     sqlite3_finalize(stmt);
+    si_list = g_list_reverse(si_list);  // list was built in reverse order, so un-reverse it
 
     dt_ioppr_update_for_style_items(dev_dest, si_list, FALSE);
 
-    GList *l = si_list;
-    while(l)
+    for(GList *l = si_list; l; l = g_list_next(l))
     {
       dt_style_item_t *style_item = (dt_style_item_t *)l->data;
       dt_styles_apply_style_item(dev_dest, style_item, &modules_used, FALSE);
-      l = g_list_next(l);
     }
 
     g_list_free_full(si_list, dt_style_item_free);
@@ -824,10 +933,10 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
     guint tagid = 0;
     gchar ntag[512] = { 0 };
     g_snprintf(ntag, sizeof(ntag), "darktable|style|%s", name);
-    if(dt_tag_new(ntag, &tagid)) dt_tag_attach_from_gui(tagid, newimgid, FALSE, FALSE);
+    if(dt_tag_new(ntag, &tagid)) dt_tag_attach(tagid, newimgid, FALSE, FALSE);
     if(dt_tag_new("darktable|changed", &tagid))
     {
-      dt_tag_attach_from_gui(tagid, newimgid, FALSE, FALSE);
+      dt_tag_attach(tagid, newimgid, FALSE, FALSE);
       dt_image_cache_set_change_timestamp(darktable.image_cache, imgid);
     }
 
@@ -844,7 +953,7 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
 
     /* remove old obsolete thumbnails */
     dt_mipmap_cache_remove(darktable.mipmap_cache, newimgid);
-    dt_image_reset_final_size(newimgid);
+    dt_image_update_final_size(newimgid);
 
     /* update the aspect ratio. recompute only if really needed for performance reasons */
     if(darktable.collection->params.sort == DT_COLLECTION_SORT_ASPECT_RATIO)
@@ -853,11 +962,11 @@ void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const 
       dt_image_reset_aspect_ratio(newimgid, TRUE);
 
     /* redraw center view to update visible mipmaps */
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_DEVELOP_MIPMAP_UPDATED, newimgid);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_MIPMAP_UPDATED, newimgid);
   }
 }
 
-void dt_styles_delete_by_name(const char *name)
+void dt_styles_delete_by_name_adv(const char *name, const gboolean raise)
 {
   int id = 0;
   if((id = dt_styles_get_id_by_name(name)) != 0)
@@ -879,9 +988,16 @@ void dt_styles_delete_by_name(const char *name)
 
     char tmp_accel[1024];
     snprintf(tmp_accel, sizeof(tmp_accel), C_("accel", "styles/apply %s"), name);
-    dt_accel_deregister_global(tmp_accel);
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+    dt_accel_rename_global(tmp_accel, NULL);
+
+    if(raise)
+      DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
   }
+}
+
+void dt_styles_delete_by_name(const char *name)
+{
+  dt_styles_delete_by_name_adv(name, TRUE);
 }
 
 GList *dt_styles_get_item_list(const char *name, gboolean params, int imgid)
@@ -918,15 +1034,7 @@ GList *dt_styles_get_item_list(const char *name, gboolean params, int imgid)
           "        main.history.num,0,multi_name, blendop_version"
           " FROM main.history"
           " WHERE imgid=?2 AND main.history.enabled=1"
-          "   AND (main.history.operation NOT IN (SELECT operation FROM data.style_items WHERE styleid=?1)"
-          "       OR (main.history.op_params"
-          "           NOT IN (SELECT op_params FROM data.style_items"
-                              " WHERE styleid=?1"
-          "                     AND operation=main.history.operation))"
-          "       OR (main.history.blendop_params"
-          "           NOT IN (SELECT blendop_params"
-          "                   FROM data.style_items"
-          "                   WHERE styleid=?1 AND operation=main.history.operation)))"
+          "   AND (main.history.operation NOT IN (SELECT operation FROM data.style_items WHERE styleid=?1))"
           " GROUP BY operation HAVING MAX(num) ORDER BY num DESC", -1, &stmt, NULL);
       DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
     }
@@ -1012,11 +1120,11 @@ GList *dt_styles_get_item_list(const char *name, gboolean params, int imgid)
       item->operation = g_strdup((char *)sqlite3_column_text(stmt, 3));
       item->multi_name = g_strdup((char *)sqlite3_column_text(stmt, 7));
       item->iop_order = sqlite3_column_double(stmt, 8);
-      result = g_list_append(result, item);
+      result = g_list_prepend(result, item);
     }
     sqlite3_finalize(stmt);
   }
-  return result;
+  return g_list_reverse(result);   // list was built in reverse order, so un-reverse it
 }
 
 char *dt_styles_get_item_list_as_string(const char *name)
@@ -1025,11 +1133,12 @@ char *dt_styles_get_item_list_as_string(const char *name)
   if(items == NULL) return NULL;
 
   GList *names = NULL;
-  do
+  for(GList *items_iter = items; items_iter; items_iter = g_list_next(items_iter))
   {
-    dt_style_item_t *item = (dt_style_item_t *)items->data;
-    names = g_list_append(names, g_strdup(item->name));
-  } while((items = g_list_next(items)));
+    dt_style_item_t *item = (dt_style_item_t *)items_iter->data;
+    names = g_list_prepend(names, g_strdup(item->name));
+  }
+  names = g_list_reverse(names);  // list was built in reverse order, so un-reverse it
 
   char *result = dt_util_glist_to_str("\n", names);
   g_list_free_full(names, g_free);
@@ -1055,10 +1164,10 @@ GList *dt_styles_get_list(const char *filter)
     dt_style_t *s = g_malloc(sizeof(dt_style_t));
     s->name = g_strdup(name);
     s->description = g_strdup(description);
-    result = g_list_append(result, s);
+    result = g_list_prepend(result, s);
   }
   sqlite3_finalize(stmt);
-  return result;
+  return g_list_reverse(result);  // list was built in reverse order, so un-reverse it
 }
 
 static char *dt_style_encode(sqlite3_stmt *stmt, int row)
@@ -1239,7 +1348,7 @@ static void dt_styles_style_text_handler(GMarkupParseContext *context, const gch
   }
   else if(style->in_plugin)
   {
-    StylePluginData *plug = g_list_first(style->plugins)->data;
+    StylePluginData *plug = style->plugins->data;
     if(g_ascii_strcasecmp(elt, "operation") == 0)
     {
       g_string_append_len(plug->operation, text, text_len);
@@ -1385,6 +1494,7 @@ void dt_styles_import_from_file(const char *style_path)
   else
   {
     // Failed to open file, clean up.
+    dt_control_log(_("could not read file `%s'"), style_path);
     g_markup_parse_context_free(parser);
     dt_styles_style_data_free(style, TRUE);
     return;
@@ -1404,7 +1514,7 @@ void dt_styles_import_from_file(const char *style_path)
   dt_styles_style_data_free(style, TRUE);
   fclose(style_file);
 
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
 }
 
 gchar *dt_styles_get_description(const char *name)
@@ -1446,13 +1556,13 @@ void init_styles_key_accels()
   GList *result = dt_styles_get_list("");
   if(result)
   {
-    do
+    for(GList *res_iter = result; res_iter; res_iter = g_list_next(res_iter))
     {
-      dt_style_t *style = (dt_style_t *)result->data;
+      dt_style_t *style = (dt_style_t *)res_iter->data;
       char tmp_accel[1024];
       snprintf(tmp_accel, sizeof(tmp_accel), C_("accel", "styles/apply %s"), style->name);
       dt_accel_register_global(tmp_accel, 0, 0);
-    } while((result = g_list_next(result)) != NULL);
+    }
     g_list_free_full(result, dt_style_free);
   }
 }
@@ -1462,16 +1572,16 @@ void connect_styles_key_accels()
   GList *result = dt_styles_get_list("");
   if(result)
   {
-    do
+    for(GList *res_iter = result; res_iter; res_iter = g_list_next(res_iter))
     {
       GClosure *closure;
-      dt_style_t *style = (dt_style_t *)result->data;
+      dt_style_t *style = (dt_style_t *)res_iter->data;
       closure = g_cclosure_new(G_CALLBACK(_apply_style_shortcut_callback), g_strdup(style->name),
                                _destroy_style_shortcut_callback);
       char tmp_accel[1024];
       snprintf(tmp_accel, sizeof(tmp_accel), C_("accel", "styles/apply %s"), style->name);
       dt_accel_connect_global(tmp_accel, closure);
-    } while((result = g_list_next(result)) != NULL);
+    }
     g_list_free_full(result, dt_style_free);
   }
 }

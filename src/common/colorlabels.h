@@ -25,13 +25,15 @@ void dt_colorlabels_set_label(const int imgid, const int color);
 void dt_colorlabels_set_labels(const GList *img, const int color, const gboolean clear_on,
                                const gboolean undo_on);
 /** assign a color label to the list of image*/
-void dt_colorlabels_toggle_label_on_list(GList *list, const int color, const gboolean undo_on);
+void dt_colorlabels_toggle_label_on_list(const GList *list, const int color, const gboolean undo_on);
 /** remove a color label from imgid */
 void dt_colorlabels_remove_label(const int imgid, const int color);
 /** get the name of the color for a given number (could be replaced by an array) */
 const char *dt_colorlabels_to_string(int label);
 /** check if an image has a color label */
 int dt_colorlabels_check_label(const int imgid, const int color);
+
+extern const struct dt_action_def_t dt_action_def_color_label;
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

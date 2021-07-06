@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@
 #include "gui/gtk.h"
 
 /** add an image to a group */
-void dt_grouping_add_to_group(const int group_id, const int image_id)
+void dt_grouping_add_to_group(const int group_id, const int32_t image_id)
 {
   // remove from old group
   dt_grouping_remove_from_group(image_id);
@@ -34,18 +34,18 @@ void dt_grouping_add_to_group(const int group_id, const int image_id)
   dt_image_cache_write_release(darktable.image_cache, img, DT_IMAGE_CACHE_SAFE);
   GList *imgs = NULL;
   imgs = g_list_prepend(imgs, GINT_TO_POINTER(image_id));
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
 }
 
 /** remove an image from a group */
-int dt_grouping_remove_from_group(const int image_id)
+int dt_grouping_remove_from_group(const int32_t image_id)
 {
   sqlite3_stmt *stmt;
   int new_group_id = -1;
   GList *imgs = NULL;
 
   const dt_image_t *img = dt_image_cache_get(darktable.image_cache, image_id, 'r');
-  int img_group_id = img->group_id;
+  const int img_group_id = img->group_id;
   dt_image_cache_read_release(darktable.image_cache, img);
   if(img_group_id == image_id)
   {
@@ -64,15 +64,22 @@ int dt_grouping_remove_from_group(const int image_id)
       imgs = g_list_prepend(imgs, GINT_TO_POINTER(other_id));
     }
     sqlite3_finalize(stmt);
-
-    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
-                                "UPDATE main.images SET group_id = ?1 WHERE group_id = ?2 AND id != ?3", -1, &stmt,
-                                NULL);
-    DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, new_group_id);
-    DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, img_group_id);
-    DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, image_id);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    if(new_group_id != -1)
+    {
+      DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                  "UPDATE main.images SET group_id = ?1 WHERE group_id = ?2 AND id != ?3", -1, &stmt,
+                                  NULL);
+      DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, new_group_id);
+      DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, img_group_id);
+      DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, image_id);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+    }
+    else
+    {
+      // no change was made, no point in raising signal, bailing early
+      return -1;
+    }
   }
   else
   {
@@ -85,18 +92,18 @@ int dt_grouping_remove_from_group(const int image_id)
     // refresh also the group leader which may be alone now
     imgs = g_list_prepend(imgs, GINT_TO_POINTER(img_group_id));
   }
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
 
   return new_group_id;
 }
 
 /** make an image the representative of the group it is in */
-int dt_grouping_change_representative(const int image_id)
+int dt_grouping_change_representative(const int32_t image_id)
 {
   sqlite3_stmt *stmt;
 
   dt_image_t *img = dt_image_cache_get(darktable.image_cache, image_id, 'r');
-  int group_id = img->group_id;
+  const int group_id = img->group_id;
   dt_image_cache_read_release(darktable.image_cache, img);
 
   GList *imgs = NULL;
@@ -105,20 +112,20 @@ int dt_grouping_change_representative(const int image_id)
   DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, group_id);
   while(sqlite3_step(stmt) == SQLITE_ROW)
   {
-    int other_id = sqlite3_column_int(stmt, 0);
+    const int other_id = sqlite3_column_int(stmt, 0);
     dt_image_t *other_img = dt_image_cache_get(darktable.image_cache, other_id, 'w');
     other_img->group_id = image_id;
     dt_image_cache_write_release(darktable.image_cache, other_img, DT_IMAGE_CACHE_SAFE);
     imgs = g_list_prepend(imgs, GINT_TO_POINTER(other_id));
   }
   sqlite3_finalize(stmt);
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGE_INFO_CHANGED, imgs);
 
   return image_id;
 }
 
 /** get images of the group */
-GList *dt_grouping_get_group_images(const int imgid)
+GList *dt_grouping_get_group_images(const int32_t imgid)
 {
   GList *imgs = NULL;
   const dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'r');
@@ -136,13 +143,13 @@ GList *dt_grouping_get_group_images(const int imgid)
       while(sqlite3_step(stmt) == SQLITE_ROW)
       {
         const int image_id = sqlite3_column_int(stmt, 0);
-        imgs = g_list_append(imgs, GINT_TO_POINTER(image_id));
+        imgs = g_list_prepend(imgs, GINT_TO_POINTER(image_id));
       }
       sqlite3_finalize(stmt);
     }
-    else imgs = g_list_append(imgs, GINT_TO_POINTER(imgid));
+    else imgs = g_list_prepend(imgs, GINT_TO_POINTER(imgid));
   }
-  return imgs;
+  return g_list_reverse(imgs);
 }
 
 /** add grouped images to images list */
@@ -150,8 +157,7 @@ void dt_grouping_add_grouped_images(GList **images)
 {
   if(!*images) return;
   GList *gimgs = NULL;
-  GList *imgs = *images;
-  while(imgs)
+  for(GList *imgs = *images; imgs; imgs = g_list_next(imgs))
   {
     const dt_image_t *image = dt_image_cache_get(darktable.image_cache, GPOINTER_TO_INT(imgs->data), 'r');
     if(image)
@@ -169,16 +175,15 @@ void dt_grouping_add_grouped_images(GList **images)
         {
           const int image_id = sqlite3_column_int(stmt, 0);
           if(image_id != GPOINTER_TO_INT(imgs->data))
-            gimgs = g_list_append(gimgs, GINT_TO_POINTER(image_id));
+            gimgs = g_list_prepend(gimgs, GINT_TO_POINTER(image_id));
         }
         sqlite3_finalize(stmt);
       }
     }
-    imgs = g_list_next(imgs);
   }
 
   if(gimgs)
-    imgs = g_list_concat(*images, gimgs);
+    *images = g_list_concat(*images, g_list_reverse(gimgs));
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

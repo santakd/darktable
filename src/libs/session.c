@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -82,7 +82,7 @@ static void create_callback(GtkButton *button, gpointer user_data)
 void gui_init(dt_lib_module_t *self)
 {
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  dt_gui_add_help_link(self->widget, "tethering_panels.html#session");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("tethering_session"));
   self->data = calloc(1, sizeof(dt_lib_session_t));
 
   // Setup lib data

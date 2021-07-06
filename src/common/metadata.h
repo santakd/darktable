@@ -47,9 +47,9 @@ dt_metadata_type_t;
 
 typedef enum dt_metadata_signal_t
 {
-  DT_METADATA_SIGNAL_SHOWN,     // metadata set as shown
-  DT_METADATA_SIGNAL_HIDDEN,    // metadata set as hidden
-  DT_METADATA_SIGNAL_NEW_VALUE  // metadata value changed
+  DT_METADATA_SIGNAL_SHOWN,       // metadata set as shown
+  DT_METADATA_SIGNAL_HIDDEN,      // metadata set as hidden
+  DT_METADATA_SIGNAL_NEW_VALUE    // metadata value changed
 }
 dt_metadata_signal_t;
 
@@ -65,16 +65,19 @@ dt_metadata_flag_t;
 const char *dt_metadata_get_name_by_display_order(const uint32_t order);
 
 /** return the metadata keyid by display order */
-const dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order);
+dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order);
+
+/** return the metadata keyid by name */
+dt_metadata_t dt_metadata_get_keyid_by_name(const char* name);
 
 /** return the metadata type by display order */
-const int dt_metadata_get_type_by_display_order(const uint32_t order);
+int dt_metadata_get_type_by_display_order(const uint32_t order);
 
 /** return the metadata name of the metadata keyid */
 const char *dt_metadata_get_name(const uint32_t keyid);
 
 /** return the keyid of the metadata key */
-const dt_metadata_t dt_metadata_get_keyid(const char* key);
+dt_metadata_t dt_metadata_get_keyid(const char* key);
 
 /** return the key of the metadata keyid */
 const char *dt_metadata_get_key(const uint32_t keyid);
@@ -86,7 +89,10 @@ const char *dt_metadata_get_subkey(const uint32_t keyid);
 const char *dt_metadata_get_key_by_subkey(const char *subkey);
 
 /** return the type of the metadata keyid */
-const int dt_metadata_get_type(const uint32_t keyid);
+int dt_metadata_get_type(const uint32_t keyid);
+
+/** init metadata flags */
+void dt_metadata_init();
 
 /** Set metadata for a specific image, or all selected for id == -1. */
 void dt_metadata_set(int id, const char *key, const char *value, const gboolean undo_on); // duplicate.c, lua/image.c
@@ -96,7 +102,7 @@ void dt_metadata_set_import(int id, const char *key, const char *value); // exif
 
 /** Set metadata (named keys) for a specific image, or all selected for id == -1. */
 /** list is a set of key, value */
-void dt_metadata_set_list(GList *imgs, GList *key_value, const gboolean undo_on); // libs/metadata.c
+void dt_metadata_set_list(const GList *imgs, GList *key_value, const gboolean undo_on); // libs/metadata.c
 
 /** Set metadata (id keys) for a list of images.
     list is a set of keyid, value
@@ -112,7 +118,7 @@ GList *dt_metadata_get(int id, const char *key, uint32_t *count); // exif.cc, va
 GList *dt_metadata_get_list_id(int id); // libs/image.c
 
 /** Remove metadata from specific images, or all selected for id == -1. */
-void dt_metadata_clear(GList *imgs, const gboolean undo_on); // libs/metadata.c
+void dt_metadata_clear(const GList *imgs, const gboolean undo_on); // libs/metadata.c
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

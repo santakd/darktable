@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -83,8 +83,8 @@ static gboolean _togglebutton_draw(GtkWidget *widget, cairo_t *cr)
   /* get button total allocation */
   GtkAllocation allocation;
   gtk_widget_get_allocation(widget, &allocation);
-  int width = allocation.width;
-  int height = allocation.height;
+  const int width = allocation.width;
+  const int height = allocation.height;
 
   /* get the css geometry properties of the button */
   GtkBorder margin, border, padding;
@@ -101,39 +101,20 @@ static gboolean _togglebutton_draw(GtkWidget *widget, cairo_t *cr)
   /* draw standard button background if not transparent nor flat styled */
   if((flags & CPF_STYLE_FLAT))
   {
-    if(flags & CPF_PRELIGHT || (flags & CPF_ACTIVE && !(flags & CPF_BG_TRANSPARENT)))
+    if((flags & CPF_PRELIGHT) || ((flags & CPF_ACTIVE) && !(flags & CPF_BG_TRANSPARENT)))
     {
       // When CPF_BG_TRANSPARENT is set, change the background on
       // PRELIGHT, but not on ACTIVE
       if(!(flags & CPF_BG_TRANSPARENT) || (flags & CPF_PRELIGHT))
-      {
         gtk_render_background(context, cr, startx, starty, cwidth, cheight);
-      }
     }
     else if(!(flags & CPF_ACTIVE) || (flags & CPF_IGNORE_FG_STATE))
-    {
       fg_color.alpha = CLAMP(fg_color.alpha / 2.0, 0.3, 1.0);
-    }
   }
   else if(!(flags & CPF_BG_TRANSPARENT))
-  {
-    /* draw default boxed button */
     gtk_render_background(context, cr, startx, starty, cwidth, cheight);
-    gtk_render_frame(context, cr, startx, starty, cwidth, cheight);
-  }
 
-  /* create pango text settings if label exists */
-  PangoLayout *layout = NULL;
-  int pw = 0, ph = 0;
-  const gchar *text = gtk_button_get_label(GTK_BUTTON(widget));
-  if(text)
-  {
-    layout = pango_cairo_create_layout(cr);
-    pango_layout_set_font_description(layout, darktable.bauhaus->pango_font_desc);
-    pango_cairo_context_set_resolution(pango_layout_get_context(layout), darktable.gui->dpi);
-    pango_layout_set_text(layout, text, -1);
-    pango_layout_get_pixel_size(layout, &pw, &ph);
-  }
+  gtk_render_frame(context, cr, startx, starty, cwidth, cheight);
 
   gdk_cairo_set_source_rgba(cr, &fg_color);
 
@@ -164,21 +145,7 @@ static gboolean _togglebutton_draw(GtkWidget *widget, cairo_t *cr)
     void *icon_data = DTGTK_TOGGLEBUTTON(widget)->icon_data;
 
     if(cwidth > 0 && cheight > 0)
-        DTGTK_TOGGLEBUTTON(widget)->icon(cr, startx, starty, cwidth, cheight, flags, icon_data);
-  }
-
-
-  /* draw label */
-  if(text)
-  {
-    int lx = DT_PIXEL_APPLY_DPI(2), ly = ((height / 2.0) - (ph / 2.0));
-    // if (DTGTK_TOGGLEBUTTON (widget)->icon) lx += width;
-    // GdkRectangle t={x,y,x+width,y+height};
-    // gtk_paint_layout(style,gtk_widget_get_window(widget),
-    // state,TRUE,&t,widget,"togglebutton",lx,ly,layout);
-    cairo_translate(cr, lx, ly);
-    pango_cairo_show_layout(cr, layout);
-    g_object_unref(layout);
+      DTGTK_TOGGLEBUTTON(widget)->icon(cr, startx, starty, cwidth, cheight, flags, icon_data);
   }
 
   return FALSE;
@@ -221,6 +188,7 @@ GType dtgtk_togglebutton_get_type()
 void dtgtk_togglebutton_set_paint(GtkDarktableToggleButton *button, DTGTKCairoPaintIconFunc paint,
                                   gint paintflags, void *paintdata)
 {
+  g_return_if_fail(button != NULL);
   button->icon = paint;
   button->icon_flags = paintflags;
   button->icon_data = paintdata;
@@ -228,6 +196,7 @@ void dtgtk_togglebutton_set_paint(GtkDarktableToggleButton *button, DTGTKCairoPa
 
 void dtgtk_togglebutton_override_color(GtkDarktableToggleButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->fg = *color;
@@ -239,6 +208,7 @@ void dtgtk_togglebutton_override_color(GtkDarktableToggleButton *button, GdkRGBA
 
 void dtgtk_togglebutton_override_background_color(GtkDarktableToggleButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->bg = *color;

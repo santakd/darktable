@@ -1,93 +1,102 @@
 * developers:
 Pascal Obry
 Aldric Renaudin
+Aurélien PIERRE
 Roman Lebedev
-Tobias Ellinghaus
-Ulrich Pegelow
 parafin
-Pascal de Bruijn
-Stefan Schöfegger
 Peter Budai
-johannes hanika
-Edouard Gomez
 
 * translators:
 Pascal Obry
-Ger Siemerink
-EdgarLux
-Timur I. Davletshin
-Michel Leblond
-Nilvus
-Jakub Filipowicz
-Matjaž Jeran
-Heiko Bauke
-Josep V. Moragues
-Milan Knížek
-Song Li
-Tomasz Golinski
-maruncz
-Jacques Le Clerc
-Marko Vertainen
-Maurizio Paglia
-Tobias Ellinghaus
-mepi0011
-miroslavfikar
-shlomi braitbart
-Denis Dyakov
-Edgar De la Luz
 Jeronimo Pellegrini
-Magnus Claesson
-Ragnar Wisloff
+Martin Straeten
+EdgarLux
+Matt Maguire
+Kevin Vermassen
+Victor Forsiuk
+Nicolas Auffray
+Matteo Mardegan
+Nameless-J
+Timur Davletshin
+chrisaga
+Báthory Péter
+Matjaž Jeran
+thisnamewasnottaken
+Arch Ont
+Aurélien PIERRE
+Bernhard
+Danilo Bargen
+Mik-
+Miloš Komarčević
+Miroslav Fikar
 Shlomi Alon-Braitbart
-Simon Raffeiner
-Tomasz Goliński
-archont00
-johannes hanika
-lkarcz
+jpellegrini
+quovadit
 
 * contributors (at least 4 commits):
-Aurélien PIERRE
-Andreas Schneider
-edgardoh
-rawfiner
+ralfbrown
 Philippe Weyland
-Ger Siemerink
-Nilvus
-Heiko Bauke
-EdgarLux
 hanno@schwalm-bremen.de
-Jakub Filipowicz
-Jacques Le Clerc
-Timur I. Davletshin
-Michel Leblond
-Bill Ferguson
-Sam Smith
-Alexis Mousset
-Matjaž Jeran
-Matthieu Moy
-Rikard Öxler
-junkyardsparkle
-Denis Dyakov
-Diederik ter Rahe
-Hanno Schwalm
-luzpaz
+Hubert Kowalski
 Dan Torop
-Marcello Mamino
+Chris.Elston
+Jeronimo Pellegrini
+rawfiner
+Martin Straeten
+Miloš Komarčević
+Diederik ter Rahe
+Nicolas Auffray
+Sakari Kapanen
+Victor Forsiuk
+lhietal
+EdgarLux
+Matt Maguire
+wpferguson
+Ralf Brown
+Kevin Vermassen
+Vincent THOMAS
+Daniel Vogelbacher
+Bill Ferguson
+Harold le Clément de Saint-Marcq
+quovadit
+Andreas Schneider
+Fabio Heer
+Hanno Schwalm
+HansBull
+Heiko Bauke
+Marco
+Marco Carrarini
+Mark-64
+vrnhgd
+Roman Khatko
+Philipp Lutz
+Harald
 Wolfgang Goetz
-mepi0011
-Josep V. Moragues
-maruncz
-mondoman712
+Jim Robinson
+dterrahe
 
 * Sub-module rawspeed contributors (at least 1 commit):
 Roman Lebedev
-Robert Bridge
-bobobo1618
-luz.paz
-Bastian Bechtold
-Pascal de Bruijn
-dllu
+Miloš Komarčević
+Hubert Kowalski
+Dan Torop
+Daniel Vogelbacher
+Elizeu Santos
+Frank Loemker
+Matt Maguire
 hanno@schwalm-bremen.de
-junkyardsparkle
+jas01
+
+* Sub-module OpenCL contributors (at least 1 commit):
+
+* Sub-module libxcf contributors (at least 1 commit):
+
+* Sub-module whereami contributors (at least 1 commit):
+
+* Sub-module integration contributors (at least 1 commit):
+Pascal Obry
+Miloš Komarčević
+hanno@schwalm-bremen.de
+Aurélien PIERRE
 
 And all those of you that made previous releases possible

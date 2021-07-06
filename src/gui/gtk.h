@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2020 darktable developers.
+    Copyright (C) 2009-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,11 +19,14 @@
 #pragma once
 
 #include "common/darktable.h"
+#include "common/dtpthread.h"
 
 #include <gtk/gtk.h>
 #include <stdint.h>
 
 #define DT_GUI_IOP_MODULE_CONTROL_SPACING 0
+
+#define DT_GUI_THUMBSIZE_REDUCE 0.7f
 
 /* helper macro that applies the DPI transformation to fixed pixel values. input should be defaulting to 96
  * DPI */
@@ -84,6 +87,12 @@ typedef enum dt_gui_color_t
   DT_GUI_COLOR_PREVIEW_HOVER_BORDER,
   DT_GUI_COLOR_LOG_BG,
   DT_GUI_COLOR_LOG_FG,
+  DT_GUI_COLOR_MAP_COUNT_SAME_LOC,
+  DT_GUI_COLOR_MAP_COUNT_DIFF_LOC,
+  DT_GUI_COLOR_MAP_COUNT_BG,
+  DT_GUI_COLOR_MAP_LOC_SHAPE_HIGH,
+  DT_GUI_COLOR_MAP_LOC_SHAPE_LOW,
+  DT_GUI_COLOR_MAP_LOC_SHAPE_DEF,
   DT_GUI_COLOR_LAST
 } dt_gui_color_t;
 
@@ -110,8 +119,9 @@ typedef struct dt_gui_gtk_t
 
   gboolean show_overlays;
   gboolean show_focus_peaking;
+  GtkWidget *focus_peaking_button;
 
-  double dpi, dpi_factor, ppd;
+  double dpi, dpi_factor, ppd, ppd_thb;
 
   int icon_size; // size of top panel icons
 
@@ -123,10 +133,12 @@ typedef struct dt_gui_gtk_t
   gint scroll_mask;
   guint sidebar_scroll_mask;
 
-  cairo_filter_t filter_image;
+  cairo_filter_t filter_image;    // filtering used for all modules expect darkroom
+  cairo_filter_t dr_filter_image; // filtering used in the darkroom
+
+  dt_pthread_mutex_t mutex;
 } dt_gui_gtk_t;
 
-#if (CAIRO_VERSION >= CAIRO_VERSION_ENCODE(1, 13, 1))
 static inline cairo_surface_t *dt_cairo_image_surface_create(cairo_format_t format, int width, int height) {
   cairo_surface_t *cst = cairo_image_surface_create(format, width * darktable.gui->ppd, height * darktable.gui->ppd);
   cairo_surface_set_device_scale(cst, darktable.gui->ppd, darktable.gui->ppd);
@@ -162,15 +174,6 @@ static inline cairo_surface_t *dt_gdk_cairo_surface_create_from_pixbuf(const Gdk
 static inline GdkPixbuf *dt_gdk_pixbuf_new_from_file_at_size(const char *filename, int width, int height, GError **error) {
   return gdk_pixbuf_new_from_file_at_size(filename, width * darktable.gui->ppd, height * darktable.gui->ppd, error);
 }
-#else
-#define dt_cairo_image_surface_create cairo_image_surface_create
-#define dt_cairo_image_surface_create_for_data cairo_image_surface_create_for_data
-#define dt_cairo_image_surface_create_from_png cairo_image_surface_create_from_png
-#define dt_cairo_image_surface_get_width cairo_image_surface_get_width
-#define dt_cairo_image_surface_get_height cairo_image_surface_get_height
-#define dt_gdk_cairo_surface_create_from_pixbuf gdk_cairo_surface_create_from_pixbuf
-#define dt_gdk_pixbuf_new_from_file_at_size gdk_pixbuf_new_from_file_at_size
-#endif
 
 int dt_gui_gtk_init(dt_gui_gtk_t *gui);
 void dt_gui_gtk_run(dt_gui_gtk_t *gui);
@@ -181,7 +184,13 @@ int dt_gui_gtk_load_config();
 int dt_gui_gtk_write_config();
 void dt_gui_gtk_set_source_rgb(cairo_t *cr, dt_gui_color_t);
 void dt_gui_gtk_set_source_rgba(cairo_t *cr, dt_gui_color_t, float opacity_coef);
+double dt_get_system_gui_ppd(GtkWidget *widget);
 
+/* Check sidebar_scroll_default and modifier keys to determine if scroll event
+ * should be processed by control or by panel. If default is panel scroll but
+ * modifiers are pressed to indicate the control should be scrolled, then remove
+ * the modifiers from the event before returning false */
+gboolean dt_gui_ignore_scroll(GdkEventScroll *event);
 /* Return requested scroll delta(s) from event. If delta_x or delta_y
  * is NULL, do not return that delta. Return TRUE if requested deltas
  * can be retrieved. Handles both GDK_SCROLL_UP/DOWN/LEFT/RIGHT and
@@ -320,6 +329,8 @@ gboolean dt_ui_panel_visible(struct dt_ui_t *ui, const dt_ui_panel_t);
 int dt_ui_panel_get_size(struct dt_ui_t *ui, const dt_ui_panel_t p);
 /**  \brief set width of right, left, or bottom panel */
 void dt_ui_panel_set_size(struct dt_ui_t *ui, const dt_ui_panel_t p, int s);
+/** \brief is the panel ancestor of widget */
+gboolean dt_ui_panel_ancestor(struct dt_ui_t *ui, const dt_ui_panel_t p, GtkWidget *w);
 /** \brief get the center drawable widget */
 GtkWidget *dt_ui_center(struct dt_ui_t *ui);
 GtkWidget *dt_ui_center_base(struct dt_ui_t *ui);
@@ -340,9 +351,11 @@ void dt_ellipsize_combo(GtkComboBox *cbox);
 static inline void dt_ui_section_label_set(GtkWidget *label)
 {
   gtk_widget_set_halign(label, GTK_ALIGN_FILL); // make it span the whole available width
-  g_object_set(G_OBJECT(label), "xalign", 0.0, (gchar *)0);    // make the text left aligned
+  gtk_label_set_xalign (GTK_LABEL(label), 0.5f);
+  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END); // ellipsize labels
   gtk_widget_set_name(label, "section_label"); // make sure that we can style these easily
 }
+
 static inline GtkWidget *dt_ui_section_label_new(const gchar *str)
 {
   GtkWidget *label = gtk_label_new(str);
@@ -350,14 +363,22 @@ static inline GtkWidget *dt_ui_section_label_new(const gchar *str)
   return label;
 };
 
-static inline void dtgtk_justify_notebook_tabs(GtkNotebook *notebook)
+static inline GtkWidget *dt_ui_label_new(const gchar *str)
 {
-  // force the notebook tabs to fill the available width
-  for(gint i = 0; i < gtk_notebook_get_n_pages(notebook); ++i)
-    gtk_container_child_set(GTK_CONTAINER(notebook),
-                            gtk_notebook_get_nth_page(notebook, i),
-                            "tab-expand", TRUE, "tab-fill", TRUE, (char *)NULL);
-}
+  GtkWidget *label = gtk_label_new(str);
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  gtk_label_set_xalign (GTK_LABEL(label), 0.0f);
+  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+  return label;
+};
+
+extern const struct dt_action_def_t dt_action_def_tabs_all_rgb;
+extern const struct dt_action_def_t dt_action_def_tabs_rgb;
+extern const struct dt_action_def_t dt_action_def_tabs_none;
+
+GtkNotebook *dt_ui_notebook_new(struct dt_action_def_t *def);
+
+GtkWidget *dt_ui_notebook_page(GtkNotebook *notebook, const char *text, const char *tooltip);
 
 // show a dialog box with 2 buttons in case some user interaction is required BEFORE dt's gui is initialised.
 // this expects gtk_init() to be called already which should be the case during most of dt's init phase.
@@ -376,9 +397,48 @@ void dt_gui_add_help_link(GtkWidget *widget, const char *link);
 // load a CSS theme
 void dt_gui_load_theme(const char *theme);
 
-//translate key press events to remove any modifiers used to produce the keyval
+// reload GUI scalings
+void dt_configure_ppd_dpi(dt_gui_gtk_t *gui);
+
+// translate key press events to remove any modifiers used to produce the keyval
 // for example when the shift key is used to create the asterisk character
 guint dt_gui_translated_key_state(GdkEventKey *event);
+
+// return modifier keys currently pressed, independent of any key event
+GdkModifierType dt_key_modifier_state();
+
+// create an ellipsized button with label, tooltip and help link
+static inline GtkWidget *dt_ui_button_new(const gchar *label, const gchar *tooltip, const gchar *help)
+{
+  GtkWidget *button = gtk_button_new_with_label(label);
+  gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(button))), PANGO_ELLIPSIZE_END);
+  if(tooltip) gtk_widget_set_tooltip_text(button, tooltip);
+  if(help) dt_gui_add_help_link(button, help);
+  return button;
+};
+
+GtkWidget *dt_ui_scroll_wrap(GtkWidget *w, gint min_size, char *config_str);
+
+// check whether the given container has any user-added children
+gboolean dt_gui_container_has_children(GtkContainer *container);
+// return a count of the user-added children in the given container
+int dt_gui_container_num_children(GtkContainer *container);
+// return the first child of the given container
+GtkWidget *dt_gui_container_first_child(GtkContainer *container);
+// return the requested child of the given container, or NULL if it has fewer children
+GtkWidget *dt_gui_container_nth_child(GtkContainer *container, int which);
+
+// remove all of the children we've added to the container.  Any which no longer have any references will
+// be destroyed.
+void dt_gui_container_remove_children(GtkContainer *container);
+
+// delete all of the children we've added to the container.  Use this function only if you are SURE
+// there are no other references to any of the children (if in doubt, use dt_gui_container_remove_children
+// instead; it's a bit slower but safer).
+void dt_gui_container_destroy_children(GtkContainer *container);
+
+void dt_gui_menu_popup(GtkMenu *menu, GtkWidget *button, GdkGravity widget_anchor, GdkGravity menu_anchor);
+void dt_gui_draw_rounded_rectangle(cairo_t *cr, float width, float height, float x, float y);
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

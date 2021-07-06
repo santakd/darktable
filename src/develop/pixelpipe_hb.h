@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2020 darktable developers.
+    Copyright (C) 2009-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "common/atomic.h"
 #include "common/image.h"
 #include "common/imageio.h"
 #include "common/iop_order.h"
@@ -107,6 +108,13 @@ typedef struct dt_dev_pixelpipe_t
   // and should be modified by process*(), if necessary.
   dt_iop_buffer_dsc_t dsc;
 
+  /** work profile info of the image */
+  struct dt_iop_order_iccprofile_info_t *work_profile_info;
+  /** input profile info **/
+  struct dt_iop_order_iccprofile_info_t *input_profile_info;
+  /** output profile info **/
+  struct dt_iop_order_iccprofile_info_t *output_profile_info;
+
   // instances of pixelpipe, stored in GList of dt_dev_pixelpipe_iop_t
   GList *nodes;
   // event flag
@@ -122,11 +130,18 @@ typedef struct dt_dev_pixelpipe_t
   // output buffer (for display)
   uint8_t *output_backbuf;
   int output_backbuf_width, output_backbuf_height;
+
+  // the data for the luminance mask are kept in a buffer written by demosaic or rawprepare
+  // as we have to scale the mask later ke keep roi at that stage
+  float *rawdetail_mask_data;
+  struct dt_iop_roi_t rawdetail_mask_roi;
+  int want_detail_mask;
+
   int output_imgid;
   // working?
   int processing;
   // shutting down?
-  int shutdown;
+  dt_atomic_int shutdown;
   // opencl enabled for this pixelpipe?
   int opencl_enabled;
   // opencl error detected?
@@ -228,6 +243,16 @@ void dt_dev_pixelpipe_remove_node(dt_dev_pixelpipe_t *pipe, struct dt_develop_t 
 float *dt_dev_get_raster_mask(const dt_dev_pixelpipe_t *pipe, const struct dt_iop_module_t *raster_mask_source,
                               const int raster_mask_id, const struct dt_iop_module_t *target_module,
                               gboolean *free_mask);
+// some helper functions related to the details mask interface
+void dt_dev_clear_rawdetail_mask(dt_dev_pixelpipe_t *pipe);
+
+gboolean dt_dev_write_rawdetail_mask(dt_dev_pixelpipe_iop_t *piece, float *const rgb, const dt_iop_roi_t *const roi_in, const int mode);
+#ifdef HAVE_OPENCL
+gboolean dt_dev_write_rawdetail_mask_cl(dt_dev_pixelpipe_iop_t *piece, cl_mem in, const dt_iop_roi_t *const roi_in, const int mode);
+#endif
+
+// helper function writing the pipe-processed ctmask data to dest 
+float *dt_dev_distort_detail_mask(const dt_dev_pixelpipe_t *pipe, float *src, const struct dt_iop_module_t *target_module);
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,7 +21,9 @@
 #include "common/darktable.h"
 #include "common/debug.h"
 #include "common/file_location.h"
+#include "common/math.h"
 #include "common/srgb_tone_curve_values.h"
+#include "common/utility.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/imageop.h"
@@ -139,48 +141,34 @@ generate_mat3inv_body(double, A, B)
 #undef generate_mat3inv_body
 
 
-static void mat3mulv(float *dst, const float *const mat, const float *const v)
-{
-  for(int k = 0; k < 3; k++)
-  {
-    float x = 0.0f;
-    for(int i = 0; i < 3; i++) x += mat[3 * k + i] * v[i];
-    dst[k] = x;
-  }
-}
-
-static void mat3mul(float *dst, const float *const m1, const float *const m2)
-{
-  for(int k = 0; k < 3; k++)
-  {
-    for(int i = 0; i < 3; i++)
-    {
-      float x = 0.0f;
-      for(int j = 0; j < 3; j++) x += m1[3 * k + j] * m2[3 * j + i];
-      dst[3 * k + i] = x;
-    }
-  }
-}
-
 static const dt_colorspaces_color_profile_t *_get_profile(dt_colorspaces_t *self,
                                                           dt_colorspaces_color_profile_type_t type,
                                                           const char *filename,
                                                           dt_colorspaces_profile_direction_t direction);
 
 static int dt_colorspaces_get_matrix_from_profile(cmsHPROFILE prof, float *matrix, float *lutr, float *lutg,
-                                                  float *lutb, const int lutsize, const int input,
-                                                  const int intent)
+                                                  float *lutb, const int lutsize, const int input)
 {
   // create an OpenCL processable matrix + tone curves from an cmsHPROFILE:
+  // NOTE: may be invoked with matrix and LUT pointers set to null to find
+  // out if the profile can be created at all.
 
   // check this first:
   if(!prof || !cmsIsMatrixShaper(prof)) return 1;
 
-  // if this profile contains LUT, it might also contain swapped matrix,
-  // so the only right way to handle it is to let LCMS apply it.
+  // there are some profiles that contain both a color LUT for some specific
+  // intent and a generic matrix. in some cases the matrix might be
+  // deliberately wrong with swapped blue and red channels in order to easily
+  // detect if a color managed software is applying the LUT or the matrix.
+  // thus, if this profile contains LUT for any intent, it might also contain
+  // swapped matrix, so the only right way to handle it is to let LCMS apply it.
   const int UsedDirection = input ? LCMS_USED_AS_INPUT : LCMS_USED_AS_OUTPUT;
 
-  if(cmsIsCLUT(prof, intent, UsedDirection)) return 1;
+  if(cmsIsCLUT(prof, INTENT_PERCEPTUAL, UsedDirection)
+     || cmsIsCLUT(prof, INTENT_RELATIVE_COLORIMETRIC, UsedDirection)
+     || cmsIsCLUT(prof, INTENT_ABSOLUTE_COLORIMETRIC, UsedDirection)
+     || cmsIsCLUT(prof, INTENT_SATURATION, UsedDirection))
+    return 1;
 
   cmsToneCurve *red_curve = cmsReadTag(prof, cmsSigRedTRCTag);
   cmsToneCurve *green_curve = cmsReadTag(prof, cmsSigGreenTRCTag);
@@ -192,23 +180,24 @@ static int dt_colorspaces_get_matrix_from_profile(cmsHPROFILE prof, float *matri
 
   if(!red_curve || !green_curve || !blue_curve || !red_color || !green_color || !blue_color) return 2;
 
-  matrix[0] = red_color->X;
-  matrix[1] = green_color->X;
-  matrix[2] = blue_color->X;
-  matrix[3] = red_color->Y;
-  matrix[4] = green_color->Y;
-  matrix[5] = blue_color->Y;
-  matrix[6] = red_color->Z;
-  matrix[7] = green_color->Z;
-  matrix[8] = blue_color->Z;
+  float matrix_tmp[9];
+  matrix_tmp[0] = red_color->X;
+  matrix_tmp[1] = green_color->X;
+  matrix_tmp[2] = blue_color->X;
+  matrix_tmp[3] = red_color->Y;
+  matrix_tmp[4] = green_color->Y;
+  matrix_tmp[5] = blue_color->Y;
+  matrix_tmp[6] = red_color->Z;
+  matrix_tmp[7] = green_color->Z;
+  matrix_tmp[8] = blue_color->Z;
 
   // some camera ICC profiles claim to have color locations for red, green and blue base colors defined,
   // but in fact these are all set to zero. we catch this case here.
   float sum = 0.0f;
-  for(int k = 0; k < 9; k++) sum += matrix[k];
+  for(int k = 0; k < 9; k++) sum += matrix_tmp[k];
   if(sum == 0.0f) return 3;
 
-  if(input)
+  if(input && lutr && lutg && lutb)
   {
     // mark as linear, if they are:
     if(cmsIsToneCurveLinear(red_curve))
@@ -228,8 +217,8 @@ static int dt_colorspaces_get_matrix_from_profile(cmsHPROFILE prof, float *matri
   {
     // invert profile->XYZ matrix for output profiles
     float tmp[9];
-    memcpy(tmp, matrix, sizeof(float) * 9);
-    if(mat3inv(matrix, tmp)) return 3;
+    memcpy(tmp, matrix_tmp, sizeof(float) * 9);
+    if(mat3inv(matrix_tmp, tmp)) return 3;
     // also need to reverse gamma, to apply reverse before matrix multiplication:
     cmsToneCurve *rev_red = cmsReverseToneCurveEx(0x8000, red_curve);
     cmsToneCurve *rev_green = cmsReverseToneCurveEx(0x8000, green_curve);
@@ -241,36 +230,44 @@ static int dt_colorspaces_get_matrix_from_profile(cmsHPROFILE prof, float *matri
       cmsFreeToneCurve(rev_blue);
       return 4;
     }
-    // pass on tonecurves, in case lutsize > 0:
-    if(cmsIsToneCurveLinear(red_curve))
-      lutr[0] = -1.0f;
-    else
-      for(int k = 0; k < lutsize; k++) lutr[k] = cmsEvalToneCurveFloat(rev_red, k / (lutsize - 1.0f));
-    if(cmsIsToneCurveLinear(green_curve))
-      lutg[0] = -1.0f;
-    else
-      for(int k = 0; k < lutsize; k++) lutg[k] = cmsEvalToneCurveFloat(rev_green, k / (lutsize - 1.0f));
-    if(cmsIsToneCurveLinear(blue_curve))
-      lutb[0] = -1.0f;
-    else
-      for(int k = 0; k < lutsize; k++) lutb[k] = cmsEvalToneCurveFloat(rev_blue, k / (lutsize - 1.0f));
+
+    if(lutr && lutg && lutb)
+    {
+      // pass on tonecurves, in case lutsize > 0:
+      if(cmsIsToneCurveLinear(red_curve))
+        lutr[0] = -1.0f;
+      else
+        for(int k = 0; k < lutsize; k++) lutr[k] = cmsEvalToneCurveFloat(rev_red, k / (lutsize - 1.0f));
+      if(cmsIsToneCurveLinear(green_curve))
+        lutg[0] = -1.0f;
+      else
+        for(int k = 0; k < lutsize; k++) lutg[k] = cmsEvalToneCurveFloat(rev_green, k / (lutsize - 1.0f));
+      if(cmsIsToneCurveLinear(blue_curve))
+        lutb[0] = -1.0f;
+      else
+        for(int k = 0; k < lutsize; k++) lutb[k] = cmsEvalToneCurveFloat(rev_blue, k / (lutsize - 1.0f));
+    }
+
     cmsFreeToneCurve(rev_red);
     cmsFreeToneCurve(rev_green);
     cmsFreeToneCurve(rev_blue);
   }
+
+  if(matrix) memcpy(matrix, matrix_tmp, sizeof(float) * 9);
+
   return 0;
 }
 
 int dt_colorspaces_get_matrix_from_input_profile(cmsHPROFILE prof, float *matrix, float *lutr, float *lutg,
-                                                 float *lutb, const int lutsize, const int intent)
+                                                 float *lutb, const int lutsize)
 {
-  return dt_colorspaces_get_matrix_from_profile(prof, matrix, lutr, lutg, lutb, lutsize, 1, intent);
+  return dt_colorspaces_get_matrix_from_profile(prof, matrix, lutr, lutg, lutb, lutsize, 1);
 }
 
 int dt_colorspaces_get_matrix_from_output_profile(cmsHPROFILE prof, float *matrix, float *lutr, float *lutg,
-                                                  float *lutb, const int lutsize, const int intent)
+                                                  float *lutb, const int lutsize)
 {
-  return dt_colorspaces_get_matrix_from_profile(prof, matrix, lutr, lutg, lutb, lutsize, 0, intent);
+  return dt_colorspaces_get_matrix_from_profile(prof, matrix, lutr, lutg, lutb, lutsize, 0);
 }
 
 static cmsHPROFILE dt_colorspaces_create_lab_profile()
@@ -315,17 +312,9 @@ static cmsHPROFILE _create_lcms_profile(const char *desc, const char *dmdd,
   cmsToneCurve *out_curves[3] = { trc, trc, trc };
   cmsHPROFILE profile = cmsCreateRGBProfile(whitepoint, primaries, out_curves);
 
+  if(v2) cmsSetProfileVersion(profile, 2.4);
 
-  if(v2)
-  {
-    cmsSetProfileVersion(profile, 2.1);
-    const cmsCIEXYZ black = { 0, 0, 0 };
-    cmsWriteTag(profile, cmsSigMediaBlackPointTag, &black);
-    cmsWriteTag(profile, cmsSigMediaWhitePointTag, whitepoint);
-    cmsSetDeviceClass(profile, cmsSigDisplayClass);
-  }
-
-  cmsSetHeaderFlags(profile, cmsEmbeddedProfileTrue | cmsUseAnywhere);
+  cmsSetHeaderFlags(profile, cmsEmbeddedProfileTrue);
 
   cmsMLUsetASCII(mlu1, "en", "US", "Public Domain");
   cmsWriteTag(profile, cmsSigCopyrightTag, mlu1);
@@ -336,7 +325,7 @@ static cmsHPROFILE _create_lcms_profile(const char *desc, const char *dmdd,
   cmsMLUsetASCII(mlu3, "en", "US", dmdd);
   cmsWriteTag(profile, cmsSigDeviceModelDescTag, mlu3);
 
-  cmsMLUsetASCII(mlu4, "en", "US", "Darktable");
+  cmsMLUsetASCII(mlu4, "en", "US", "darktable");
   cmsWriteTag(profile, cmsSigDeviceMfgDescTag, mlu4);
 
   cmsMLUfree(mlu1);
@@ -401,7 +390,7 @@ static double _HLG_fct(double x)
 
 static cmsToneCurve* _colorspaces_create_transfer(int32_t size, double (*fct)(double))
 {
-  float *values = g_malloc(size * sizeof(float));
+  float *values = g_malloc(sizeof(float) * size);
 
   for (int32_t i = 0; i < size; ++i)
   {
@@ -455,7 +444,7 @@ static cmsHPROFILE dt_colorspaces_create_brg_profile()
 
 static cmsHPROFILE dt_colorspaces_create_gamma_rec709_rgb_profile(void)
 {
-  cmsFloat64Number srgb_parameters[5] = { 2.2, 1.0 / 1.099,  0.099 / 1.099, 1.0 / 4.5, 0.081 };
+  cmsFloat64Number srgb_parameters[5] = { 1/0.45, 1.0 / 1.099,  0.099 / 1.099, 1.0 / 4.5, 0.081 };
   cmsToneCurve *transferFunction = cmsBuildParametricToneCurve(NULL, 4, srgb_parameters);
 
   cmsHPROFILE profile = _create_lcms_profile("Gamma Rec709 RGB", "Gamma Rec709 RGB",
@@ -681,7 +670,7 @@ cmsHPROFILE dt_colorspaces_create_darktable_profile(const char *makermodel)
   if(hp == NULL) return NULL;
 
   char name[512];
-  snprintf(name, sizeof(name), "Darktable profiled %s", makermodel);
+  snprintf(name, sizeof(name), "darktable profiled %s", makermodel);
   cmsSetProfileVersion(hp, 2.1);
   cmsMLU *mlu0 = cmsMLUalloc(NULL, 1);
   cmsMLUsetASCII(mlu0, "en", "US", "(dt internal)");
@@ -714,7 +703,7 @@ static cmsHPROFILE dt_colorspaces_create_xyz_profile(void)
   cmsMLU *mlu1 = cmsMLUalloc(NULL, 1);
   cmsMLUsetASCII(mlu1, "en", "US", "linear XYZ");
   cmsMLU *mlu2 = cmsMLUalloc(NULL, 1);
-  cmsMLUsetASCII(mlu2, "en", "US", "Darktable linear XYZ");
+  cmsMLUsetASCII(mlu2, "en", "US", "darktable linear XYZ");
   cmsWriteTag(hXYZ, cmsSigDeviceMfgDescTag, mlu0);
   cmsWriteTag(hXYZ, cmsSigDeviceModelDescTag, mlu1);
   // this will only be displayed when the embedded profile is read by for example GIMP
@@ -817,7 +806,7 @@ static cmsHPROFILE dt_colorspaces_create_linear_infrared_profile(void)
   // linear rgb with r and b swapped:
   cmsCIExyYTRIPLE BGR_Primaries = { sRGB_Primaries.Blue, sRGB_Primaries.Green, sRGB_Primaries.Red };
 
-  cmsHPROFILE profile = _create_lcms_profile("Linear Infrared BGR", "Darktable Linear Infrared BGR",
+  cmsHPROFILE profile = _create_lcms_profile("Linear Infrared BGR", "darktable Linear Infrared BGR",
                                              &D65xyY, &BGR_Primaries, transferFunction, FALSE);
 
   cmsFreeToneCurve(transferFunction);
@@ -825,24 +814,70 @@ static cmsHPROFILE dt_colorspaces_create_linear_infrared_profile(void)
   return profile;
 }
 
+const dt_colorspaces_color_profile_t *dt_colorspaces_get_work_profile(const int imgid)
+{
+  // find the colorin module -- the pointer stays valid until darktable shuts down
+  static const dt_iop_module_so_t *colorin = NULL;
+  if(colorin == NULL)
+  {
+    for(const GList *modules = darktable.iop; modules; modules = g_list_next(modules))
+    {
+      const dt_iop_module_so_t *module = (const dt_iop_module_so_t *)(modules->data);
+      if(!strcmp(module->op, "colorin"))
+      {
+        colorin = module;
+        break;
+      }
+    }
+  }
+
+  const dt_colorspaces_color_profile_t *p = NULL;
+
+  if(colorin && colorin->get_p)
+  {
+    // get the profile assigned from colorin
+    // FIXME: does this work when using JPEG thumbs and the image was never opened?
+    sqlite3_stmt *stmt;
+    DT_DEBUG_SQLITE3_PREPARE_V2(
+      dt_database_get(darktable.db),
+      "SELECT op_params FROM main.history WHERE imgid=?1 AND operation='colorin' ORDER BY num DESC LIMIT 1", -1,
+      &stmt, NULL);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
+    if(sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      // use introspection to get the profile name from the binary params blob
+      const void *params = sqlite3_column_blob(stmt, 0);
+      dt_colorspaces_color_profile_type_t *type = colorin->get_p(params, "type_work");
+      char *filename = colorin->get_p(params, "filename_work");
+
+      if(type && filename) p = dt_colorspaces_get_profile(*type, filename,
+                                                          DT_PROFILE_DIRECTION_WORK);
+    }
+    sqlite3_finalize(stmt);
+  }
+
+  // if all else fails -> fall back to linear Rec2020 RGB
+  if(!p) p = dt_colorspaces_get_profile(DT_COLORSPACE_LIN_REC2020, "", DT_PROFILE_DIRECTION_WORK);
+
+  return p;
+}
+
 const dt_colorspaces_color_profile_t *dt_colorspaces_get_output_profile(const int imgid,
                                                                         dt_colorspaces_color_profile_type_t over_type,
                                                                         const char *over_filename)
 {
   // find the colorout module -- the pointer stays valid until darktable shuts down
-  static dt_iop_module_so_t *colorout = NULL;
+  static const dt_iop_module_so_t *colorout = NULL;
   if(colorout == NULL)
   {
-    GList *modules = g_list_first(darktable.iop);
-    while(modules)
+    for(const GList *modules = darktable.iop; modules; modules = g_list_next(modules))
     {
-      dt_iop_module_so_t *module = (dt_iop_module_so_t *)(modules->data);
+      const dt_iop_module_so_t *module = (const dt_iop_module_so_t *)(modules->data);
       if(!strcmp(module->op, "colorout"))
       {
         colorout = module;
         break;
       }
-      modules = g_list_next(modules);
     }
   }
 
@@ -1068,7 +1103,7 @@ void rgb2hsl(const float rgb[3], float *h, float *s, float *l)
 
   if(delta != 0.0f)
   {
-    sv = lv < 0.5 ? delta / fmaxf(pmax + pmin, 1.52587890625e-05f) 
+    sv = lv < 0.5 ? delta / fmaxf(pmax + pmin, 1.52587890625e-05f)
                   : delta / fmaxf(2.0 - pmax - pmin, 1.52587890625e-05f);
 
     if(pmax == r)
@@ -1088,21 +1123,17 @@ void rgb2hsl(const float rgb[3], float *h, float *s, float *l)
   *l = lv;
 }
 
+// for efficiency, 'hue' must be pre-scaled to be in 0..6
 static inline float hue2rgb(float m1, float m2, float hue)
 {
-  if(hue < 0.0)
-    hue += 1.0;
-  else if(hue > 1.0)
-    hue -= 1.0;
-
-  if(hue < 1.0 / 6.0)
-    return (m1 + (m2 - m1) * hue * 6.0);
-  else if(hue < 1.0 / 2.0)
+  // compute the value for one of the RGB channels from the hue angle.
+  // If 1 <= angle < 3, return m2; if 4 <= angle <= 6, return m1; otherwise, linearly interpolate between m1 and m2.
+  if(hue < 1.0f)
+    return (m1 + (m2 - m1) * hue);
+  else if(hue < 3.0f)
     return m2;
-  else if(hue < 2.0 / 3.0)
-    return (m1 + (m2 - m1) * ((2.0 / 3.0) - hue) * 6.0);
   else
-    return m1;
+    return hue < 4.0f ? (m1 + (m2 - m1) * (4.0f - hue)) : m1;
 }
 
 void hsl2rgb(float rgb[3], float h, float s, float l)
@@ -1115,9 +1146,10 @@ void hsl2rgb(float rgb[3], float h, float s, float l)
   }
   m2 = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
   m1 = (2.0 * l - m2);
-  rgb[0] = hue2rgb(m1, m2, h + (1.0 / 3.0));
+  h *= 6.0f;  // pre-scale hue angle
+  rgb[0] = hue2rgb(m1, m2, h < 4.0f ? h + 2.0f : h - 4.0f);
   rgb[1] = hue2rgb(m1, m2, h);
-  rgb[2] = hue2rgb(m1, m2, h - (1.0 / 3.0));
+  rgb[2] = hue2rgb(m1, m2, h > 2.0f ? h - 2.0f : h + 4.0f);
 }
 
 static dt_colorspaces_color_profile_t *_create_profile(dt_colorspaces_color_profile_type_t type,
@@ -1312,22 +1344,12 @@ static GList *load_profile_from_dir(const char *subdir)
         ;
       if(!g_ascii_strcasecmp(cc, ".icc") || !g_ascii_strcasecmp(cc, ".icm"))
       {
-        // TODO: add support for grayscale profiles, then remove _ensure_rgb_profile() from here
-        char *icc_content = NULL;
-        cmsHPROFILE tmpprof;
-
-        FILE *fd = g_fopen(filename, "rb");
-        if(!fd) goto icc_loading_done;
-
-        fseek(fd, 0, SEEK_END);
-        size_t end = ftell(fd);
-        rewind(fd);
-
-        icc_content = (char *)malloc(end * sizeof(char));
+        size_t end;
+        char *icc_content = dt_read_file(filename, &end);
         if(!icc_content) goto icc_loading_done;
-        if(fread(icc_content, sizeof(char), end, fd) != end) goto icc_loading_done;
 
-        tmpprof = _ensure_rgb_profile(cmsOpenProfileFromMem(icc_content, end * sizeof(char)));
+        // TODO: add support for grayscale profiles, then remove _ensure_rgb_profile() from here
+        cmsHPROFILE tmpprof = _ensure_rgb_profile(cmsOpenProfileFromMem(icc_content, sizeof(char) * end));
         if(tmpprof)
         {
           dt_colorspaces_color_profile_t *prof = (dt_colorspaces_color_profile_t *)calloc(1, sizeof(dt_colorspaces_color_profile_t));
@@ -1343,12 +1365,11 @@ static GList *load_profile_from_dir(const char *subdir)
           prof->display2_pos = -1;
           prof->category_pos = -1;
           prof->work_pos = -1;
-          temp_profiles = g_list_append(temp_profiles, prof);
+          temp_profiles = g_list_prepend(temp_profiles, prof);
         }
 
 icc_loading_done:
-        if(fd) fclose(fd);
-        free(icc_content);
+        if(icc_content) free(icc_content);
       }
       g_free(filename);
     }
@@ -1393,7 +1414,7 @@ dt_colorspaces_t *dt_colorspaces_init()
                                      _("system display profile"), -1, -1, ++display_pos, ++category_pos, -1, -1));
   res->profiles = g_list_append(
       res->profiles, _create_profile(DT_COLORSPACE_DISPLAY2, dt_colorspaces_create_srgb_profile(),
-                                     _("system display profile"), -1, -1, -1, ++category_pos, -1, ++display2_pos));
+                                     _("system display profile (second window)"), -1, -1, -1, ++category_pos, -1, ++display2_pos));
   // we want a v4 with parametric curve for input and a v2 with point trc for output
   // see http://ninedegreesbelow.com/photography/lcms-make-icc-profiles.html#profile-variants-and-versions
   // TODO: what about display?
@@ -1417,7 +1438,7 @@ dt_colorspaces_t *dt_colorspaces_init()
                                      ++work_pos, ++display2_pos));
 
   res->profiles = g_list_append(res->profiles, _create_profile(DT_COLORSPACE_REC709, dt_colorspaces_create_gamma_rec709_rgb_profile(),
-                                     _("gamma Rec709 RGB"), ++in_pos, ++out_pos, -1, -1,
+                                     _("Rec709 RGB"), ++in_pos, ++out_pos, -1, -1,
                                      ++work_pos, -1));
 
   res->profiles = g_list_append(
@@ -1447,7 +1468,7 @@ dt_colorspaces_t *dt_colorspaces_init()
 
   res->profiles = g_list_append(
      res->profiles, _create_profile(DT_COLORSPACE_PROPHOTO_RGB, dt_colorspaces_create_linear_prophoto_rgb_profile(),
-                                    _("linear prophoto RGB"), ++in_pos, ++out_pos, ++display_pos, ++category_pos,
+                                    _("linear ProPhoto RGB"), ++in_pos, ++out_pos, ++display_pos, ++category_pos,
                                     ++work_pos, ++display2_pos));
 
   res->profiles = g_list_append(
@@ -1467,31 +1488,6 @@ dt_colorspaces_t *dt_colorspaces_init()
       = g_list_append(res->profiles, _create_profile(DT_COLORSPACE_BRG, dt_colorspaces_create_brg_profile(),
                                                      _("BRG (for testing)"), ++in_pos, ++out_pos, ++display_pos,
                                                      -1, -1, ++display2_pos));
-
-  // temporary list of profiles to be added, we keep this separate to be able to sort it before adding
-  GList *temp_profiles;
-
-  // read {userconfig,datadir}/color/in/*.icc, in this order.
-  temp_profiles = load_profile_from_dir("in");
-  for(GList *iter = temp_profiles; iter; iter = g_list_next(iter))
-  {
-    dt_colorspaces_color_profile_t *prof = (dt_colorspaces_color_profile_t *)iter->data;
-    prof->in_pos = ++in_pos;
-  }
-  res->profiles = g_list_concat(res->profiles, temp_profiles);
-
-  // read {conf,data}dir/color/out/*.icc
-  temp_profiles = load_profile_from_dir("out");
-  for(GList *iter = temp_profiles; iter; iter = g_list_next(iter))
-  {
-    dt_colorspaces_color_profile_t *prof = (dt_colorspaces_color_profile_t *)iter->data;
-    prof->out_pos = ++out_pos;
-    prof->display_pos = ++display_pos;
-    prof->display2_pos = ++display2_pos;
-    prof->category_pos = ++category_pos;
-    prof->work_pos = ++work_pos;
-  }
-  res->profiles = g_list_concat(res->profiles, temp_profiles);
 
   // init display profile and softproof/gama checking from conf
   res->display_type = dt_conf_get_int("ui_last/color/display_type");
@@ -1518,8 +1514,8 @@ dt_colorspaces_t *dt_colorspaces_init()
   // sanity checks to ensure the profile filenames are present
 
   if((unsigned int)res->display_type >= DT_COLORSPACE_LAST
-    || (res->display_type == DT_COLORSPACE_FILE
-        && (!res->display_filename[0] || !g_file_test(res->display_filename, G_FILE_TEST_IS_REGULAR))))
+     || (res->display_type == DT_COLORSPACE_FILE
+         && (!res->display_filename[0] || !g_file_test(res->display_filename, G_FILE_TEST_IS_REGULAR))))
     res->display_type = DT_COLORSPACE_DISPLAY;
 
   if((unsigned int)res->display2_type >= DT_COLORSPACE_LAST
@@ -1528,14 +1524,75 @@ dt_colorspaces_t *dt_colorspaces_init()
     res->display2_type = DT_COLORSPACE_DISPLAY2;
 
   if((unsigned int)res->softproof_type >= DT_COLORSPACE_LAST
-    || (res->softproof_type == DT_COLORSPACE_FILE
-        && (!res->softproof_filename[0] || !g_file_test(res->softproof_filename, G_FILE_TEST_IS_REGULAR))))
+     || (res->softproof_type == DT_COLORSPACE_FILE
+         && (!res->softproof_filename[0] || !g_file_test(res->softproof_filename, G_FILE_TEST_IS_REGULAR))))
     res->softproof_type = DT_COLORSPACE_SRGB;
 
   if((unsigned int)res->histogram_type >= DT_COLORSPACE_LAST
-    || (res->histogram_type == DT_COLORSPACE_FILE
-        && (!res->histogram_filename[0] || !g_file_test(res->histogram_filename, G_FILE_TEST_IS_REGULAR))))
+     || (res->histogram_type == DT_COLORSPACE_FILE
+         && (!res->histogram_filename[0] || !g_file_test(res->histogram_filename, G_FILE_TEST_IS_REGULAR))))
     res->histogram_type = DT_COLORSPACE_SRGB;
+
+  // temporary list of profiles to be added, we keep this separate to be able to sort it before adding
+  GList *temp_profiles;
+
+  // read {userconfig,datadir}/color/in/*.icc, in this order.
+  temp_profiles = load_profile_from_dir("in");
+  for(GList *iter = temp_profiles; iter; iter = g_list_next(iter))
+  {
+    dt_colorspaces_color_profile_t *prof = (dt_colorspaces_color_profile_t *)iter->data;
+    prof->in_pos = ++in_pos;
+  }
+  res->profiles = g_list_concat(res->profiles, temp_profiles);
+
+  // read {conf,data}dir/color/out/*.icc
+  temp_profiles = load_profile_from_dir("out");
+  for(GList *iter = temp_profiles; iter; iter = g_list_next(iter))
+  {
+    dt_colorspaces_color_profile_t *prof = (dt_colorspaces_color_profile_t *)iter->data;
+    // FIXME: do want to filter out non-RGB profiles for cases besides histogram profile? colorin is OK with RGB or XYZ, print is OK with anything which LCMS likes, otherwise things are more choosey
+    const cmsColorSpaceSignature color_space = cmsGetColorSpace(prof->profile);
+    // The histogram profile is used for histogram, clipping indicators and the global color picker.
+    // Some of these also assume a matrix profile. LUT profiles don't make much sense in these applications
+    // so filter out any profile that doesn't implement the relative colorimetric intent as a matrix (+ TRC).
+    // For discussion, see e.g.
+    // https://github.com/darktable-org/darktable/issues/7660#issuecomment-760143437
+    // For the working profile we also require a matrix profile.
+    const gboolean is_valid_matrix_profile
+        = dt_colorspaces_get_matrix_from_output_profile(prof->profile, NULL, NULL, NULL, NULL, 0) == 0
+          && dt_colorspaces_get_matrix_from_input_profile(prof->profile, NULL, NULL, NULL, NULL, 0) == 0;
+    prof->out_pos = ++out_pos;
+    prof->display_pos = ++display_pos;
+    prof->display2_pos = ++display2_pos;
+    if(is_valid_matrix_profile)
+    {
+      prof->category_pos = ++category_pos;
+      prof->work_pos = ++work_pos;
+    }
+    else
+    {
+      dt_print(DT_DEBUG_DEV,
+               "output profile `%s' color space `%c%c%c%c' not supported for work or histogram profile\n",
+               prof->name, (char)(color_space >> 24), (char)(color_space >> 16), (char)(color_space >> 8),
+               (char)(color_space));
+
+      if(res->histogram_type == prof->type
+         && (prof->type != DT_COLORSPACE_FILE
+             || dt_colorspaces_is_profile_equal(prof->filename, res->histogram_filename)))
+      {
+        // bad histogram profile selected, we must reset it to sRGB
+        const char *name = dt_colorspaces_get_name(prof->type, prof->filename);
+        dt_control_log(_("profile `%s' not usable as histogram profile. it has been replaced by sRGB!"), name);
+        fprintf(stderr,
+                "[colorspaces] profile `%s' not usable as histogram profile. it has been replaced by sRGB!\n",
+                name);
+        res->histogram_type = DT_COLORSPACE_SRGB;
+        res->histogram_filename[0] = '\0';
+      }
+    }
+  }
+  res->profiles = g_list_concat(res->profiles, temp_profiles);
+
 
   if((unsigned int)res->mode > DT_PROFILE_GAMUTCHECK) res->mode = DT_PROFILE_NORMAL;
 
@@ -1593,63 +1650,64 @@ void dt_colorspaces_cleanup(dt_colorspaces_t *self)
 const char *dt_colorspaces_get_name(dt_colorspaces_color_profile_type_t type,
                                     const char *filename)
 {
-  switch (type) {
-  case DT_COLORSPACE_NONE:
-    return NULL;
-  case DT_COLORSPACE_FILE:
-    return filename;
-  case DT_COLORSPACE_SRGB:
-    return N_("sRGB");
-  case DT_COLORSPACE_ADOBERGB:
-    return N_("Adobe RGB (compatible)");
-  case DT_COLORSPACE_LIN_REC709:
-    return N_("linear Rec709 RGB");
-  case DT_COLORSPACE_LIN_REC2020:
-    return N_("linear Rec2020 RGB");
-  case DT_COLORSPACE_XYZ:
-    return N_("linear XYZ");
-  case DT_COLORSPACE_LAB:
-    return N_("Lab");
-  case DT_COLORSPACE_INFRARED:
-    return N_("linear infrared BGR");
-  case DT_COLORSPACE_DISPLAY:
-    return N_("system display profile");
-  case DT_COLORSPACE_EMBEDDED_ICC:
-    return N_("embedded ICC profile");
-  case DT_COLORSPACE_EMBEDDED_MATRIX:
-    return N_("embedded matrix");
-  case DT_COLORSPACE_STANDARD_MATRIX:
-    return N_("standard color matrix");
-  case DT_COLORSPACE_ENHANCED_MATRIX:
-    return N_("enhanced color matrix");
-  case DT_COLORSPACE_VENDOR_MATRIX:
-    return N_("vendor color matrix");
-  case DT_COLORSPACE_ALTERNATE_MATRIX:
-    return N_("alternate color matrix");
-  case DT_COLORSPACE_BRG:
-    return N_("BRG (experimental)");
-  case DT_COLORSPACE_EXPORT:
-    return N_("export profile");
-  case DT_COLORSPACE_SOFTPROOF:
-    return N_("softproof profile");
-  case DT_COLORSPACE_WORK:
-    return N_("work profile");
-  case DT_COLORSPACE_DISPLAY2:
-    return N_("system display profile");
-  case DT_COLORSPACE_REC709:
-    return N_("gamma22 Rec709");
-  case DT_COLORSPACE_PROPHOTO_RGB:
-    return N_("ProPhoto RGB");
-  case DT_COLORSPACE_PQ_REC2020:
-    return N_("PQ Rec2020");
-  case DT_COLORSPACE_HLG_REC2020:
-    return N_("HLG Rec2020");
-  case DT_COLORSPACE_PQ_P3:
-    return N_("PQ P3");
-  case DT_COLORSPACE_HLG_P3:
-    return N_("HLG P3");
-  case DT_COLORSPACE_LAST:
-    break;
+  switch (type)
+  {
+     case DT_COLORSPACE_NONE:
+       return NULL;
+     case DT_COLORSPACE_FILE:
+       return filename;
+     case DT_COLORSPACE_SRGB:
+       return _("sRGB");
+     case DT_COLORSPACE_ADOBERGB:
+       return _("Adobe RGB (compatible)");
+     case DT_COLORSPACE_LIN_REC709:
+       return _("linear Rec709 RGB");
+     case DT_COLORSPACE_LIN_REC2020:
+       return _("linear Rec2020 RGB");
+     case DT_COLORSPACE_XYZ:
+       return _("linear XYZ");
+     case DT_COLORSPACE_LAB:
+       return _("Lab");
+     case DT_COLORSPACE_INFRARED:
+       return _("linear infrared BGR");
+     case DT_COLORSPACE_DISPLAY:
+       return _("system display profile");
+     case DT_COLORSPACE_EMBEDDED_ICC:
+       return _("embedded ICC profile");
+     case DT_COLORSPACE_EMBEDDED_MATRIX:
+       return _("embedded matrix");
+     case DT_COLORSPACE_STANDARD_MATRIX:
+       return _("standard color matrix");
+     case DT_COLORSPACE_ENHANCED_MATRIX:
+       return _("enhanced color matrix");
+     case DT_COLORSPACE_VENDOR_MATRIX:
+       return _("vendor color matrix");
+     case DT_COLORSPACE_ALTERNATE_MATRIX:
+       return _("alternate color matrix");
+     case DT_COLORSPACE_BRG:
+       return _("BRG (experimental)");
+     case DT_COLORSPACE_EXPORT:
+       return _("export profile");
+     case DT_COLORSPACE_SOFTPROOF:
+       return _("softproof profile");
+     case DT_COLORSPACE_WORK:
+       return _("work profile");
+     case DT_COLORSPACE_DISPLAY2:
+       return _("system display profile (second window)");
+     case DT_COLORSPACE_REC709:
+       return _("Rec709 RGB");
+     case DT_COLORSPACE_PROPHOTO_RGB:
+       return _("linear ProPhoto RGB");
+     case DT_COLORSPACE_PQ_REC2020:
+       return _("PQ Rec2020");
+     case DT_COLORSPACE_HLG_REC2020:
+       return _("HLG Rec2020");
+     case DT_COLORSPACE_PQ_P3:
+       return _("PQ P3");
+     case DT_COLORSPACE_HLG_P3:
+       return _("HLG P3");
+     case DT_COLORSPACE_LAST:
+       break;
   }
 
   return NULL;
@@ -1725,7 +1783,7 @@ static void dt_colorspaces_get_display_profile_colord_callback(GObject *source, 
 
   pthread_rwlock_unlock(&darktable.color_profiles->xprofile_lock);
 
-  if(profile_changed) dt_control_signal_raise(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_CHANGED);
+  if(profile_changed) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_CHANGED);
 }
 #endif
 
@@ -1908,7 +1966,7 @@ void dt_colorspaces_set_display_profile(const dt_colorspaces_color_profile_type_
     g_free(buffer);
   }
   pthread_rwlock_unlock(&darktable.color_profiles->xprofile_lock);
-  if(profile_changed) dt_control_signal_raise(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_CHANGED);
+  if(profile_changed) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_CHANGED);
   g_free(profile_source);
 }
 
@@ -2040,13 +2098,38 @@ int dt_colorspaces_conversion_matrices_xyz(const char *name, float in_XYZ_to_CAM
 }
 
 // Converted from dcraw's cam_xyz_coeff()
-int dt_colorspaces_conversion_matrices_rgb(const char *name, double out_RGB_to_CAM[4][3], double out_CAM_to_RGB[3][4], double mul[4])
+int dt_colorspaces_conversion_matrices_rgb(const char *name,
+                                           double out_RGB_to_CAM[4][3], double out_CAM_to_RGB[3][4],
+                                           const float *embedded_matrix,
+                                           double mul[4])
 {
   double RGB_to_CAM[4][3];
 
   float XYZ_to_CAM[4][3];
   XYZ_to_CAM[0][0] = NAN;
-  dt_dcraw_adobe_coeff(name, (float(*)[12])XYZ_to_CAM);
+
+  if(embedded_matrix == NULL || isnan(embedded_matrix[0]))
+  {
+    dt_dcraw_adobe_coeff(name, (float(*)[12])XYZ_to_CAM);
+  }
+  else
+  {
+    // keep in sync with reload_defaults from colorin.c
+    // embedded matrix is used with higher priority than standard one
+    XYZ_to_CAM[0][0] = embedded_matrix[0];
+    XYZ_to_CAM[0][1] = embedded_matrix[1];
+    XYZ_to_CAM[0][2] = embedded_matrix[2];
+
+    XYZ_to_CAM[1][0] = embedded_matrix[3];
+    XYZ_to_CAM[1][1] = embedded_matrix[4];
+    XYZ_to_CAM[1][2] = embedded_matrix[5];
+
+    XYZ_to_CAM[2][0] = embedded_matrix[6];
+    XYZ_to_CAM[2][1] = embedded_matrix[7];
+    XYZ_to_CAM[2][2] = embedded_matrix[8];
+  }
+
+
   if(isnan(XYZ_to_CAM[0][0]))
     return FALSE;
 

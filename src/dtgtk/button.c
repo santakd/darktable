@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -55,26 +55,12 @@ static gboolean _button_draw(GtkWidget *widget, cairo_t *cr)
   else
     flags &= ~CPF_PRELIGHT;
 
-
-  /* create pango text settings if label exists */
-  PangoLayout *layout = NULL;
-  int pw = 0, ph = 0;
-  const gchar *text = gtk_button_get_label(GTK_BUTTON(widget));
-  if(text)
-  {
-    layout = gtk_widget_create_pango_layout(widget, NULL);
-    pango_layout_set_font_description(layout, darktable.bauhaus->pango_font_desc);
-    pango_cairo_context_set_resolution(pango_layout_get_context(layout), darktable.gui->dpi);
-    pango_layout_set_text(layout, text, -1);
-    pango_layout_get_pixel_size(layout, &pw, &ph);
-  }
-
   /* begin cairo drawing */
   /* get button total allocation */
   GtkAllocation allocation;
   gtk_widget_get_allocation(widget, &allocation);
-  int width = allocation.width;
-  int height = allocation.height;
+  const int width = allocation.width;
+  const int height = allocation.height;
 
   /* get the css geometry properties of the button */
   GtkBorder margin, border, padding;
@@ -92,21 +78,14 @@ static gboolean _button_draw(GtkWidget *widget, cairo_t *cr)
   if(flags & CPF_STYLE_FLAT)
   {
     if(flags & CPF_PRELIGHT)
-    {
       gtk_render_background(context, cr, startx, starty, cwidth, cheight);
-    }
     else if (!(flags & CPF_ACTIVE))
-    {
       fg_color.alpha = CLAMP(fg_color.alpha / 2.0, 0.3, 1.0);
-    }
   }
   else if(!(flags & CPF_BG_TRANSPARENT))
-  {
-    /* draw default boxed button */
     gtk_render_background(context, cr, startx, starty, cwidth, cheight);
-    gtk_render_frame(context, cr, startx, starty, cwidth, cheight);
-  }
 
+  gtk_render_frame(context, cr, startx, starty, cwidth, cheight);
   gdk_cairo_set_source_rgba(cr, &fg_color);
 
   /* draw icon */
@@ -136,17 +115,6 @@ static gboolean _button_draw(GtkWidget *widget, cairo_t *cr)
     void *icon_data = DTGTK_BUTTON(widget)->icon_data;
     if(cwidth > 0 && cheight > 0)
       DTGTK_BUTTON(widget)->icon(cr, startx, starty, cwidth, cheight, flags, icon_data);
-  }
-
-  /* draw label */
-  if(text)
-  {
-    int lx = DT_PIXEL_APPLY_DPI(2), ly = ((height / 2.0) - (ph / 2.0));
-    if(DTGTK_BUTTON(widget)->icon) lx += width;
-    cairo_move_to(cr, lx, ly);
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.5);
-    pango_cairo_show_layout(cr, layout);
-    g_object_unref(layout);
   }
 
   return FALSE;
@@ -186,6 +154,7 @@ GType dtgtk_button_get_type()
 
 void dtgtk_button_set_paint(GtkDarktableButton *button, DTGTKCairoPaintIconFunc paint, gint paintflags, void *paintdata)
 {
+  g_return_if_fail(button != NULL);
   button->icon = paint;
   button->icon_flags = paintflags;
   button->icon_data = paintdata;
@@ -193,6 +162,7 @@ void dtgtk_button_set_paint(GtkDarktableButton *button, DTGTKCairoPaintIconFunc 
 
 void dtgtk_button_set_active(GtkDarktableButton *button, gboolean active)
 {
+  g_return_if_fail(button != NULL);
   if(active)
     button->icon_flags |= CPF_ACTIVE;
   else
@@ -201,6 +171,7 @@ void dtgtk_button_set_active(GtkDarktableButton *button, gboolean active)
 
 void dtgtk_button_override_color(GtkDarktableButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->fg = *color;
@@ -212,6 +183,7 @@ void dtgtk_button_override_color(GtkDarktableButton *button, GdkRGBA *color)
 
 void dtgtk_button_override_background_color(GtkDarktableButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->bg = *color;

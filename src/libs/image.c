@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -50,6 +50,7 @@ typedef struct dt_lib_image_t
   GtkWidget *rotate_cw_button, *rotate_ccw_button, *remove_button, *delete_button, *create_hdr_button,
       *duplicate_button, *reset_button, *move_button, *copy_button, *group_button, *ungroup_button,
       *cache_button, *uncache_button, *refresh_button,
+      *set_monochrome_button, *set_color_button,
       *copy_metadata_button, *paste_metadata_button, *clear_metadata_button,
       *ratings_flag, *colors_flag, *metadata_flag, *geotags_flag, *tags_flag;
   GtkWidget *page1; // saved here for lua extensions
@@ -96,14 +97,15 @@ static void _group_helper_function(void)
     int id = sqlite3_column_int(stmt, 0);
     if(new_group_id == -1) new_group_id = id;
     dt_grouping_add_to_group(new_group_id, id);
-    imgs = g_list_append(imgs, GINT_TO_POINTER(id));
+    imgs = g_list_prepend(imgs, GINT_TO_POINTER(id));
   }
+  imgs = g_list_reverse(imgs); // list was built in reverse order, so un-reverse it
   sqlite3_finalize(stmt);
   if(darktable.gui->grouping)
     darktable.gui->expanded_group_id = new_group_id;
   else
     darktable.gui->expanded_group_id = -1;
-  dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, imgs);
+  dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_GROUPING, imgs);
   dt_control_queue_redraw_center();
 }
 
@@ -116,14 +118,22 @@ static void _ungroup_helper_function(void)
                               &stmt, NULL);
   while(sqlite3_step(stmt) == SQLITE_ROW)
   {
-    int id = sqlite3_column_int(stmt, 0);
-    dt_grouping_remove_from_group(id);
-    imgs = g_list_append(imgs, GINT_TO_POINTER(id));
+    const int id = sqlite3_column_int(stmt, 0);
+    const int new_group_id = dt_grouping_remove_from_group(id);
+    if(new_group_id != -1)
+    {
+      // new_group_id == -1 if image to be ungrouped was a single image and no change to any group was made
+      imgs = g_list_prepend(imgs, GINT_TO_POINTER(id));
+    }
   }
   sqlite3_finalize(stmt);
-  darktable.gui->expanded_group_id = -1;
-  dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, imgs);
-  dt_control_queue_redraw_center();
+  if(imgs != NULL)
+  {
+    darktable.gui->expanded_group_id = -1;
+    dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_GROUPING,
+                               g_list_reverse(imgs));
+    dt_control_queue_redraw_center();
+  }
 }
 
 static void button_clicked(GtkWidget *widget, gpointer user_data)
@@ -163,7 +173,7 @@ static void button_clicked(GtkWidget *widget, gpointer user_data)
 static const char* _image_get_delete_button_label()
 {
 if (dt_conf_get_bool("send_to_trash"))
-  return _("trash");
+  return _("delete (trash)");
 else
   return _("delete");
 }
@@ -171,11 +181,111 @@ else
 static const char* _image_get_delete_button_tooltip()
 {
 if (dt_conf_get_bool("send_to_trash"))
-  return _("send file to trash");
+  return _("physically delete from disk (using trash if possible)");
 else
-  return _("physically delete from disk");
+  return _("physically delete from disk immediately");
 }
 
+static void _update(dt_lib_module_t *self)
+{
+  dt_lib_cancel_postponed_update(self);
+  dt_lib_image_t *d = (dt_lib_image_t *)self->data;
+  const GList *imgs = dt_view_get_images_to_act_on(FALSE, FALSE, FALSE);
+
+  const int act_on_any = imgs != NULL;              // list length > 0 ?
+  const int act_on_one = g_list_is_singleton(imgs); // list length == 1 ?
+  const int act_on_mult = act_on_any && !act_on_one;// list length > 1 ?
+  const uint32_t selected_cnt = dt_collection_get_selected_count(darktable.collection);
+  const gboolean can_paste
+      = d->imageid > 0 && (act_on_mult || (act_on_one && (d->imageid != dt_view_get_image_to_act_on())));
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->remove_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->delete_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->move_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->copy_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->create_hdr_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->duplicate_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->rotate_ccw_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->rotate_cw_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->reset_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->cache_button), act_on_any);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->uncache_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->group_button), selected_cnt > 1);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->copy_metadata_button), act_on_one);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->paste_metadata_button), can_paste);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->clear_metadata_button), act_on_any);
+
+  gtk_widget_set_sensitive(GTK_WIDGET(d->refresh_button), act_on_any);
+  if(act_on_mult)
+  {
+    gtk_widget_set_sensitive(GTK_WIDGET(d->ungroup_button), TRUE);
+    gtk_widget_set_sensitive(GTK_WIDGET(d->set_monochrome_button), TRUE);
+    gtk_widget_set_sensitive(GTK_WIDGET(d->set_color_button), TRUE);
+  }
+  else if(!act_on_any)
+  {
+    // no images to act on!
+    gtk_widget_set_sensitive(GTK_WIDGET(d->ungroup_button), FALSE);
+    gtk_widget_set_sensitive(GTK_WIDGET(d->set_monochrome_button), FALSE);
+    gtk_widget_set_sensitive(GTK_WIDGET(d->set_color_button), FALSE);
+  }
+  else
+  {
+    // exact one image to act on
+    const int imgid = dt_view_get_image_to_act_on();
+    if(imgid >= 0)
+    {
+      dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'r');
+      const gboolean is_bw = (dt_image_monochrome_flags(img) != 0);
+      const int img_group_id = img->group_id;
+      dt_image_cache_read_release(darktable.image_cache, img);
+      gtk_widget_set_sensitive(GTK_WIDGET(d->set_monochrome_button), !is_bw);
+      gtk_widget_set_sensitive(GTK_WIDGET(d->set_color_button), is_bw);
+      sqlite3_stmt *stmt;
+      DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "SELECT COUNT(id) FROM main.images WHERE group_id = ?1 AND id != ?2", -1, &stmt, NULL);
+      DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, img_group_id);
+      DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+      if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
+      {
+        const int images_in_grp = sqlite3_column_int(stmt, 0);
+        gtk_widget_set_sensitive(GTK_WIDGET(d->ungroup_button), images_in_grp > 0);
+      }
+      else
+        gtk_widget_set_sensitive(GTK_WIDGET(d->ungroup_button), FALSE);
+      if(stmt) sqlite3_finalize(stmt);
+    }
+    else
+    {
+      gtk_widget_set_sensitive(GTK_WIDGET(d->set_monochrome_button), FALSE);
+      gtk_widget_set_sensitive(GTK_WIDGET(d->set_color_button), FALSE);
+      gtk_widget_set_sensitive(GTK_WIDGET(d->ungroup_button), FALSE);
+    }
+  }
+}
+
+static void _image_selection_changed_callback(gpointer instance, dt_lib_module_t *self)
+{
+  _update(self);
+}
+
+static void _collection_updated_callback(gpointer instance, dt_collection_change_t query_change,
+                                         dt_collection_properties_t changed_property, gpointer imgs, int next,
+                                         dt_lib_module_t *self)
+{
+  _update(self);
+}
+
+static void _mouse_over_image_callback(gpointer instance, dt_lib_module_t *self)
+{
+  dt_lib_queue_postponed_update(self, _update);
+}
 
 static void _image_preference_changed(gpointer instance, gpointer user_data)
 {
@@ -207,16 +317,18 @@ static void _execute_metadata(dt_lib_module_t *self, const int action)
   const gboolean geotag_flag = dt_conf_get_bool("plugins/lighttable/copy_metadata/geotags");
   const gboolean dttag_flag = dt_conf_get_bool("plugins/lighttable/copy_metadata/tags");
   const int imageid = d->imageid;
-  GList *imgs = dt_view_get_images_to_act_on(FALSE);
+  const GList *imgs = dt_view_get_images_to_act_on(FALSE, TRUE, FALSE);
   if(imgs)
   {
     // for all the above actions, we don't use the grpu_on tag, as grouped images have already been added to image
     // list
-    const dt_undo_type_t undo_type = (rating_flag ? DT_UNDO_RATINGS : 0) |
-                                    (colors_flag ? DT_UNDO_COLORLABELS : 0) |
-                                    (dtmetadata_flag ? DT_UNDO_METADATA : 0) |
-                                    (geotag_flag ? DT_UNDO_GEOTAG : 0) |
-                                    (dttag_flag ? DT_UNDO_TAGS : 0);
+    const dt_undo_type_t undo_type =
+        (rating_flag     ? DT_UNDO_RATINGS     : 0)
+      | (colors_flag     ? DT_UNDO_COLORLABELS : 0)
+      | (dtmetadata_flag ? DT_UNDO_METADATA    : 0)
+      | (geotag_flag     ? DT_UNDO_GEOTAG      : 0)
+      | (dttag_flag      ? DT_UNDO_TAGS        : 0);
+
     if(undo_type) dt_undo_start_group(darktable.undo, undo_type);
 
     if(rating_flag)
@@ -233,6 +345,7 @@ static void _execute_metadata(dt_lib_module_t *self, const int action)
     {
       GList *metadata = (action == DT_MA_CLEAR) ? NULL : dt_metadata_get_list_id(imageid);
       dt_metadata_set_list_id(imgs, metadata, action != DT_MA_MERGE, TRUE);
+      DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
       g_list_free_full(metadata, g_free);
     }
     if(geotag_flag)
@@ -243,13 +356,16 @@ static void _execute_metadata(dt_lib_module_t *self, const int action)
       else
         dt_image_get_location(imageid, geoloc);
       dt_image_set_locations(imgs, geoloc, TRUE);
+      DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_GEOTAG_CHANGED,
+                                    g_list_copy((GList *)imgs), 0);
       g_free(geoloc);
     }
     if(dttag_flag)
     {
       // affect only user tags (not dt tags)
       GList *tags = (action == DT_MA_CLEAR) ? NULL : dt_tag_get_tags(imageid, TRUE);
-      dt_tag_set_tags(tags, imgs, TRUE, action != DT_MA_MERGE, TRUE);
+      if(dt_tag_set_tags(tags, imgs, TRUE, action != DT_MA_MERGE, TRUE))
+        DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
       g_list_free(tags);
     }
 
@@ -257,10 +373,10 @@ static void _execute_metadata(dt_lib_module_t *self, const int action)
     {
       dt_undo_end_group(darktable.undo);
       dt_image_synch_xmps(imgs);
-      dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, imgs);
+      dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_METADATA,
+                                 g_list_copy((GList *)imgs));
       dt_control_queue_redraw_center();
     }
-    else g_list_free(imgs);
   }
 }
 
@@ -269,10 +385,8 @@ static void copy_metadata_callback(GtkWidget *widget, dt_lib_module_t *self)
   dt_lib_image_t *d = (dt_lib_image_t *)self->data;
 
   d->imageid = dt_view_get_image_to_act_on();
-  if(d->imageid)
-  {
-    gtk_widget_set_sensitive(d->paste_metadata_button, TRUE);
-  }
+
+  _update(self);
 }
 
 static void paste_metadata_callback(GtkWidget *widget, dt_lib_module_t *self)
@@ -284,6 +398,17 @@ static void paste_metadata_callback(GtkWidget *widget, dt_lib_module_t *self)
 static void clear_metadata_callback(GtkWidget *widget, dt_lib_module_t *self)
 {
   _execute_metadata(self, DT_MA_CLEAR);
+}
+
+static void set_monochrome_callback(GtkWidget *widget, dt_lib_module_t *self)
+{
+
+  dt_control_monochrome_images(2);
+}
+
+static void set_color_callback(GtkWidget *widget, dt_lib_module_t *self)
+{
+  dt_control_monochrome_images(0);
 }
 
 static void ratings_flag_callback(GtkWidget *widget, dt_lib_module_t *self)
@@ -332,127 +457,88 @@ void gui_init(dt_lib_module_t *self)
 {
   dt_lib_image_t *d = (dt_lib_image_t *)malloc(sizeof(dt_lib_image_t));
   self->data = (void *)d;
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  dt_gui_add_help_link(self->widget, "selected_images.html#selected_images_usage");
+  self->timeout_handle = 0;
+  self->widget = gtk_notebook_new();
+  dt_gui_add_help_link(self->widget, dt_get_help_url("image"));
 
-  // Init GTK notebook
-  GtkNotebook *notebook = GTK_NOTEBOOK(gtk_notebook_new());
-  GtkWidget *page1 = GTK_WIDGET(gtk_grid_new());
-  d->page1 = page1;
-  GtkWidget *page2 = GTK_WIDGET(gtk_grid_new());
-
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), page1, gtk_label_new(_("images")));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), page2, gtk_label_new(_("metadata")));
-  gtk_widget_show_all(GTK_WIDGET(gtk_notebook_get_nth_page(notebook, 0)));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(notebook), FALSE, FALSE, 0);
-
-  dtgtk_justify_notebook_tabs(notebook);
+  GtkWidget *page1 = dt_ui_notebook_page(GTK_NOTEBOOK(self->widget), N_("images"), NULL);
+  GtkWidget *page2 = dt_ui_notebook_page(GTK_NOTEBOOK(self->widget), N_("metadata"), NULL);
 
   // images operations
-  GtkGrid *grid = GTK_GRID(page1);
+  d->page1 = gtk_grid_new();
+
+  GtkGrid *grid = GTK_GRID(d->page1);
+  gtk_container_add(GTK_CONTAINER(page1), d->page1);
   gtk_grid_set_column_homogeneous(grid, TRUE);
   int line = 0;
 
-  GtkWidget *button = gtk_button_new_with_label(_("remove"));
-  ellipsize_button(button);
-  d->remove_button = button;
-  gtk_widget_set_tooltip_text(button, _("remove from the collection"));
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(0));
 
-  button = gtk_button_new_with_label(_image_get_delete_button_label());
-  ellipsize_button(button);
-  d->delete_button = button;
-  gtk_widget_set_tooltip_text(button, _image_get_delete_button_tooltip());
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(1));
+  d->remove_button = dt_ui_button_new(_("remove"), _("remove images from the image library, without deleting"), NULL);
+  gtk_grid_attach(grid, d->remove_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->remove_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(0));
 
-  button = gtk_button_new_with_label(_("move..."));
-  ellipsize_button(button);
-  d->move_button = button;
-  gtk_widget_set_tooltip_text(button, _("move to other folder"));
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(8));
+  d->delete_button = dt_ui_button_new(_image_get_delete_button_label(), _image_get_delete_button_tooltip(), NULL);
+  gtk_grid_attach(grid, d->delete_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->delete_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(1));
 
-  button = gtk_button_new_with_label(_("copy..."));
-  ellipsize_button(button);
-  d->copy_button = button;
-  gtk_widget_set_tooltip_text(button, _("copy to other folder"));
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(9));
+  d->move_button = dt_ui_button_new(_("move..."), _("move to other folder"), NULL);
+  gtk_grid_attach(grid, d->move_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->move_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(8));
 
-  button = gtk_button_new_with_label(_("create HDR"));
-  ellipsize_button(button);
-  d->create_hdr_button = button;
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(7));
-  gtk_widget_set_tooltip_text(button, _("create a high dynamic range image from selected shots"));
+  d->copy_button = dt_ui_button_new(_("copy..."), _("copy to other folder"), NULL);
+  gtk_grid_attach(grid, d->copy_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->copy_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(9));
 
-  button = gtk_button_new_with_label(_("duplicate"));
-  ellipsize_button(button);
-  d->duplicate_button = button;
-  gtk_widget_set_tooltip_text(button, _("add a duplicate to the collection, including its history stack"));
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(3));
+  d->create_hdr_button = dt_ui_button_new(_("create HDR"), _("create a high dynamic range image from selected shots"), NULL);
+  gtk_grid_attach(grid, d->create_hdr_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->create_hdr_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(7));
 
+  d->duplicate_button = dt_ui_button_new(_("duplicate"), _("add a duplicate to the image library, including its history stack"), NULL);
+  gtk_grid_attach(grid, d->duplicate_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->duplicate_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(3));
 
-  button = dtgtk_button_new(dtgtk_cairo_paint_refresh, CPF_DO_NOT_USE_BORDER, NULL);
-  d->rotate_ccw_button = button;
-  gtk_widget_set_tooltip_text(button, _("rotate selected images 90 degrees CCW"));
-  gtk_grid_attach(grid, button, 0, line, 1, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(4));
+  d->rotate_ccw_button = dtgtk_button_new(dtgtk_cairo_paint_refresh, CPF_NONE, NULL);;
+  gtk_widget_set_name(d->rotate_ccw_button, "non-flat");
+  gtk_widget_set_tooltip_text(d->rotate_ccw_button, _("rotate selected images 90 degrees CCW"));
+  gtk_grid_attach(grid, d->rotate_ccw_button, 0, line, 1, 1);
+  g_signal_connect(G_OBJECT(d->rotate_ccw_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(4));
 
-  button = dtgtk_button_new(dtgtk_cairo_paint_refresh, 1 | CPF_DO_NOT_USE_BORDER, NULL);
-  d->rotate_cw_button = button;
-  gtk_widget_set_tooltip_text(button, _("rotate selected images 90 degrees CW"));
-  gtk_grid_attach(grid, button, 1, line, 1, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(5));
+  d->rotate_cw_button = dtgtk_button_new(dtgtk_cairo_paint_refresh, 1 | CPF_NONE, NULL);
+  gtk_widget_set_name(d->rotate_cw_button, "non-flat");
+  gtk_widget_set_tooltip_text(d->rotate_cw_button, _("rotate selected images 90 degrees CW"));
+  gtk_grid_attach(grid, d->rotate_cw_button, 1, line, 1, 1);
+  g_signal_connect(G_OBJECT(d->rotate_cw_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(5));
 
-  button = gtk_button_new_with_label(_("reset rotation"));
-  ellipsize_button(button);
-  d->reset_button = button;
-  gtk_widget_set_tooltip_text(button, _("reset rotation to EXIF data"));
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(6));
+  d->reset_button = dt_ui_button_new(_("reset rotation"), _("reset rotation to EXIF data"), NULL);
+  gtk_grid_attach(grid, d->reset_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->reset_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(6));
 
+  d->cache_button = dt_ui_button_new(_("copy locally"), _("copy the image locally"), NULL);
+  gtk_grid_attach(grid, d->cache_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->cache_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(12));
 
-  button = gtk_button_new_with_label(_("copy locally"));
-  ellipsize_button(button);
-  d->cache_button = button;
-  gtk_widget_set_tooltip_text(button, _("copy the image locally"));
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(12));
+  d->uncache_button = dt_ui_button_new(_("resync local copy"), _("synchronize the image's XMP and remove the local copy"), NULL);
+  gtk_grid_attach(grid, d->uncache_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->uncache_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(13));
 
-  button = gtk_button_new_with_label(_("resync local copy"));
-  ellipsize_button(button);
-  d->uncache_button = button;
-  gtk_widget_set_tooltip_text(button, _("synchronize the image's XMP and remove the local copy"));
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(13));
+  d->group_button = dt_ui_button_new(_("group"), _("add selected images to expanded group or create a new one"), NULL);
+  gtk_grid_attach(grid, d->group_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->group_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(10));
 
-
-  button = gtk_button_new_with_label(_("group"));
-  ellipsize_button(button);
-  d->group_button = button;
-  gtk_widget_set_tooltip_text(button, _("add selected images to expanded group or create a new one"));
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(10));
-
-  button = gtk_button_new_with_label(_("ungroup"));
-  ellipsize_button(button);
-  d->ungroup_button = button;
-  gtk_widget_set_tooltip_text(button, _("remove selected images from the group"));
-  gtk_grid_attach(grid, button, 2, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(11));
+  d->ungroup_button = dt_ui_button_new(_("ungroup"), _("remove selected images from the group"), NULL);
+  gtk_grid_attach(grid, d->ungroup_button, 2, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->ungroup_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(11));
 
   // metadata operations
-  grid = GTK_GRID(page2);
+  grid = GTK_GRID(gtk_grid_new());
+  gtk_container_add(GTK_CONTAINER(page2), GTK_WIDGET(grid));
   gtk_grid_set_column_homogeneous(grid, TRUE);
   line = 0;
 
   GtkWidget *flag = gtk_check_button_new_with_label(_("ratings"));
   d->ratings_flag = flag;
   gtk_widget_set_tooltip_text(flag, _("select ratings metadata"));
+  ellipsize_button(flag);
   gtk_grid_attach(grid, flag, 0, line, 3, 1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(flag), dt_conf_get_bool("plugins/lighttable/copy_metadata/rating"));
   g_signal_connect(G_OBJECT(flag), "clicked", G_CALLBACK(ratings_flag_callback), self);
@@ -460,6 +546,7 @@ void gui_init(dt_lib_module_t *self)
   flag = gtk_check_button_new_with_label(_("colors"));
   d->colors_flag = flag;
   gtk_widget_set_tooltip_text(flag, _("select colors metadata"));
+  ellipsize_button(flag);
   gtk_grid_attach(grid, flag, 3, line++, 3, 1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(flag), dt_conf_get_bool("plugins/lighttable/copy_metadata/colors"));
   g_signal_connect(G_OBJECT(flag), "clicked", G_CALLBACK(colors_flag_callback), self);
@@ -467,6 +554,7 @@ void gui_init(dt_lib_module_t *self)
   flag = gtk_check_button_new_with_label(_("tags"));
   d->tags_flag = flag;
   gtk_widget_set_tooltip_text(flag, _("select tags metadata"));
+  ellipsize_button(flag);
   gtk_grid_attach(grid, flag, 0, line, 3, 1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(flag), dt_conf_get_bool("plugins/lighttable/copy_metadata/tags"));
   g_signal_connect(G_OBJECT(flag), "clicked", G_CALLBACK(tags_flag_callback), self);
@@ -474,6 +562,7 @@ void gui_init(dt_lib_module_t *self)
   flag = gtk_check_button_new_with_label(_("geo tags"));
   d->geotags_flag = flag;
   gtk_widget_set_tooltip_text(flag, _("select geo tags metadata"));
+  ellipsize_button(flag);
   gtk_grid_attach(grid, flag, 3, line++, 3, 1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(flag), dt_conf_get_bool("plugins/lighttable/copy_metadata/geotags"));
   g_signal_connect(G_OBJECT(flag), "clicked", G_CALLBACK(geotags_flag_callback), self);
@@ -481,35 +570,26 @@ void gui_init(dt_lib_module_t *self)
   flag = gtk_check_button_new_with_label(_("metadata"));
   d->metadata_flag = flag;
   gtk_widget_set_tooltip_text(flag, _("select dt metadata (from metadata editor module)"));
+  ellipsize_button(flag);
   gtk_grid_attach(grid, flag, 0, line++, 3, 1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(flag), dt_conf_get_bool("plugins/lighttable/copy_metadata/metadata"));
   g_signal_connect(G_OBJECT(flag), "clicked", G_CALLBACK(metadata_flag_callback), self);
 
-  button = gtk_button_new_with_label(_("copy"));
-  ellipsize_button(button);
-  d->copy_metadata_button = button;
+  d->copy_metadata_button = dt_ui_button_new(_("copy"), _("set the (first) selected image as source of metadata"), NULL);
   d->imageid = 0;
-  gtk_widget_set_tooltip_text(button, _("set the (first) selected image as source of metadata"));
-  gtk_grid_attach(grid, button, 0, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(copy_metadata_callback), self);
+  gtk_grid_attach(grid, d->copy_metadata_button, 0, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->copy_metadata_button), "clicked", G_CALLBACK(copy_metadata_callback), self);
 
-  button = gtk_button_new_with_label(_("paste"));
-  ellipsize_button(button);
-  d->paste_metadata_button = button;
-  gtk_widget_set_sensitive(button, FALSE);
-  gtk_widget_set_tooltip_text(button, _("paste selected metadata on selected images"));
-  gtk_grid_attach(grid, button, 2, line, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(paste_metadata_callback), self);
+  d->paste_metadata_button = dt_ui_button_new(_("paste"), _("paste selected metadata on selected images"), NULL);
+  gtk_grid_attach(grid, d->paste_metadata_button, 2, line, 2, 1);
+  g_signal_connect(G_OBJECT(d->paste_metadata_button), "clicked", G_CALLBACK(paste_metadata_callback), self);
 
-  button = gtk_button_new_with_label(_("clear"));
-  ellipsize_button(button);
-  d->clear_metadata_button = button;
-  gtk_widget_set_tooltip_text(button, _("clear selected metadata on selected images"));
-  gtk_grid_attach(grid, button, 4, line++, 2, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(clear_metadata_callback), self);
+  d->clear_metadata_button = dt_ui_button_new(_("clear"), _("clear selected metadata on selected images"), NULL);
+  gtk_grid_attach(grid, d->clear_metadata_button, 4, line++, 2, 1);
+  g_signal_connect(G_OBJECT(d->clear_metadata_button), "clicked", G_CALLBACK(clear_metadata_callback), self);
 
-  GtkWidget *pastemode = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(pastemode, NULL, _("mode"));
+  GtkWidget *pastemode = dt_bauhaus_combobox_new_action(DT_ACTION(self));
+  dt_bauhaus_widget_set_label(pastemode, NULL, N_("mode"));
   dt_bauhaus_combobox_add(pastemode, _("merge"));
   dt_bauhaus_combobox_add(pastemode, _("overwrite"));
   gtk_widget_set_tooltip_text(pastemode, _("how to handle existing metadata"));
@@ -517,19 +597,33 @@ void gui_init(dt_lib_module_t *self)
   dt_bauhaus_combobox_set(pastemode, dt_conf_get_int("plugins/lighttable/copy_metadata/pastemode"));
   g_signal_connect(G_OBJECT(pastemode), "value-changed", G_CALLBACK(pastemode_combobox_changed), self);
 
-  button = gtk_button_new_with_label(_("refresh exif"));
-  ellipsize_button(button);
-  d->refresh_button = button;
-  gtk_widget_set_tooltip_text(button, _("update image information to match changes to file"));
-  gtk_grid_attach(grid, button, 0, line++, 6, 1);
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(14));
+  d->refresh_button = dt_ui_button_new(_("refresh exif"), _("update image information to match changes to file"), NULL);
+  gtk_grid_attach(grid, d->refresh_button, 0, line++, 6, 1);
+  g_signal_connect(G_OBJECT(d->refresh_button), "clicked", G_CALLBACK(button_clicked), GINT_TO_POINTER(14));
+
+  d->set_monochrome_button = dt_ui_button_new(_("monochrome"), _("set selection as monochrome images and activate monochrome workflow"), NULL);
+  gtk_grid_attach(grid, d->set_monochrome_button, 0, line, 3, 1);
+  g_signal_connect(G_OBJECT(d->set_monochrome_button), "clicked", G_CALLBACK(set_monochrome_callback), self);
+
+  d->set_color_button = dt_ui_button_new(_("color"), _("set selection as color images"), NULL);
+  gtk_grid_attach(grid, d->set_color_button, 3, line++, 3, 1);
+  g_signal_connect(G_OBJECT(d->set_color_button), "clicked", G_CALLBACK(set_color_callback), self);
 
   /* connect preference changed signal */
-  dt_control_signal_connect(
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(
       darktable.signals,
       DT_SIGNAL_PREFERENCES_CHANGE,
       G_CALLBACK(_image_preference_changed),
       (gpointer)self);
+
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_SELECTION_CHANGED,
+                            G_CALLBACK(_image_selection_changed_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE,
+                            G_CALLBACK(_mouse_over_image_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED,
+                            G_CALLBACK(_collection_updated_callback), self);
+
+  _update(self);
 }
 #undef ellipsize_button
 
@@ -537,12 +631,16 @@ void gui_reset(dt_lib_module_t *self)
 {
   dt_lib_image_t *d = (dt_lib_image_t *)self->data;
   d->imageid = 0;
-  gtk_widget_set_sensitive(d->paste_metadata_button, FALSE);
+  _update(self);
 }
 
 void gui_cleanup(dt_lib_module_t *self)
 {
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_image_preference_changed), self);
+  dt_lib_cancel_postponed_update(self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_image_preference_changed), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_image_selection_changed_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_mouse_over_image_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_collection_updated_callback), self);
 
   free(self->data);
   self->data = NULL;
@@ -550,8 +648,8 @@ void gui_cleanup(dt_lib_module_t *self)
 
 void init_key_accels(dt_lib_module_t *self)
 {
-  dt_accel_register_lib(self, NC_("accel", "remove from collection"), GDK_KEY_Delete, 0);
-  dt_accel_register_lib(self, NC_("accel", "delete from disk or send to trash"), 0, 0);
+  dt_accel_register_lib(self, NC_("accel", "remove from darktable"), GDK_KEY_Delete, 0);
+  dt_accel_register_lib(self, NC_("accel", "delete from disk using trash if possible"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "move to other folder"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "copy to other folder"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "rotate selected images 90 degrees CW"), 0, 0);
@@ -562,8 +660,9 @@ void init_key_accels(dt_lib_module_t *self)
   dt_accel_register_lib(self, NC_("accel", "copy the image locally"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "resync the local copy"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "refresh exif"), 0, 0);
+  dt_accel_register_lib(self, NC_("accel", "set monochrome image"), 0, 0);
+  dt_accel_register_lib(self, NC_("accel", "set color image"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "copy metadata"), 0, 0);
-  dt_accel_register_lib(self, NC_("accel", "replace metadata"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "paste metadata"), 0, 0);
   dt_accel_register_lib(self, NC_("accel", "clear metadata"), 0, 0);
   // Grouping keys
@@ -575,8 +674,8 @@ void connect_key_accels(dt_lib_module_t *self)
 {
   dt_lib_image_t *d = (dt_lib_image_t *)self->data;
 
-  dt_accel_connect_button_lib(self, "remove from collection", d->remove_button);
-  dt_accel_connect_button_lib(self, "delete from disk or send to trash", d->delete_button);
+  dt_accel_connect_button_lib(self, "remove from darktable", d->remove_button);
+  dt_accel_connect_button_lib(self, "delete from disk using trash if possible", d->delete_button);
   dt_accel_connect_button_lib(self, "move to other folder", d->move_button);
   dt_accel_connect_button_lib(self, "copy to other folder", d->copy_button);
   dt_accel_connect_button_lib(self, "rotate selected images 90 degrees CW", d->rotate_cw_button);
@@ -587,6 +686,8 @@ void connect_key_accels(dt_lib_module_t *self)
   dt_accel_connect_button_lib(self, "copy the image locally", d->cache_button);
   dt_accel_connect_button_lib(self, "resync the local copy", d->uncache_button);
   dt_accel_connect_button_lib(self, "refresh exif", d->refresh_button);
+  dt_accel_connect_button_lib(self, "set monochrome image", d->set_monochrome_button);
+  dt_accel_connect_button_lib(self, "set color image", d->set_color_button);
   dt_accel_connect_button_lib(self, "copy metadata", d->copy_metadata_button);
   dt_accel_connect_button_lib(self, "paste metadata", d->paste_metadata_button);
   dt_accel_connect_button_lib(self, "clear metadata", d->clear_metadata_button);
@@ -596,7 +697,8 @@ void connect_key_accels(dt_lib_module_t *self)
 }
 
 #ifdef USE_LUA
-typedef struct {
+typedef struct
+{
   const char* key;
   dt_lib_module_t * self;
 } lua_callback_data;
@@ -604,12 +706,12 @@ typedef struct {
 
 static int lua_button_clicked_cb(lua_State* L)
 {
-  lua_callback_data * data = lua_touserdata(L,1);
-  dt_lua_module_entry_push(L,"lib",data->self->plugin_name);
-  lua_getuservalue(L,-1);
-  lua_getfield(L,-1,"callbacks");
-  lua_getfield(L,-1,data->key);
-  lua_pushstring(L,data->key);
+  lua_callback_data * data = lua_touserdata(L, 1);
+  dt_lua_module_entry_push(L, "lib", data->self->plugin_name);
+  lua_getuservalue(L, -1);
+  lua_getfield(L, -1, "callbacks");
+  lua_getfield(L, -1, data->key);
+  lua_pushstring(L, data->key);
 
   GList *image = dt_collection_get_selected(darktable.collection, -1);
   lua_newtable(L);
@@ -620,46 +722,127 @@ static int lua_button_clicked_cb(lua_State* L)
     image = g_list_delete_link(image, image);
   }
 
-  lua_call(L,2,0);
+  lua_call(L, 2, 0);
   return 0;
 }
 
 static void lua_button_clicked(GtkWidget *widget, gpointer user_data)
 {
   dt_lua_async_call_alien(lua_button_clicked_cb,
-      0,NULL,NULL,
-      LUA_ASYNC_TYPENAME,"void*", user_data,
+      0, NULL, NULL,
+      LUA_ASYNC_TYPENAME, "void*", user_data,
       LUA_ASYNC_DONE);
 }
 
 static int lua_register_action(lua_State *L)
 {
-  lua_settop(L,3);
+  lua_settop(L, 3);
   dt_lib_module_t *self = lua_touserdata(L, lua_upvalueindex(1));
-  dt_lua_module_entry_push(L,"lib",self->plugin_name);
+  dt_lua_module_entry_push(L, "lib", self->plugin_name);
   lua_getuservalue(L,-1);
-  const char* key = luaL_checkstring(L,1);
-  luaL_checktype(L,2,LUA_TFUNCTION);
+  const char* name = luaL_checkstring(L, 1);
+  const char* key = luaL_checkstring(L, 2);
+  luaL_checktype(L, 3, LUA_TFUNCTION);
 
-  lua_getfield(L,-1,"callbacks");
-  lua_pushstring(L,key);
-  lua_pushvalue(L,2);
-  lua_settable(L,-3);
+  lua_getfield(L, -1, "callbacks");
+  lua_pushstring(L, name);
+  lua_pushvalue(L, 3);
+  lua_settable(L, -3);
 
   GtkWidget* button = gtk_button_new_with_label(key);
-  const char * tooltip = lua_tostring(L,3);
-  if(tooltip)  {
+  const char * tooltip = lua_tostring(L, 3);
+  if(tooltip)
+  {
     gtk_widget_set_tooltip_text(button, tooltip);
   }
+  gtk_widget_set_name(button, name);
   dt_lib_image_t *d = self->data;
   gtk_grid_attach_next_to(GTK_GRID(d->page1), button, NULL, GTK_POS_BOTTOM, 4, 1);
 
 
   lua_callback_data * data = malloc(sizeof(lua_callback_data));
-  data->key = strdup(key);
+  data->key = strdup(name);
   data->self = self;
-  g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(lua_button_clicked), data);
+  const gulong s = g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(lua_button_clicked), data);
+
+  // save the signal connection in case we need to destroy it later
+  dt_lua_module_entry_push(L, "lib", self->plugin_name);
+  lua_getuservalue(L, -1);
+  lua_getfield(L, -1, "signal_handlers");
+  lua_pushstring(L, name);
+  lua_pushinteger(L, s);
+  lua_settable(L, -3);
+
   gtk_widget_show_all(button);
+
+  return 0;
+}
+
+static int lua_destroy_action(lua_State *L)
+{
+  lua_settop(L, 3);
+  dt_lib_module_t *self = lua_touserdata(L, lua_upvalueindex(1));
+  const char* name = luaL_checkstring(L, 1);
+  dt_lib_image_t *d = self->data;
+
+  // find the button named name
+
+  GtkWidget* widget = NULL;
+
+  for(int row = 5; (widget = gtk_grid_get_child_at(GTK_GRID(d->page1), 0, row)) != NULL; row++)
+  {
+    if(GTK_IS_BUTTON(widget) && strcmp(gtk_widget_get_name(widget), name) == 0)
+    {
+      // remove the callback
+
+      dt_lua_module_entry_push(L, "lib", self->plugin_name);
+      lua_getuservalue(L, -1);
+      lua_getfield(L, -1, "callbacks");
+      lua_pushstring(L, name);
+      lua_pushnil(L);
+      lua_settable(L, -3);
+
+      // disconnect the signal
+
+      dt_lua_module_entry_push(L, "lib", self->plugin_name);
+      lua_getuservalue(L, -1);
+      lua_getfield(L, -1, "signal_handlers");
+      lua_pushstring(L, name);
+      lua_gettable(L, -2);
+      const gulong handler_id = luaL_checkinteger(L, -1);
+      g_signal_handler_disconnect(G_OBJECT(widget), handler_id);
+
+      // remove the widget
+
+      gtk_grid_remove_row(GTK_GRID(d->page1), row);
+
+      break;
+    }
+  }
+
+  return 0;
+}
+
+static int lua_set_action_sensitive(lua_State *L)
+{
+  lua_settop(L, 3);
+  dt_lib_module_t *self = lua_touserdata(L, lua_upvalueindex(1));
+  const char* name = luaL_checkstring(L, 1);
+  const gboolean sensitive = lua_toboolean(L, 2);
+  dt_lib_image_t *d = self->data;
+
+  // find the button named name
+
+  GtkWidget* widget = NULL;
+
+  for(int row = 5; (widget = gtk_grid_get_child_at(GTK_GRID(d->page1), 0, row)) != NULL; row++)
+  {
+    if(GTK_IS_BUTTON(widget) && strcmp(gtk_widget_get_name(widget), name) == 0)
+    {
+      gtk_widget_set_sensitive(widget, sensitive);
+      break;
+    }
+  }
   return 0;
 }
 
@@ -669,17 +852,36 @@ void init(struct dt_lib_module_t *self)
   lua_State *L = darktable.lua_state.state;
   int my_type = dt_lua_module_entry_get_type(L, "lib", self->plugin_name);
   lua_pushlightuserdata(L, self);
-  lua_pushcclosure(L, lua_register_action,1);
+  lua_pushcclosure(L, lua_register_action, 1);
   dt_lua_gtk_wrap(L);
   lua_pushcclosure(L, dt_lua_type_member_common, 1);
   dt_lua_type_register_const_type(L, my_type, "register_action");
 
-  dt_lua_module_entry_push(L,"lib",self->plugin_name);
-  lua_getuservalue(L,-1);
+  lua_pushlightuserdata(L, self);
+  lua_pushcclosure(L, lua_destroy_action, 1);
+  dt_lua_gtk_wrap(L);
+  lua_pushcclosure(L, dt_lua_type_member_common, 1);
+  dt_lua_type_register_const_type(L, my_type, "destroy_action");
+
+  lua_pushlightuserdata(L, self);
+  lua_pushcclosure(L, lua_set_action_sensitive, 1);
+  dt_lua_gtk_wrap(L);
+  lua_pushcclosure(L, dt_lua_type_member_common, 1);
+  dt_lua_type_register_const_type(L, my_type, "set_sensitive");
+
+  dt_lua_module_entry_push(L, "lib", self->plugin_name);
+  lua_getuservalue(L, -1);
   lua_newtable(L);
-  lua_setfield(L,-2,"callbacks");
-  lua_pop(L,2);
+  lua_setfield(L, -2, "callbacks");
+  lua_pop(L, 2);
+
+  dt_lua_module_entry_push(L, "lib", self->plugin_name);
+  lua_getuservalue(L, -1);
+  lua_newtable(L);
+  lua_setfield(L, -2, "signal_handlers");
+  lua_pop(L, 2);
 }
+
 #endif
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

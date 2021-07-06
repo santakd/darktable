@@ -64,26 +64,34 @@ gboolean dt_styles_create_from_image(const char *name, const char *description,
                                      const int32_t imgid, GList *items, gboolean copy_iop_order);
 
 /** creates styles from selection */
-void dt_styles_create_from_list(GList *list);
+void dt_styles_create_from_list(const GList *list);
 
 /** creates a new style from specified style, items are the style number of items to include in style */
 void dt_styles_create_from_style(const char *name, const char *newname, const char *description,
-                                 GList *filter, const int32_t imgid, GList *update, gboolean copy_iop_order);
+                                 GList *filter, const int32_t imgid, GList *update,
+                                 gboolean copy_iop_order, const gboolean update_iop_order);
 
 /** update a style */
 void dt_styles_update(const char *name, const char *newname, const char *description, GList *filter,
-                      const int32_t imgid, GList *update, gboolean copy_iop_order);
+                      const int32_t imgid, GList *update,
+                      const gboolean copy_iop_order, const gboolean update_iop_order);
 
 /** applies the style to selection of images */
-void dt_styles_apply_to_list(const char *name, GList *list, gboolean duplicate);
+void dt_styles_apply_to_list(const char *name, const GList *list, gboolean duplicate);
+
+/** applies list of styles to selection of images */
+void dt_multiple_styles_apply_to_list(GList *styles, const GList *list, gboolean duplicate);
 
 /** applies the item style to dev->history */
 void dt_styles_apply_style_item(dt_develop_t *dev, dt_style_item_t *style_item, GList **modules_used, const gboolean append);
 
-/** applies the style to image by imgid*/
-void dt_styles_apply_to_image(const char *name, const gboolean dulpicate, const int32_t imgid);
+/** applies the style to image by imgid, takes care of overwrite and duplicate modes */
+void dt_styles_apply_to_image(const char *name, const gboolean duplicate, const gboolean overwrite, const int32_t imgid);
 
 /** delete a style by name */
+void dt_styles_delete_by_name_adv(const char *name, const gboolean raise);
+
+/** delete a style by name, raise signal */
 void dt_styles_delete_by_name(const char *name);
 
 /** get a style object by name, the object needs to be freed by the caller */

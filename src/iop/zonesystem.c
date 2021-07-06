@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,12 +19,12 @@
 #include "config.h"
 #endif
 #include <assert.h>
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "common/darktable.h"
 #include "common/gaussian.h"
+#include "common/math.h"
 #include "common/opencl.h"
 #include "control/conf.h"
 #include "control/control.h"
@@ -49,15 +49,14 @@
 #endif
 
 
-#define CLIP(x) (((x) >= 0) ? ((x) <= 1.0 ? (x) : 1.0) : 0.0)
 DT_MODULE_INTROSPECTION(1, dt_iop_zonesystem_params_t)
 #define MAX_ZONE_SYSTEM_SIZE 24
 
 /** gui params. */
 typedef struct dt_iop_zonesystem_params_t
 {
-  int size;
-  float zone[MAX_ZONE_SYSTEM_SIZE + 1];
+  int size; // $DEFAULT: 10
+  float zone[MAX_ZONE_SYSTEM_SIZE + 1]; // $DEFAULT: -1.0
 } dt_iop_zonesystem_params_t;
 
 /** and pixelpipe data is just the same */
@@ -103,7 +102,6 @@ typedef struct dt_iop_zonesystem_gui_data_t
   int current_zone;
   int zone_under_mouse;
   int mouse_over_output_zones;
-  dt_pthread_mutex_t lock;
 
   cairo_surface_t *image;
   guint8 *image_buffer;
@@ -120,12 +118,17 @@ const char *name()
 int flags()
 {
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_ALLOW_TILING
-         | IOP_FLAGS_PREVIEW_NON_OPENCL;
+         | IOP_FLAGS_PREVIEW_NON_OPENCL | IOP_FLAGS_DEPRECATED;
+}
+
+const char *deprecated_msg()
+{
+  return _("this module is deprecated. please use the tone equalizer module instead.");
 }
 
 int default_group()
 {
-  return IOP_GROUP_TONE;
+  return IOP_GROUP_TONE | IOP_GROUP_GRADING;
 }
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -169,8 +172,6 @@ static inline void _iop_zonesystem_calculate_zonemap(struct dt_iop_zonesystem_pa
   }
 }
 
-#define GAUSS(a, b, c, x) (a * pow(2.718281828, (-pow((x - b), 2) / (pow(c, 2)))))
-
 static void process_common_setup(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                                  const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                  const dt_iop_roi_t *const roi_out)
@@ -178,10 +179,10 @@ static void process_common_setup(struct dt_iop_module_t *self, dt_dev_pixelpipe_
   const int width = roi_out->width;
   const int height = roi_out->height;
 
-  if(self->dev->gui_attached && piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW)
   {
     dt_iop_zonesystem_gui_data_t *g = (dt_iop_zonesystem_gui_data_t *)self->gui_data;
-    dt_pthread_mutex_lock(&g->lock);
+    dt_iop_gui_enter_critical_section(self);
     if(g->in_preview_buffer == NULL || g->out_preview_buffer == NULL || g->preview_width != width
        || g->preview_height != height)
     {
@@ -192,7 +193,7 @@ static void process_common_setup(struct dt_iop_module_t *self, dt_dev_pixelpipe_
       g->preview_width = width;
       g->preview_height = height;
     }
-    dt_pthread_mutex_unlock(&g->lock);
+    dt_iop_gui_leave_critical_section(self);
   }
 }
 
@@ -211,7 +212,9 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, width, height);
 
   /* if gui and have buffer lets gaussblur and fill buffer with zone indexes */
-  if(self->dev->gui_attached && piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW && g && g->in_preview_buffer
+  if(self->dev->gui_attached
+     && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
+     && g && g->in_preview_buffer
      && g->out_preview_buffer)
   {
     float Lmax[] = { 100.0f };
@@ -238,7 +241,7 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
       dt_gaussian_blur(gauss, tmp, tmp);
 
       /* create zonemap preview for input */
-      dt_pthread_mutex_lock(&g->lock);
+      dt_iop_gui_enter_critical_section(self);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
       dt_omp_firstprivate(height, size, width) \
@@ -249,7 +252,7 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
       {
         g->in_preview_buffer[k] = CLAMPS(tmp[k] * (size - 1) / 100.0f, 0, size - 2);
       }
-      dt_pthread_mutex_unlock(&g->lock);
+      dt_iop_gui_leave_critical_section(self);
 
 
 #ifdef _OPENMP
@@ -264,7 +267,7 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
 
 
       /* create zonemap preview for output */
-      dt_pthread_mutex_lock(&g->lock);
+      dt_iop_gui_enter_critical_section(self);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
       dt_omp_firstprivate(height, size, width) \
@@ -275,7 +278,7 @@ static void process_common_cleanup(struct dt_iop_module_t *self, dt_dev_pixelpip
       {
         g->out_preview_buffer[k] = CLAMPS(tmp[k] * (size - 1) / 100.0f, 0, size - 2);
       }
-      dt_pthread_mutex_unlock(&g->lock);
+      dt_iop_gui_leave_critical_section(self);
     }
 
     g_free(tmp);
@@ -332,7 +335,7 @@ void process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, c
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(ch, d, ivoid, ovoid, roi_out, size) \
-  schedule(static)
+  schedule(static) collapse(2)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
@@ -457,7 +460,6 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   piece->data = calloc(1, sizeof(dt_iop_zonesystem_data_t));
-  self->commit_params(self, self->default_params, pipe, piece);
 }
 
 void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -473,29 +475,6 @@ void gui_update(struct dt_iop_module_t *self)
   // dt_iop_zonesystem_params_t *p = (dt_iop_zonesystem_params_t *)module->params;
   gtk_widget_queue_draw(GTK_WIDGET(g->zones));
 }
-
-void init(dt_iop_module_t *module)
-{
-  module->params = calloc(1, sizeof(dt_iop_zonesystem_params_t));
-  module->default_params = calloc(1, sizeof(dt_iop_zonesystem_params_t));
-  module->default_enabled = 0;
-  module->params_size = sizeof(dt_iop_zonesystem_params_t);
-  module->gui_data = NULL;
-  dt_iop_zonesystem_params_t tmp = (dt_iop_zonesystem_params_t){
-    10, { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }
-  };
-  memcpy(module->params, &tmp, sizeof(dt_iop_zonesystem_params_t));
-  memcpy(module->default_params, &tmp, sizeof(dt_iop_zonesystem_params_t));
-}
-
-void cleanup(dt_iop_module_t *module)
-{
-  free(module->params);
-  module->params = NULL;
-  free(module->default_params);
-  module->default_params = NULL;
-}
-
 
 static void _iop_zonesystem_redraw_preview_callback(gpointer instance, gpointer user_data);
 
@@ -540,23 +519,19 @@ static void size_allocate_callback(GtkWidget *widget, GtkAllocation *allocation,
 
 void gui_init(struct dt_iop_module_t *self)
 {
-  self->gui_data = malloc(sizeof(dt_iop_zonesystem_gui_data_t));
-  dt_iop_zonesystem_gui_data_t *g = (dt_iop_zonesystem_gui_data_t *)self->gui_data;
+  dt_iop_zonesystem_gui_data_t *g = IOP_GUI_ALLOC(zonesystem);
   g->in_preview_buffer = g->out_preview_buffer = NULL;
   g->is_dragging = FALSE;
   g->hilite_zone = FALSE;
   g->preview_width = g->preview_height = 0;
   g->mouse_over_output_zones = FALSE;
 
-  dt_pthread_mutex_init(&g->lock, NULL);
-
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_GUI_IOP_MODULE_CONTROL_SPACING);
-  dt_gui_add_help_link(self->widget, dt_get_help_url(self->op));
 
   g->preview = dtgtk_drawing_area_new_with_aspect_ratio(1.0);
   g_signal_connect(G_OBJECT(g->preview), "size-allocate", G_CALLBACK(size_allocate_callback), self);
   g_signal_connect(G_OBJECT(g->preview), "draw", G_CALLBACK(dt_iop_zonesystem_preview_draw), self);
-  gtk_widget_add_events(GTK_WIDGET(g->preview), GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
+  gtk_widget_add_events(GTK_WIDGET(g->preview), GDK_POINTER_MOTION_MASK
                                                 | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
                                                 | GDK_LEAVE_NOTIFY_MASK);
 
@@ -575,7 +550,7 @@ void gui_init(struct dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->zones), "button-release-event",
                    G_CALLBACK(dt_iop_zonesystem_bar_button_release), self);
   g_signal_connect(G_OBJECT(g->zones), "scroll-event", G_CALLBACK(dt_iop_zonesystem_bar_scrolled), self);
-  gtk_widget_add_events(GTK_WIDGET(g->zones), GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
+  gtk_widget_add_events(GTK_WIDGET(g->zones), GDK_POINTER_MOTION_MASK
                                               | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
                                               | GDK_LEAVE_NOTIFY_MASK | darktable.gui->scroll_mask);
   gtk_widget_set_size_request(g->zones, -1, DT_PIXEL_APPLY_DPI(40));
@@ -584,7 +559,7 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), g->zones, TRUE, TRUE, 0);
 
   /* add signal handler for preview pipe finish to redraw the preview */
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
                             G_CALLBACK(_iop_zonesystem_redraw_preview_callback), self);
 
 
@@ -596,16 +571,15 @@ void gui_init(struct dt_iop_module_t *self)
 
 void gui_cleanup(struct dt_iop_module_t *self)
 {
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_iop_zonesystem_redraw_preview_callback), self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_iop_zonesystem_redraw_preview_callback), self);
 
   dt_iop_zonesystem_gui_data_t *g = (dt_iop_zonesystem_gui_data_t *)self->gui_data;
   g_free(g->in_preview_buffer);
   g_free(g->out_preview_buffer);
   if(g->image) cairo_surface_destroy(g->image);
   free(g->image_buffer);
-  dt_pthread_mutex_destroy(&g->lock);
-  free(self->gui_data);
-  self->gui_data = NULL;
+
+  IOP_GUI_FREE;
 }
 
 #define DT_ZONESYSTEM_INSET DT_PIXEL_APPLY_DPI(5)
@@ -759,7 +733,8 @@ static gboolean dt_iop_zonesystem_bar_scrolled(GtkWidget *widget, GdkEventScroll
   dt_iop_zonesystem_params_t *p = (dt_iop_zonesystem_params_t *)self->params;
   int cs = CLAMP(p->size, 4, MAX_ZONE_SYSTEM_SIZE);
 
-  if(((event->state & gtk_accelerator_get_default_mod_mask()) == darktable.gui->sidebar_scroll_mask) != dt_conf_get_bool("darkroom/ui/sidebar_scroll_default")) return FALSE;
+  if(dt_gui_ignore_scroll(event)) return FALSE;
+
   int delta_y;
   if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
   {
@@ -859,7 +834,7 @@ static gboolean dt_iop_zonesystem_preview_draw(GtkWidget *widget, cairo_t *crf, 
   height -= 2 * inset;
   cairo_translate(cr, inset, inset);
 
-  dt_pthread_mutex_lock(&g->lock);
+  dt_iop_gui_enter_critical_section(self);
   if(g->in_preview_buffer && g->out_preview_buffer && self->enabled)
   {
     /* calculate the zonemap */
@@ -876,7 +851,7 @@ static gboolean dt_iop_zonesystem_preview_draw(GtkWidget *widget, cairo_t *crf, 
       image[4 * k + 1] = (g->hilite_zone && buffer[k] == g->zone_under_mouse) ? 255 : zone;
       image[4 * k + 0] = (g->hilite_zone && buffer[k] == g->zone_under_mouse) ? 0 : zone;
     }
-    dt_pthread_mutex_unlock(&g->lock);
+    dt_iop_gui_leave_critical_section(self);
 
     const int wd = g->preview_width, ht = g->preview_height;
     const float scale = fminf(width / (float)wd, height / (float)ht);
@@ -901,7 +876,7 @@ static gboolean dt_iop_zonesystem_preview_draw(GtkWidget *widget, cairo_t *crf, 
   }
   else
   {
-    dt_pthread_mutex_unlock(&g->lock);
+    dt_iop_gui_leave_critical_section(self);
     // draw a big, subdued dt logo
     if(g->image)
     {

@@ -121,7 +121,7 @@ static inline void dt_iop_estimate_exp(const float *const x, const float *const 
   // map every thing to y = y0*(x/x0)^g
   // and fix (x0,y0) as the last point.
   // assume (x,y) pairs are ordered by ascending x, so this is the last point:
-  float x0 = x[num - 1], y0 = y[num - 1];
+  const float x0 = x[num - 1], y0 = y[num - 1];
 
   float g = 0.0f;
   int cnt = 0;
@@ -134,7 +134,7 @@ static inline void dt_iop_estimate_exp(const float *const x, const float *const 
     const float yy = y[k] / y0, xx = x[k] / x0;
     if(yy > 0.0f && xx > 0.0f)
     {
-      const float gg = logf(y[k] / y0) / log(x[k] / x0);
+      const float gg = logf(y[k] / y0) / logf(x[k] / x0);
       g += gg;
       cnt++;
     }
@@ -149,24 +149,6 @@ static inline void dt_iop_estimate_exp(const float *const x, const float *const 
 }
 
 
-__DT_CLONE_TARGETS__
-static inline void dt_simd_memcpy(const float *const __restrict__ in,
-                                  float *const __restrict__ out,
-                                  const size_t num_elem)
-{
-  // Perform a parallel vectorized memcpy on 64-bits aligned
-  // contiguous buffers. This is several times faster than the original memcpy
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out, num_elem) \
-schedule(simd:static) aligned(in, out:64)
-#endif
-  for(size_t k = 0; k < num_elem; k++)
-    out[k] = in[k];
-}
-
-
 /** evaluates the exp fit. */
 #ifdef _OPENMP
 #pragma omp declare simd
@@ -176,27 +158,25 @@ static inline float dt_iop_eval_exp(const float *const coeff, const float x)
   return coeff[1] * powf(x * coeff[0], coeff[2]);
 }
 
+
 /** Copy alpha channel 1:1 from input to output */
-static inline void dt_iop_alpha_copy(const void *const __restrict__ ivoid,
-                                     void *const __restrict__ ovoid,
-                                     const int width, const int height)
-{
 #ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(height, width, ovoid, ivoid) \
+#pragma omp declare simd uniform(width, height) aligned(ivoid, ovoid:64)
+#endif
+static inline void dt_iop_alpha_copy(const void *const ivoid,
+                                     void *const ovoid,
+                                     const size_t width, const size_t height)
+{
+  const float *const __restrict__ in = (const float *const)ivoid;
+  float *const __restrict__ out = (float *const)ovoid;
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) aligned(out, in:64)\
+  dt_omp_firstprivate(height, width, out, in) \
   schedule(static)
 #endif
-  for(int j = 0; j < height; j++)
-  {
-    const float *in = ((const float *)ivoid) + (size_t)4 * width * j + 3;
-    float *out = ((float *)ovoid) + (size_t)4 * width * j + 3;
-    for(int i = 0; i < width; i++)
-    {
-      *out = *in;
-      out += 4;
-      in += 4;
-    }
-  }
+  for(size_t k = 3; k < width * height * 4; k += 4)
+    out[k] = in[k];
 }
 
 /** Calculate the bayer pattern color from the row and column **/
@@ -226,6 +206,10 @@ static inline int FCxtrans(const int row, const int col, const dt_iop_roi_t *con
   return xtrans[irow % 6][icol % 6];
 }
 
+
+#ifdef _OPENMP
+#pragma omp declare simd
+#endif
 static inline int fcol(const int row, const int col, const uint32_t filters, const uint8_t (*const xtrans)[6])
 {
   if(filters == 9)

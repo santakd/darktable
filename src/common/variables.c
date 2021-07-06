@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,6 +16,8 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "common/debug.h"
+#include "common/darktable.h"
+#include "bauhaus/bauhaus.h"
 #include "common/variables.h"
 #include "common/colorlabels.h"
 #include "common/darktable.h"
@@ -111,7 +113,8 @@ static void init_expansion(dt_variables_params_t *params, gboolean iterate)
   params->data->elevation = 0.0f;
   if(params->imgid)
   {
-    const dt_image_t *img = dt_image_cache_get(darktable.image_cache, params->imgid, 'r');
+    const dt_image_t *img = params->img ? (dt_image_t *)params->img
+                                        : dt_image_cache_get(darktable.image_cache, params->imgid, 'r');
     if(sscanf(img->exif_datetime_taken, "%d:%d:%d %d:%d:%d", &params->data->exif_tm.tm_year, &params->data->exif_tm.tm_mon,
       &params->data->exif_tm.tm_mday, &params->data->exif_tm.tm_hour, &params->data->exif_tm.tm_min, &params->data->exif_tm.tm_sec) == 6)
     {
@@ -139,7 +142,7 @@ static void init_expansion(dt_variables_params_t *params, gboolean iterate)
 
     params->data->flags = img->flags;
 
-    dt_image_cache_read_release(darktable.image_cache, img);
+    if(params->img == NULL) dt_image_cache_read_release(darktable.image_cache, img);
   }
   else if (params->data->exif_time) {
     localtime_r(&params->data->exif_time, &params->data->exif_tm);
@@ -165,6 +168,7 @@ static inline gboolean has_prefix(char **str, const char *prefix)
 static char *get_base_value(dt_variables_params_t *params, char **variable)
 {
   char *result = NULL;
+  gboolean escape = TRUE;
 
   struct tm exif_tm = params->data->have_exif_tm ? params->data->exif_tm : params->data->time;
 
@@ -204,29 +208,14 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   }
   else if(has_prefix(variable, "EXIF_EXPOSURE"))
   {
-    /* no special chars for all jobs except infos */
+    result = dt_util_format_exposure(params->data->exif_exposure);
+    // for job other than info (export) we strip the slash char
     if(g_strcmp0(params->jobcode, "infos") != 0)
-      if(nearbyintf(params->data->exif_exposure) == params->data->exif_exposure)
-        result = g_strdup_printf("%.0f", params->data->exif_exposure);
-      else
-        result = g_strdup_printf("%.1f", params->data->exif_exposure);
-    else if(params->data->exif_exposure >= 1.0f)
-      if(nearbyintf(params->data->exif_exposure) == params->data->exif_exposure)
-        result = g_strdup_printf("%.0f″", params->data->exif_exposure);
-      else
-        result = g_strdup_printf("%.1f″", params->data->exif_exposure);
-    /* want to catch everything below 0.3 seconds */
-    else if(params->data->exif_exposure < 0.29f)
-      result = g_strdup_printf("1/%.0f", 1.0 / params->data->exif_exposure);
-    /* catch 1/2, 1/3 */
-    else if(nearbyintf(1.0f / params->data->exif_exposure) == 1.0f / params->data->exif_exposure)
-      result = g_strdup_printf("1/%.0f", 1.0 / params->data->exif_exposure);
-    /* catch 1/1.3, 1/1.6, etc. */
-    else if(10 * nearbyintf(10.0f / params->data->exif_exposure)
-            == nearbyintf(100.0f / params->data->exif_exposure))
-      result = g_strdup_printf("1/%.1f", 1.0 / params->data->exif_exposure);
-    else
-      result = g_strdup_printf("%.1f″", params->data->exif_exposure);
+    {
+      gchar *res = dt_util_str_replace(result, "/", "_");
+      g_free(result);
+      result = res;
+    }
   }
   else if(has_prefix(variable, "EXIF_APERTURE"))
     result = g_strdup_printf("%.1f", params->data->exif_aperture);
@@ -239,7 +228,7 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
     if(dt_conf_get_bool("plugins/lighttable/metadata_view/pretty_location")
        && g_strcmp0(params->jobcode, "infos") == 0)
     {
-      result = dt_util_latitude_str(params->data->longitude);
+      result = dt_util_longitude_str(params->data->longitude);
     }
     else
     {
@@ -273,7 +262,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "VERSION_NAME"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.darktable.version_name", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -340,7 +328,15 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "FILE_EXTENSION"))
     result = g_strdup(params->data->file_ext);
   else if(has_prefix(variable, "SEQUENCE"))
-    result = g_strdup_printf("%.4d", params->sequence >= 0 ? params->sequence : params->data->sequence);
+  {
+    uint8_t nb_digit = 4;
+    if(g_ascii_isdigit(*variable[0]))
+    {
+      nb_digit = (uint8_t)*variable[0] & 0b1111;
+      (*variable) ++;
+    }
+    result = g_strdup_printf("%.*d", nb_digit, params->sequence >= 0 ? params->sequence : params->data->sequence);
+  }
   else if(has_prefix(variable, "USERNAME"))
     result = g_strdup(g_get_user_name());
   else if(has_prefix(variable, "HOME_FOLDER"))
@@ -382,19 +378,35 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
         break;
     }
   }
+  else if((has_prefix(variable, "LABELS_ICONS") ||
+           has_prefix(variable, "LABELS_COLORICONS"))
+          && g_strcmp0(params->jobcode, "infos") == 0)
+  {
+    escape = FALSE;
+    GList *res = dt_metadata_get(params->imgid, "Xmp.darktable.colorlabels", NULL);
+    for(GList *res_iter = res; res_iter; res_iter = g_list_next(res_iter))
+    {
+      const int dot_index = GPOINTER_TO_INT(res_iter->data);
+      const GdkRGBA c = darktable.bauhaus->colorlabels[dot_index];
+      result = dt_util_dstrcat(result,
+                               "<span foreground='#%02x%02x%02x'>⬤ </span>",
+                               (guint)(c.red*255), (guint)(c.green*255), (guint)(c.blue*255));
+    }
+    g_list_free(res);
+  }
   else if(has_prefix(variable, "LABELS"))
   {
     // TODO: currently we concatenate all the color labels with a ',' as a separator. Maybe it's better to
     // only use the first/last label?
     GList *res = dt_metadata_get(params->imgid, "Xmp.darktable.colorlabels", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       GList *labels = NULL;
-      do
+      for(GList *res_iter = res; res_iter; res_iter = g_list_next(res_iter))
       {
-        labels = g_list_append(labels, (char *)(_(dt_colorlabels_to_string(GPOINTER_TO_INT(res->data)))));
-      } while((res = g_list_next(res)) != NULL);
+        labels = g_list_prepend(labels, (char *)(_(dt_colorlabels_to_string(GPOINTER_TO_INT(res_iter->data)))));
+      }
+      labels = g_list_reverse(labels);  // list was built in reverse order, so un-reverse it
       result = dt_util_glist_to_str(",", labels);
       g_list_free(labels);
     }
@@ -403,7 +415,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "TITLE"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.title", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -413,7 +424,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "DESCRIPTION"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.description", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -423,7 +433,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "CREATOR"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.creator", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -433,7 +442,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "PUBLISHER"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.publisher", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -443,7 +451,6 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if(has_prefix(variable, "RIGHTS"))
   {
     GList *res = dt_metadata_get(params->imgid, "Xmp.dc.rights", NULL);
-    res = g_list_first(res);
     if(res != NULL)
     {
       result = g_strdup((char *)res->data);
@@ -491,7 +498,7 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   else if (has_prefix(variable, "TAGS"))
   {
     GList *tags_list = dt_tag_get_list_export(params->imgid, params->data->tags_flags);
-    char *tags = dt_util_glist_to_str(",", tags_list);
+    char *tags = dt_util_glist_to_str(", ", tags_list);
     g_list_free_full(tags_list, g_free);
     result = g_strdup(tags);
     g_free(tags);
@@ -518,7 +525,7 @@ static char *get_base_value(dt_variables_params_t *params, char **variable)
   }
   if(!result) result = g_strdup("");
 
-  if(params->escape_markup)
+  if(params->escape_markup && escape)
   {
     gchar *e_res = g_markup_escape_text(result, -1);
     g_free(result);
@@ -808,6 +815,7 @@ static void grow_buffer(char **result, char **result_iter, size_t *result_length
 static char *expand(dt_variables_params_t *params, char **source, char extra_stop)
 {
   char *result = g_strdup("");
+  if(!*source) return result;
   char *result_iter = result;
   size_t result_length = 0;
   char *source_iter = *source;
@@ -880,6 +888,7 @@ void dt_variables_params_init(dt_variables_params_t **params)
   localtime_r(&now, &(*params)->data->time);
   (*params)->data->exif_time = 0;
   (*params)->sequence = -1;
+  (*params)->img = NULL;
 }
 
 void dt_variables_params_destroy(dt_variables_params_t *params)
@@ -913,6 +922,8 @@ void dt_variables_set_tags_flags(dt_variables_params_t *params, uint32_t flags)
 {
   params->data->tags_flags = flags;
 }
+
+
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2020 darktable developers.
+    Copyright (C) 2009-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,13 +18,16 @@
 
 #pragma once
 
+#include "common/action.h"
 #include "common/history.h"
 #include "common/image.h"
 #ifdef HAVE_PRINT
 #include "common/cups_print.h"
+#include "common/printing.h"
 #endif
 #ifdef HAVE_MAP
 #include "common/geo.h"
+#include "common/map_locations.h"
 #include <osm-gps-map.h>
 #endif
 #include <cairo.h>
@@ -69,7 +72,9 @@ typedef enum dt_lighttable_layout_t
   DT_LIGHTTABLE_LAYOUT_ZOOMABLE = 0,
   DT_LIGHTTABLE_LAYOUT_FILEMANAGER = 1,
   DT_LIGHTTABLE_LAYOUT_CULLING = 2,
-  DT_LIGHTTABLE_LAYOUT_LAST = 3
+  DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC = 3,
+  DT_LIGHTTABLE_LAYOUT_PREVIEW = 4,
+  DT_LIGHTTABLE_LAYOUT_LAST = 5
 } dt_lighttable_layout_t;
 
 typedef enum dt_darkroom_layout_t
@@ -79,13 +84,6 @@ typedef enum dt_darkroom_layout_t
   DT_DARKROOM_LAYOUT_COLOR_ASSESMENT = 1,
   DT_DARKROOM_LAYOUT_LAST = 3
 } dt_darkroom_layout_t;
-
-// flags for culling zoom mode
-typedef enum dt_lighttable_culling_zoom_mode_t
-{
-  DT_LIGHTTABLE_ZOOM_FIXED = 0,
-  DT_LIGHTTABLE_ZOOM_DYNAMIC = 1
-} dt_lighttable_culling_zoom_mode_t;
 
 // mouse actions struct
 typedef enum dt_mouse_action_type_t
@@ -100,6 +98,14 @@ typedef enum dt_mouse_action_type_t
   DT_MOUSE_ACTION_LEFT_DRAG,
   DT_MOUSE_ACTION_RIGHT_DRAG
 } dt_mouse_action_type_t;
+
+// flags that a view can set in flags()
+typedef enum dt_view_surface_value_t
+{
+  DT_VIEW_SURFACE_OK = 0,
+  DT_VIEW_SURFACE_KO,
+  DT_VIEW_SURFACE_SMALLER
+} dt_view_surface_value_t;
 
 typedef struct dt_mouse_action_t
 {
@@ -121,7 +127,10 @@ typedef struct dt_mouse_action_t
 struct dt_view_t;
 typedef struct dt_view_t
 {
-  // !!! MUST BE KEPT IN SYNC WITH src/views/view_api.h !!!
+  dt_action_t actions; // !!! NEEDS to be FIRST (to be able to cast convert)
+
+#define INCLUDE_API_FROM_MODULE_H
+#include "views/view_api.h"
 
   char module_name[64];
   // dlopened module
@@ -133,42 +142,6 @@ typedef struct dt_view_t
   // scroll bar control
   float vscroll_size, vscroll_lower, vscroll_viewport_size, vscroll_pos;
   float hscroll_size, hscroll_lower, hscroll_viewport_size, hscroll_pos;
-  const char *(*name)(const struct dt_view_t *self); // get translatable name
-  uint32_t (*view)(const struct dt_view_t *self); // get the view type
-  uint32_t (*flags)();                            // get the view flags
-  void (*init)(struct dt_view_t *self);           // init *data
-  void (*gui_init)(struct dt_view_t *self);       // create gtk elements, called after libs are created
-  void (*cleanup)(struct dt_view_t *self);        // cleanup *data
-  void (*expose)(struct dt_view_t *self, cairo_t *cr, int32_t width, int32_t height, int32_t pointerx,
-                 int32_t pointery);         // expose the module (gtk callback)
-  int (*try_enter)(struct dt_view_t *self); // test if enter can succeed.
-  void (*enter)(struct dt_view_t *self); // mode entered, this module got focus. return non-null on failure.
-  void (*leave)(struct dt_view_t *self); // mode left (is called after the new try_enter has succeeded).
-  void (*reset)(struct dt_view_t *self); // reset default appearance
-
-  // event callbacks:
-  void (*mouse_enter)(struct dt_view_t *self);
-  void (*mouse_leave)(struct dt_view_t *self);
-  void (*mouse_moved)(struct dt_view_t *self, double x, double y, double pressure, int which);
-
-  int (*button_released)(struct dt_view_t *self, double x, double y, int which, uint32_t state);
-  int (*button_pressed)(struct dt_view_t *self, double x, double y, double pressure, int which, int type,
-                        uint32_t state);
-  int (*key_pressed)(struct dt_view_t *self, guint key, guint state);
-  int (*key_released)(struct dt_view_t *self, guint key, guint state);
-  void (*configure)(struct dt_view_t *self, int width, int height);
-  void (*scrolled)(struct dt_view_t *self, double x, double y, int up, int state); // mouse scrolled in view
-  void (*scrollbar_changed)(struct dt_view_t *self, double x, double y); // scrollbar changed in view
-
-  // keyboard accel callbacks
-  void (*init_key_accels)(struct dt_view_t *self);
-  void (*connect_key_accels)(struct dt_view_t *self);
-
-  // list of mouse actions
-  GSList *(*mouse_actions)(const struct dt_view_t *self);
-
-  GSList *accel_closures;
-  struct dt_accel_dynamic_t *dynamic_accel_current;
 } dt_view_t;
 
 typedef enum dt_view_image_over_t
@@ -188,14 +161,18 @@ typedef enum dt_view_image_over_t
 } dt_view_image_over_t;
 
 // get images to act on for gloabals change (via libs or accels)
-GList *dt_view_get_images_to_act_on(gboolean only_visible);
+// no need to free the list - done internally
+const GList *dt_view_get_images_to_act_on(const gboolean only_visible, const gboolean force,
+                                          const gboolean ordered);
+gchar *dt_view_get_images_to_act_on_query(const gboolean only_visible);
 // get the main image to act on during global changes (libs, accels)
 int dt_view_get_image_to_act_on();
 
 /** returns an uppercase string of file extension **plus** some flag information **/
-char* dt_view_extend_modes_str(const char * name, const int is_hdr, const int is_bw);
-/** expose an image and return a cairi_surface. return != 0 if thumbnail wasn't loaded yet. */
-int dt_view_image_get_surface(int imgid, int width, int height, cairo_surface_t **surface);
+char* dt_view_extend_modes_str(const char * name, const gboolean is_hdr, const gboolean is_bw, const gboolean is_bw_flow);
+/** expose an image and return a cair0_surface. */
+dt_view_surface_value_t dt_view_image_get_surface(int imgid, int width, int height, cairo_surface_t **surface,
+                                                  const gboolean quality);
 
 
 /** Set the selection bit to a given value for the specified image */
@@ -226,6 +203,17 @@ typedef struct dt_view_manager_t
     gboolean sticky;
     gboolean prevent_refresh;
   } accels_window;
+
+  struct
+  {
+    GList *images;
+    gboolean ok;
+    int image_over;
+    gboolean inside_table;
+    GSList *active_imgs;
+    gboolean image_over_inside_sel;
+    gboolean ordered;
+  } act_on;
 
   /* reusable db statements
    * TODO: reconsider creating a common/database helper API
@@ -312,8 +300,9 @@ typedef struct dt_view_manager_t
       void (*set_layout)(struct dt_lib_module_t *module, dt_lighttable_layout_t layout);
       void (*culling_init_mode)(struct dt_view_t *view);
       void (*culling_preview_refresh)(struct dt_view_t *view);
-      dt_lighttable_culling_zoom_mode_t (*get_zoom_mode)(struct dt_lib_module_t *module);
+      void (*culling_preview_reload_overlays)(struct dt_view_t *view);
       gboolean (*get_preview_state)(struct dt_view_t *view);
+      void (*set_preview_state)(struct dt_view_t *view, gboolean state, gboolean focus);
       void (*change_offset)(struct dt_view_t *view, gboolean reset, gint imgid);
     } lighttable;
 
@@ -323,15 +312,8 @@ typedef struct dt_view_manager_t
       struct dt_view_t *view;
       const char *(*get_job_code)(const dt_view_t *view);
       void (*set_job_code)(const dt_view_t *view, const char *name);
-      uint32_t (*get_selected_imgid)(const dt_view_t *view);
+      int32_t (*get_selected_imgid)(const dt_view_t *view);
     } tethering;
-
-    /* more module window proxy */
-    struct
-    {
-      struct dt_lib_module_t *module;
-      void (*update)(struct dt_lib_module_t *);
-    } more_module;
 
     /* timeline module proxy */
     struct
@@ -347,10 +329,15 @@ typedef struct dt_view_manager_t
       struct dt_view_t *view;
       void (*center_on_location)(const dt_view_t *view, gdouble lon, gdouble lat, double zoom);
       void (*center_on_bbox)(const dt_view_t *view, gdouble lon1, gdouble lat1, gdouble lon2, gdouble lat2);
-      void (*show_osd)(const dt_view_t *view, gboolean enabled);
+      void (*show_osd)(const dt_view_t *view);
       void (*set_map_source)(const dt_view_t *view, OsmGpsMapSource_t map_source);
       GObject *(*add_marker)(const dt_view_t *view, dt_geo_map_display_t type, GList *points);
       gboolean (*remove_marker)(const dt_view_t *view, dt_geo_map_display_t type, GObject *marker);
+      void (*add_location)(const dt_view_t *view, dt_map_location_data_t *p, const guint posid);
+      void (*location_action)(const dt_view_t *view, const int action);
+      void (*drag_set_icon)(const dt_view_t *view, GdkDragContext *context, const int imgid, const int count);
+      gboolean (*redraw)(gpointer user_data);
+      gboolean (*display_selected)(gpointer user_data);
     } map;
 #endif
 
@@ -359,7 +346,7 @@ typedef struct dt_view_manager_t
     struct
     {
       struct dt_view_t *view;
-      void (*print_settings)(const dt_view_t *view, dt_print_info_t *pinfo);
+      void (*print_settings)(const dt_view_t *view, dt_print_info_t *pinfo, dt_images_box *imgs);
     } print;
 #endif
   } proxy;
@@ -406,6 +393,12 @@ void dt_view_manager_module_toolbox_add(dt_view_manager_t *vm, GtkWidget *tool, 
 void dt_view_set_scrollbar(dt_view_t *view, float hpos, float hscroll_lower, float hsize, float hwinsize,
                            float vpos, float vscroll_lower, float vsize, float vwinsize);
 
+/** add mouse action record to list of mouse actions */
+GSList *dt_mouse_action_create_simple(GSList *actions, dt_mouse_action_type_t type, GdkModifierType accel,
+                                      const char *const description);
+GSList *dt_mouse_action_create_format(GSList *actions, dt_mouse_action_type_t type, GdkModifierType accel,
+                                      const char *const format_string, const char *const replacement);
+
 /*
  * Tethering View PROXY
  */
@@ -435,16 +428,18 @@ dt_lighttable_layout_t dt_view_lighttable_get_layout(dt_view_manager_t *vm);
 dt_darkroom_layout_t dt_view_darkroom_get_layout(dt_view_manager_t *vm);
 /** get the lighttable full preview state */
 gboolean dt_view_lighttable_preview_state(dt_view_manager_t *vm);
+/** set the lighttable full preview state */
+void dt_view_lighttable_set_preview_state(dt_view_manager_t *vm, gboolean state, gboolean focus);
 /** sets the lighttable image in row zoom */
 void dt_view_lighttable_set_zoom(dt_view_manager_t *vm, gint zoom);
 /** gets the lighttable image in row zoom */
 gint dt_view_lighttable_get_zoom(dt_view_manager_t *vm);
-/** gets the culling zoom mode */
-dt_lighttable_culling_zoom_mode_t dt_view_lighttable_get_culling_zoom_mode(dt_view_manager_t *vm);
 /** reinit culling for new mode */
 void dt_view_lighttable_culling_init_mode(dt_view_manager_t *vm);
 /** force refresh of culling and/or preview */
 void dt_view_lighttable_culling_preview_refresh(dt_view_manager_t *vm);
+/** force refresh of culling and/or preview overlays */
+void dt_view_lighttable_culling_preview_reload_overlays(dt_view_manager_t *vm);
 /** sets the offset image (for culling and full preview) */
 void dt_view_lighttable_change_offset(dt_view_manager_t *vm, gboolean reset, gint imgid);
 
@@ -463,17 +458,20 @@ void dt_view_audio_stop(dt_view_manager_t *vm);
 #ifdef HAVE_MAP
 void dt_view_map_center_on_location(const dt_view_manager_t *vm, gdouble lon, gdouble lat, gdouble zoom);
 void dt_view_map_center_on_bbox(const dt_view_manager_t *vm, gdouble lon1, gdouble lat1, gdouble lon2, gdouble lat2);
-void dt_view_map_show_osd(const dt_view_manager_t *vm, gboolean enabled);
+void dt_view_map_show_osd(const dt_view_manager_t *vm);
 void dt_view_map_set_map_source(const dt_view_manager_t *vm, OsmGpsMapSource_t map_source);
 GObject *dt_view_map_add_marker(const dt_view_manager_t *vm, dt_geo_map_display_t type, GList *points);
 gboolean dt_view_map_remove_marker(const dt_view_manager_t *vm, dt_geo_map_display_t type, GObject *marker);
+void dt_view_map_add_location(const dt_view_manager_t *vm, dt_map_location_data_t *p, const guint posid);
+void dt_view_map_location_action(const dt_view_manager_t *vm, const int action);
+void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *context, const int imgid, const int count);
 #endif
 
 /*
  * Print View Proxy
  */
 #ifdef HAVE_PRINT
-void dt_view_print_settings(const dt_view_manager_t *vm, dt_print_info_t *pinfo);
+void dt_view_print_settings(const dt_view_manager_t *vm, dt_print_info_t *pinfo, dt_images_box *imgs);
 #endif
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

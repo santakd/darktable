@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2020 darktable developers.
+    Copyright (C) 2019-2021 darktable developers.
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -17,7 +17,9 @@
 
 #pragma once
 
+#include "common/box_filters.h"
 #include "common/fast_guided_filter.h"
+#include "develop/openmp_maths.h"
 
 #ifdef _OPENMP
 #pragma omp declare simd
@@ -35,14 +37,6 @@ static inline uint8_t float_to_uint8(const float i)
   return (uint8_t)(i * 255.0f);
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd
-#endif
-static inline float sqf(const float x)
-{
-  // square
-  return x * x;
-}
 
 #ifdef _OPENMP
 #pragma omp declare simd aligned(image:64) uniform(image)
@@ -56,7 +50,7 @@ static inline float laplacian(const float *const image, const size_t index[8])
   //const float div = fabsf(image[index[3]] + image[index[4]] + image[index[1]] + image[index[6]] - 4.0f * image[index[3] + 1]) + 1.0f;
 
   // we assume the gradients follow an hyper-laplacian distributions in natural images,
-  // which is baked by some examples the litterature, but is still very hacky
+  // which is baked by some examples the literature, but is still very hacky
   // https://www.sciencedirect.com/science/article/pii/S0165168415004168
   // http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.154.539&rep=rep1&type=pdf
   return (l1 + l2) / 2.0f;
@@ -87,8 +81,8 @@ static inline void dt_focuspeaking(cairo_t *cr, int width, int height,
                                    uint8_t *const restrict image,
                                    const int buf_width, const int buf_height)
 {
-  float *const restrict luma =  dt_alloc_sse_ps(buf_width * buf_height);
-  uint8_t *const restrict focus_peaking = dt_alloc_align(64, 4 * buf_width * buf_height * sizeof(uint8_t));
+  float *const restrict luma =  dt_alloc_sse_ps((size_t)buf_width * buf_height);
+  uint8_t *const restrict focus_peaking = dt_alloc_align(64, sizeof(uint8_t) * buf_width * buf_height * 4);
 
   // Create a luma buffer as the euclidian norm of RGB channels
 #ifdef _OPENMP
@@ -114,7 +108,7 @@ schedule(static) collapse(2) aligned(image, luma:64)
   fast_surface_blur(luma, buf_width, buf_height, 12, 0.00001f, 4, DT_GF_BLENDING_LINEAR, 1, 0.0f, exp2f(-8.0f), 1.0f);
 
   // Compute the gradients magnitudes
-  float *const restrict luma_ds =  dt_alloc_sse_ps(buf_width * buf_height);
+  float *const restrict luma_ds =  dt_alloc_sse_ps((size_t)buf_width * buf_height);
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
 dt_omp_firstprivate(luma, luma_ds, buf_height, buf_width) \
@@ -139,7 +133,8 @@ schedule(static) collapse(2) aligned(luma_ds, luma:64)
     }
 
   // Anti-aliasing
-  box_average(luma_ds, buf_width, buf_height, 1, 2);
+//  box_average(luma_ds, buf_width, buf_height, 1, 2);
+  dt_box_mean(luma_ds, buf_height, buf_width, 1, 2, 1);
 
   // Compute the gradient mean over the picture
   float TV_sum = 0.0f;

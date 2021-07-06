@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -66,7 +66,7 @@ const char *dt_metadata_get_name_by_display_order(const uint32_t order)
   return NULL;
 }
 
-const dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order)
+dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order)
 {
   if(order < DT_METADATA_NUMBER)
   {
@@ -79,7 +79,18 @@ const dt_metadata_t dt_metadata_get_keyid_by_display_order(const uint32_t order)
   return -1;
 }
 
-const int dt_metadata_get_type_by_display_order(const uint32_t order)
+dt_metadata_t dt_metadata_get_keyid_by_name(const char* name)
+{
+  if(!name) return -1;
+  for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
+  {
+    if(strncmp(name, dt_metadata_def[i].name, strlen(dt_metadata_def[i].name)) == 0)
+      return i;
+  }
+  return -1;
+}
+
+int dt_metadata_get_type_by_display_order(const uint32_t order)
 {
   if(order < DT_METADATA_NUMBER)
   {
@@ -100,8 +111,9 @@ const char *dt_metadata_get_name(const uint32_t keyid)
     return NULL;
 }
 
-const dt_metadata_t dt_metadata_get_keyid(const char* key)
+dt_metadata_t dt_metadata_get_keyid(const char* key)
 {
+  if(!key) return -1;
   for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
   {
     if(strncmp(key, dt_metadata_def[i].key, strlen(dt_metadata_def[i].key)) == 0)
@@ -142,12 +154,34 @@ const char *dt_metadata_get_key_by_subkey(const char *subkey)
   return NULL;
 }
 
-const int dt_metadata_get_type(const uint32_t keyid)
+int dt_metadata_get_type(const uint32_t keyid)
 {
   if(keyid < DT_METADATA_NUMBER)
     return dt_metadata_def[keyid].type;
   else
     return 0;
+}
+
+void dt_metadata_init()
+{
+  for(unsigned int i = 0; i < DT_METADATA_NUMBER; i++)
+  {
+    const int type = dt_metadata_get_type(i);
+    const char *name = (gchar *)dt_metadata_get_name(i);
+    char *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
+    if(!dt_conf_key_exists(setting))
+    {
+      // per default should be imported - ignored if "write_sidecar_files" set
+      uint32_t flag = DT_METADATA_FLAG_IMPORTED;
+      if(type == DT_METADATA_TYPE_OPTIONAL)
+      {
+        // per default this one should be hidden
+        flag |= DT_METADATA_FLAG_HIDDEN;
+      }
+      dt_conf_set_int(setting, flag);
+    }
+    g_free(setting);
+  }
 }
 
 typedef struct dt_undo_metadata_t
@@ -157,9 +191,15 @@ typedef struct dt_undo_metadata_t
   GList *after;       // list of key/value after
 } dt_undo_metadata_t;
 
-static gboolean _compare_metadata(gconstpointer a, gconstpointer b)
+static GList *_list_find_custom(GList *list, gpointer data)
 {
-  return g_strcmp0(a, b);
+  for(GList *i = list; i; i = g_list_next(i))
+  {
+    if(i->data && !g_strcmp0(i->data, data))
+      return i;
+    i = g_list_next(i);
+  }
+  return NULL;
 }
 
 static gchar *_get_tb_removed_metadata_string_values(GList *before, GList *after)
@@ -170,7 +210,7 @@ static gchar *_get_tb_removed_metadata_string_values(GList *before, GList *after
 
   while(b)
   {
-    GList *same_key = g_list_find_custom(a, b->data, _compare_metadata);
+    GList *same_key = _list_find_custom(a, b->data);
     GList *b2 = g_list_next(b);
     gboolean different_value = FALSE;
     const char *value = (char *)b2->data; // if empty we can remove it
@@ -198,7 +238,7 @@ static gchar *_get_tb_added_metadata_string_values(const int img, GList *before,
 
   while(a)
   {
-    GList *same_key = g_list_find_custom(b, a->data, _compare_metadata);
+    GList *same_key = _list_find_custom(b, a->data);
     GList *a2 = g_list_next(a);
     gboolean different_value = FALSE;
     const char *value = (char *)a2->data; // if empty we don't add it to database
@@ -264,9 +304,7 @@ static void _pop_undo(gpointer user_data, const dt_undo_type_t type, dt_undo_dat
 {
   if(type == DT_UNDO_METADATA)
   {
-    GList *list = (GList *)data;
-
-    while(list)
+    for(GList *list = (GList *)data; list; list = g_list_next(list))
     {
       dt_undo_metadata_t *undometadata = (dt_undo_metadata_t *)list->data;
 
@@ -274,10 +312,9 @@ static void _pop_undo(gpointer user_data, const dt_undo_type_t type, dt_undo_dat
       GList *after = (action == DT_ACTION_UNDO) ? undometadata->before : undometadata->after;
       _pop_undo_execute(undometadata->imgid, before, after);
       *imgs = g_list_prepend(*imgs, GINT_TO_POINTER(undometadata->imgid));
-      list = g_list_next(list);
     }
 
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
   }
 }
 
@@ -360,7 +397,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
         local_count++;
         int stars = sqlite3_column_int(stmt, 0);
         stars = (stars & 0x7) - 1;
-        result = g_list_append(result, GINT_TO_POINTER(stars));
+        result = g_list_prepend(result, GINT_TO_POINTER(stars));
       }
       sqlite3_finalize(stmt);
     }
@@ -385,7 +422,7 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
       while(sqlite3_step(stmt) == SQLITE_ROW)
       {
         local_count++;
-        result = g_list_append(result, g_strdup((char *)sqlite3_column_text(stmt, 0)));
+        result = g_list_prepend(result, g_strdup((char *)sqlite3_column_text(stmt, 0)));
       }
       sqlite3_finalize(stmt);
     }
@@ -408,12 +445,12 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
       while(sqlite3_step(stmt) == SQLITE_ROW)
       {
         local_count++;
-        result = g_list_append(result, GINT_TO_POINTER(sqlite3_column_int(stmt, 0)));
+        result = g_list_prepend(result, GINT_TO_POINTER(sqlite3_column_int(stmt, 0)));
       }
       sqlite3_finalize(stmt);
     }
     if(count != NULL) *count = local_count;
-    return result;
+    return g_list_reverse(result);
   }
 
   // So we got this far -- it has to be a generic key-value entry from meta_data
@@ -437,11 +474,11 @@ GList *dt_metadata_get(const int id, const char *key, uint32_t *count)
   {
     local_count++;
     char *value = (char *)sqlite3_column_text(stmt, 0);
-    result = g_list_append(result, g_strdup(value ? value : "")); // to avoid NULL value
+    result = g_list_prepend(result, g_strdup(value ? value : "")); // to avoid NULL value
   }
   sqlite3_finalize(stmt);
   if(count != NULL) *count = local_count;
-  return result;
+  return g_list_reverse(result);  // list was built in reverse order, so un-reverse it
 }
 
 static void _metadata_add_metadata_to_list(GList **list, const GList *metadata)
@@ -450,7 +487,7 @@ static void _metadata_add_metadata_to_list(GList **list, const GList *metadata)
   while(m)
   {
     GList *m2 = g_list_next(m);
-    GList *same_key = g_list_find_custom(*list, m->data, _compare_metadata);
+    GList *same_key = _list_find_custom(*list, m->data);
     GList *same2 = g_list_next(same_key);
     gboolean different_value = FALSE;
     if(same_key) different_value = g_strcmp0(same2->data, m2->data);
@@ -474,10 +511,9 @@ static void _metadata_add_metadata_to_list(GList **list, const GList *metadata)
 static void _metadata_remove_metadata_from_list(GList **list, const GList *metadata)
 {
   // caution: metadata is a simple list here
-  const GList *m = metadata;
-  while(m)
+  for(const GList *m = metadata; m; m = g_list_next(m))
   {
-    GList *same_key = g_list_find_custom(*list, m->data, _compare_metadata);
+    GList *same_key = _list_find_custom(*list, m->data);
     if(same_key)
     {
       // same key for that image - remove metadata item
@@ -489,7 +525,6 @@ static void _metadata_remove_metadata_from_list(GList **list, const GList *metad
       g_free(same2->data);
       g_list_free(same2);
     }
-    m = g_list_next(m);
   }
 }
 
@@ -503,8 +538,7 @@ typedef enum dt_tag_actions_t
 static void _metadata_execute(const GList *imgs, const GList *metadata, GList **undo,
                               const gboolean undo_on, const gint action)
 {
-  const GList *images = imgs;
-  while(images)
+  for(const GList *images = imgs; images; images = g_list_next(images))
   {
     const int image_id = GPOINTER_TO_INT(images->data);
 
@@ -535,7 +569,6 @@ static void _metadata_execute(const GList *imgs, const GList *metadata, GList **
       *undo = g_list_append(*undo, undometadata);
     else
       _undo_metadata_free(undometadata);
-    images = g_list_next(images);
   }
 }
 
@@ -548,9 +581,9 @@ void dt_metadata_set(const int imgid, const char *key, const char *value, const 
   {
     GList *imgs = NULL;
     if(imgid == -1)
-      imgs = dt_view_get_images_to_act_on(TRUE);
+      imgs = g_list_copy((GList *)dt_view_get_images_to_act_on(TRUE, TRUE, FALSE));
     else
-      imgs = g_list_append(imgs, GINT_TO_POINTER(imgid));
+      imgs = g_list_prepend(imgs, GINT_TO_POINTER(imgid));
     if(imgs)
     {
       GList *undo = NULL;
@@ -579,11 +612,12 @@ void dt_metadata_set_import(const int imgid, const char *key, const char *value)
 {
   if(!key || !imgid || imgid == -1) return;
 
-  int keyid = dt_metadata_get_keyid(key);
+  const int keyid = dt_metadata_get_keyid(key);
+
   if(keyid != -1) // known key
   {
-    gboolean imported = TRUE;
-    if(dt_metadata_get_type(keyid) != DT_METADATA_TYPE_INTERNAL)
+    gboolean imported = dt_conf_get_bool("write_sidecar_files");
+    if(!imported && dt_metadata_get_type(keyid) != DT_METADATA_TYPE_INTERNAL)
     {
       const gchar *name = dt_metadata_get_name(keyid);
       char *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
@@ -593,7 +627,7 @@ void dt_metadata_set_import(const int imgid, const char *key, const char *value)
     if(imported)
     {
       GList *imgs = NULL;
-      imgs = g_list_append(imgs, GINT_TO_POINTER(imgid));
+      imgs = g_list_prepend(imgs, GINT_TO_POINTER(imgid));
       if(imgs)
       {
         GList *undo = NULL;
@@ -613,14 +647,14 @@ void dt_metadata_set_import(const int imgid, const char *key, const char *value)
   }
 }
 
-void dt_metadata_set_list(GList *imgs, GList *key_value, const gboolean undo_on)
+void dt_metadata_set_list(const GList *imgs, GList *key_value, const gboolean undo_on)
 {
   GList *metadata = NULL;
   GList *kv = key_value;
   while(kv)
   {
     const gchar *key = (const gchar *)kv->data;
-    int keyid = dt_metadata_get_keyid(key);
+    const int keyid = dt_metadata_get_keyid(key);
     if(keyid != -1) // known key
     {
       const gchar *ckey = dt_util_dstrcat(NULL, "%d", keyid);
@@ -652,13 +686,12 @@ void dt_metadata_set_list(GList *imgs, GList *key_value, const gboolean undo_on)
       dt_undo_record(darktable.undo, NULL, DT_UNDO_METADATA, undo, _pop_undo, _metadata_undo_data_free);
       dt_undo_end_group(darktable.undo);
     }
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
 
     g_list_free_full(metadata, g_free);
   }
 }
 
-void dt_metadata_clear(GList *imgs, const gboolean undo_on)
+void dt_metadata_clear(const GList *imgs, const gboolean undo_on)
 {
   // do not clear internal or hidden metadata
   GList *metadata = NULL;
@@ -673,13 +706,14 @@ void dt_metadata_clear(GList *imgs, const gboolean undo_on)
       if(!hidden)
       {
         // caution: metadata is a simple list here
-        metadata = g_list_append(metadata, dt_util_dstrcat(NULL, "%d", i));
+        metadata = g_list_prepend(metadata, dt_util_dstrcat(NULL, "%d", i));
       }
     }
   }
 
   if(metadata)
   {
+    metadata = g_list_reverse(metadata);  // list was built in reverse order, so un-reverse it
     GList *undo = NULL;
     if(undo_on) dt_undo_start_group(darktable.undo, DT_UNDO_METADATA);
 
@@ -690,7 +724,6 @@ void dt_metadata_clear(GList *imgs, const gboolean undo_on)
       dt_undo_record(darktable.undo, NULL, DT_UNDO_METADATA, undo, _pop_undo, _metadata_undo_data_free);
       dt_undo_end_group(darktable.undo);
     }
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
 
     g_list_free_full(metadata, g_free);
   }
@@ -699,21 +732,18 @@ void dt_metadata_clear(GList *imgs, const gboolean undo_on)
 void dt_metadata_set_list_id(const GList *img, const GList *metadata, const gboolean clear_on,
                              const gboolean undo_on)
 {
-  GList *imgs = g_list_copy((GList *)img);
-  if(imgs)
+  if(img)
   {
     GList *undo = NULL;
     if(undo_on) dt_undo_start_group(darktable.undo, DT_UNDO_METADATA);
 
-    _metadata_execute(imgs, metadata, &undo, undo_on, clear_on ? DT_MA_SET : DT_MA_ADD);
+    _metadata_execute(img, metadata, &undo, undo_on, clear_on ? DT_MA_SET : DT_MA_ADD);
 
-    g_list_free(imgs);
     if(undo_on)
     {
       dt_undo_record(darktable.undo, NULL, DT_UNDO_METADATA, undo, _pop_undo, _metadata_undo_data_free);
       dt_undo_end_group(darktable.undo);
     }
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
   }
 }
 

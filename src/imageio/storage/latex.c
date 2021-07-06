@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2020 darktable developers.
+    Copyright (C) 2012-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -154,6 +154,7 @@ void gui_init(dt_imageio_module_storage_t *self)
   GtkWidget *widget;
 
   widget = gtk_entry_new();
+  gtk_entry_set_width_chars(GTK_ENTRY(widget), 0);
   gtk_box_pack_start(GTK_BOX(hbox), widget, TRUE, TRUE, 0);
   gchar *dir = dt_conf_get_string("plugins/imageio/storage/latex/file_directory");
   if(dir)
@@ -174,7 +175,8 @@ void gui_init(dt_imageio_module_storage_t *self)
   g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(entry_changed_callback), self);
   g_free(tooltip_text);
 
-  widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_DO_NOT_USE_BORDER, NULL);
+  widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
+  gtk_widget_set_name(widget, "non-flat");
   gtk_widget_set_tooltip_text(widget, _("select directory"));
   gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(widget), "clicked", G_CALLBACK(button_clicked), self);
@@ -182,12 +184,10 @@ void gui_init(dt_imageio_module_storage_t *self)
   hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(10));
   gtk_box_pack_start(GTK_BOX(self->widget), hbox, TRUE, TRUE, 0);
 
-  widget = gtk_label_new(_("title"));
-  gtk_widget_set_halign(widget, GTK_ALIGN_START);
-  g_object_set(G_OBJECT(widget), "xalign", 0.0, (gchar *)0);
-  gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(hbox), dt_ui_label_new(_("title")), FALSE, FALSE, 0);
 
   d->title_entry = GTK_ENTRY(gtk_entry_new());
+  gtk_entry_set_width_chars(d->title_entry, 0);
   gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->title_entry), TRUE, TRUE, 0);
   dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->title_entry));
   // TODO: support title, author, subject, keywords (collect tags?)
@@ -212,6 +212,8 @@ void gui_cleanup(dt_imageio_module_storage_t *self)
 void gui_reset(dt_imageio_module_storage_t *self)
 {
   latex_t *d = (latex_t *)self->gui_data;
+  gtk_entry_set_text(d->entry, dt_confgen_get("plugins/imageio/storage/latex/file_directory", DT_DEFAULT));
+  gtk_entry_set_text(d->title_entry, dt_confgen_get("plugins/imageio/storage/latex/title", DT_DEFAULT));
   dt_conf_set_string("plugins/imageio/storage/latex/file_directory", gtk_entry_get_text(d->entry));
   dt_conf_set_string("plugins/imageio/storage/latex/title", gtk_entry_get_text(d->title_entry));
 }
@@ -309,7 +311,6 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
     if(res_subj)
     {
       // don't show the internal tags (darktable|...)
-      res_subj = g_list_first(res_subj);
       GList *iter = res_subj;
       while(iter)
       {
@@ -365,34 +366,6 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
   return 0;
 }
 
-static void copy_res(const char *src, const char *dst)
-{
-  char share[PATH_MAX] = { 0 };
-  dt_loc_get_datadir(share, sizeof(share));
-  gchar *sourcefile = g_build_filename(share, src, NULL);
-  char *content = NULL;
-  FILE *fin = g_fopen(sourcefile, "rb");
-  FILE *fout = g_fopen(dst, "wb");
-
-  if(fin && fout)
-  {
-    fseek(fin, 0, SEEK_END);
-    size_t end = ftell(fin);
-    rewind(fin);
-    content = (char *)g_malloc_n(end, sizeof(char));
-    if(content == NULL) goto END;
-    if(fread(content, sizeof(char), end, fin) != end) goto END;
-    if(fwrite(content, sizeof(char), end, fout) != end) goto END;
-  }
-
-END:
-  if(fout != NULL) fclose(fout);
-  if(fin != NULL) fclose(fin);
-
-  g_free(content);
-  g_free(sourcefile);
-}
-
 void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *dd)
 {
   dt_imageio_latex_t *d = (dt_imageio_latex_t *)dd;
@@ -401,7 +374,7 @@ void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t 
   char *c = filename + strlen(filename);
 
   sprintf(c, "/photobook.cls");
-  copy_res("/latex/photobook.cls", filename);
+  dt_copy_resource_file("/latex/photobook.cls", filename);
 
   sprintf(c, "/main.tex");
 

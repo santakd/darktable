@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2020 darktable developers.
+   Copyright (C) 2013-2021 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -34,8 +34,9 @@
 // 2.2.0 was 4.0.0 ( removed the ugly yield functions make scripts incompatible)
 // 2.4.0 was 5.0.0 (going to lua 5.3 is a major API bump)
 // 3.2.0 was 6.0.0 (removed facebook, flickr, and picasa from types.dt_imageio_storage_module_t)
+// 3.6.0 was 7.0.0 (added naming to events, selections, and actions)
 /* incompatible API change */
-#define LUA_API_VERSION_MAJOR 6
+#define LUA_API_VERSION_MAJOR 7
 /* backward compatible API change */
 #define LUA_API_VERSION_MINOR 0
 /* bugfixes that should not change anything to the API */

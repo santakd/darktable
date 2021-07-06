@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -65,58 +65,29 @@ static void _default_format_gui_init(struct dt_imageio_module_format_t *self)
 }
 
 static int dt_imageio_load_module_format(dt_imageio_module_format_t *module, const char *libname,
-                                         const char *plugin_name)
+                                         const char *module_name)
 {
-  module->widget = NULL;
-  module->parameter_lua_type = LUAA_INVALID_TYPE;
-  g_strlcpy(module->plugin_name, plugin_name, sizeof(module->plugin_name));
-  dt_print(DT_DEBUG_CONTROL, "[imageio_load_module] loading format module `%s' from %s\n", plugin_name, libname);
-  module->module = g_module_open(libname, G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);
-  if(!module->module) goto error;
-  int (*version)();
-  if(!g_module_symbol(module->module, "dt_module_dt_version", (gpointer) & (version))) goto error;
-  if(version() != dt_version())
-  {
-    fprintf(
-        stderr,
-        "[imageio_load_module] `%s' is compiled for another version of dt (module %d (%s) != dt %d (%s)) !\n",
-        libname, abs(version()), version() < 0 ? "debug" : "opt", abs(dt_version()),
-        dt_version() < 0 ? "debug" : "opt");
-    goto error;
-  }
-  if(!g_module_symbol(module->module, "dt_module_mod_version", (gpointer) & (module->version))) goto error;
-  if(!g_module_symbol(module->module, "name", (gpointer) & (module->name))) goto error;
-  if(!g_module_symbol(module->module, "init", (gpointer) & (module->init))) goto error;
-  if(!g_module_symbol(module->module, "cleanup", (gpointer) & (module->cleanup))) goto error;
-  if(!g_module_symbol(module->module, "gui_reset", (gpointer) & (module->gui_reset))) goto error;
+  g_strlcpy(module->plugin_name, module_name, sizeof(module->plugin_name));
+
+#define INCLUDE_API_FROM_MODULE_LOAD "imageio_load_module_format"
+#include "imageio/format/imageio_format_api.h"
+
   if(darktable.gui)
   {
-    if(!g_module_symbol(module->module, "gui_init", (gpointer) & (module->gui_init))) goto error;
+    if(!module->gui_init) goto api_h_error;
   }
   else
   {
     module->gui_init = _default_format_gui_init;
   }
-  if(!g_module_symbol(module->module, "gui_cleanup", (gpointer) & (module->gui_cleanup))) goto error;
+  if(!module->dimension) module->dimension = _default_format_dimension;
+  if(!module->flags) module->flags = _default_format_flags;
+  if(!module->levels) module->levels = _default_format_levels;
 
-  if(!g_module_symbol(module->module, "mime", (gpointer) & (module->mime))) goto error;
-  if(!g_module_symbol(module->module, "extension", (gpointer) & (module->extension))) goto error;
-  if(!g_module_symbol(module->module, "dimension", (gpointer) & (module->dimension)))
-    module->dimension = _default_format_dimension;
-  if(!g_module_symbol(module->module, "legacy_params", (gpointer) & (module->legacy_params)))
-    module->legacy_params = NULL;
-  if(!g_module_symbol(module->module, "params_size", (gpointer) & (module->params_size))) goto error;
-  if(!g_module_symbol(module->module, "get_params", (gpointer) & (module->get_params))) goto error;
-  if(!g_module_symbol(module->module, "free_params", (gpointer) & (module->free_params))) goto error;
-  if(!g_module_symbol(module->module, "set_params", (gpointer) & (module->set_params))) goto error;
-  if(!g_module_symbol(module->module, "write_image", (gpointer) & (module->write_image))) goto error;
-  if(!g_module_symbol(module->module, "bpp", (gpointer) & (module->bpp))) goto error;
-  if(!g_module_symbol(module->module, "flags", (gpointer) & (module->flags)))
-    module->flags = _default_format_flags;
-  if(!g_module_symbol(module->module, "levels", (gpointer) & (module->levels)))
-    module->levels = _default_format_levels;
-  if(!g_module_symbol(module->module, "read_image", (gpointer) & (module->read_image)))
-    module->read_image = NULL;
+  module->widget = NULL;
+  module->parameter_lua_type = LUAA_INVALID_TYPE;
+  // Can by set by the module function to false if something went wrong.
+  module->ready = TRUE;
 
 #ifdef USE_LUA
   {
@@ -130,6 +101,11 @@ static int dt_imageio_load_module_format(dt_imageio_module_format_t *module, con
     dt_lua_register_format_type(darktable.lua_state.state, module, my_type);
 #endif
     module->init(module);
+    if (!module->ready)
+    {
+      goto api_h_error;
+    }
+
 #ifdef USE_LUA
     lua_pushcfunction(darktable.lua_state.state, dt_lua_type_member_luaautoc);
     dt_lua_type_register_struct_type(darktable.lua_state.state, my_type);
@@ -137,10 +113,6 @@ static int dt_imageio_load_module_format(dt_imageio_module_format_t *module, con
 #endif
 
   return 0;
-error:
-  fprintf(stderr, "[imageio_load_module] failed to open format `%s': %s\n", plugin_name, g_module_error());
-  if(module->module) g_module_close(module->module);
-  return 1;
 }
 
 
@@ -184,10 +156,10 @@ static int dt_imageio_load_modules_format(dt_imageio_t *iio)
 }
 
 /** Default implementation of supported function, used if storage modules not implements supported() */
-static int _default_supported(struct dt_imageio_module_storage_t *self,
-                              struct dt_imageio_module_format_t *format)
+static gboolean default_supported(struct dt_imageio_module_storage_t *self,
+                                  struct dt_imageio_module_format_t *format)
 {
-  return 1;
+  return TRUE;
 }
 /** Default implementation of dimension module function, used if storage modules does not implements
  * dimension() */
@@ -202,61 +174,28 @@ static void _default_storage_nop(struct dt_imageio_module_storage_t *self)
 }
 
 static int dt_imageio_load_module_storage(dt_imageio_module_storage_t *module, const char *libname,
-                                          const char *plugin_name)
+                                          const char *module_name)
 {
-  module->widget = NULL;
-  module->parameter_lua_type = LUAA_INVALID_TYPE;
-  g_strlcpy(module->plugin_name, plugin_name, sizeof(module->plugin_name));
-  dt_print(DT_DEBUG_CONTROL, "[imageio_load_module] loading storage module `%s' from %s\n", plugin_name, libname);
-  module->module = g_module_open(libname, G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);
-  if(!module->module) goto error;
-  int (*version)();
-  if(!g_module_symbol(module->module, "dt_module_dt_version", (gpointer) & (version))) goto error;
-  if(version() != dt_version())
-  {
-    fprintf(
-        stderr,
-        "[imageio_load_module] `%s' is compiled for another version of dt (module %d (%s) != dt %d (%s)) !\n",
-        libname, abs(version()), version() < 0 ? "debug" : "opt", abs(dt_version()),
-        dt_version() < 0 ? "debug" : "opt");
-    goto error;
-  }
-  if(!g_module_symbol(module->module, "dt_module_mod_version", (gpointer) & (module->version))) goto error;
-  if(!g_module_symbol(module->module, "name", (gpointer) & (module->name))) goto error;
-  if(!g_module_symbol(module->module, "gui_reset", (gpointer) & (module->gui_reset))) goto error;
+  g_strlcpy(module->plugin_name, module_name, sizeof(module->plugin_name));
+
+#define INCLUDE_API_FROM_MODULE_LOAD "imageio_load_module_storage"
+#include "imageio/storage/imageio_storage_api.h"
+
   if(darktable.gui)
   {
-    if(!g_module_symbol(module->module, "gui_init", (gpointer) & (module->gui_init))) goto error;
+    if(!module->gui_init) goto api_h_error;
   }
   else
   {
     module->gui_init = _default_storage_nop;
   }
-  if(!g_module_symbol(module->module, "gui_cleanup", (gpointer) & (module->gui_cleanup))) goto error;
-  if(!g_module_symbol(module->module, "init", (gpointer) & (module->init))) goto error;
+  if(!module->dimension) module->dimension = _default_storage_dimension;
+  if(!module->recommended_dimension) module->recommended_dimension = _default_storage_dimension;
+  if(!module->export_dispatched) module->export_dispatched = _default_storage_nop;
 
-  if(!g_module_symbol(module->module, "store", (gpointer) & (module->store))) goto error;
-  if(!g_module_symbol(module->module, "legacy_params", (gpointer) & (module->legacy_params)))
-    module->legacy_params = NULL;
-  if(!g_module_symbol(module->module, "params_size", (gpointer) & (module->params_size))) goto error;
-  if(!g_module_symbol(module->module, "get_params", (gpointer) & (module->get_params))) goto error;
-  if(!g_module_symbol(module->module, "free_params", (gpointer) & (module->free_params))) goto error;
-  if(!g_module_symbol(module->module, "initialize_store", (gpointer) & (module->initialize_store)))
-    module->initialize_store = NULL;
-  if(!g_module_symbol(module->module, "finalize_store", (gpointer) & (module->finalize_store)))
-    module->finalize_store = NULL;
-  if(!g_module_symbol(module->module, "set_params", (gpointer) & (module->set_params))) goto error;
+  module->widget = NULL;
+  module->parameter_lua_type = LUAA_INVALID_TYPE;
 
-  if(!g_module_symbol(module->module, "supported", (gpointer) & (module->supported)))
-    module->supported = _default_supported;
-  if(!g_module_symbol(module->module, "dimension", (gpointer) & (module->dimension)))
-    module->dimension = _default_storage_dimension;
-  if(!g_module_symbol(module->module, "recommended_dimension", (gpointer) & (module->recommended_dimension)))
-    module->recommended_dimension = _default_storage_dimension;
-  if(!g_module_symbol(module->module, "export_dispatched", (gpointer) & (module->export_dispatched)))
-    module->export_dispatched = _default_storage_nop;
-  if(!g_module_symbol(module->module, "ask_user_confirmation", (gpointer) & (module->ask_user_confirmation)))
-    module->ask_user_confirmation = NULL;
 #ifdef USE_LUA
   {
     char pseudo_type_name[1024];
@@ -276,10 +215,6 @@ static int dt_imageio_load_module_storage(dt_imageio_module_storage_t *module, c
 #endif
 
   return 0;
-error:
-  fprintf(stderr, "[imageio_load_module] failed to open storage `%s': %s\n", plugin_name, g_module_error());
-  if(module->module) g_module_close(module->module);
-  return 1;
 }
 
 static int dt_imageio_load_modules_storage(dt_imageio_t *iio)
@@ -377,28 +312,24 @@ dt_imageio_module_storage_t *dt_imageio_get_storage()
 
 dt_imageio_module_format_t *dt_imageio_get_format_by_name(const char *name)
 {
-  dt_imageio_t *iio = darktable.imageio;
-  GList *it = iio->plugins_format;
   if(!name) return NULL;
-  while(it)
+  dt_imageio_t *iio = darktable.imageio;
+  for(GList *it = iio->plugins_format; it; it = g_list_next(it))
   {
     dt_imageio_module_format_t *module = (dt_imageio_module_format_t *)it->data;
     if(!strcmp(module->plugin_name, name)) return module;
-    it = g_list_next(it);
   }
   return NULL;
 }
 
 dt_imageio_module_storage_t *dt_imageio_get_storage_by_name(const char *name)
 {
-  dt_imageio_t *iio = darktable.imageio;
-  GList *it = iio->plugins_storage;
   if(!name) return NULL;
-  while(it)
+  dt_imageio_t *iio = darktable.imageio;
+  for(GList *it = iio->plugins_storage; it; it = g_list_next(it))
   {
     dt_imageio_module_storage_t *module = (dt_imageio_module_storage_t *)it->data;
     if(!strcmp(module->plugin_name, name)) return module;
-    it = g_list_next(it);
   }
   return NULL;
 }
@@ -434,7 +365,54 @@ void dt_imageio_insert_storage(dt_imageio_module_storage_t *storage)
 {
   darktable.imageio->plugins_storage
       = g_list_insert_sorted(darktable.imageio->plugins_storage, storage, dt_imageio_sort_modules_storage);
-  dt_control_signal_raise(darktable.signals, DT_SIGNAL_IMAGEIO_STORAGE_CHANGE);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGEIO_STORAGE_CHANGE);
+}
+
+void dt_imageio_remove_storage(dt_imageio_module_storage_t *storage)
+{
+  darktable.imageio->plugins_storage  = g_list_remove(darktable.imageio->plugins_storage, storage);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_IMAGEIO_STORAGE_CHANGE);
+}
+
+gchar *dt_imageio_resizing_factor_get_and_parsing(double *num, double *denum)
+{
+  double _num, _denum;
+  gchar *scale_str = dt_conf_get_string("plugins/lighttable/export/resizing_factor");
+
+  char sep[4] = "";
+  snprintf( sep, 4, "%g", (double) 3/2);
+  int i = -1;
+  while(scale_str[++i])
+  {
+      if ((scale_str[i] == '.') || (scale_str[i] == ',')) scale_str[i] = sep[1];
+  }
+
+  gchar *pdiv = strchr(scale_str, '/');
+
+  if (pdiv == NULL)
+  {
+    _num = atof(scale_str);
+    _denum = 1;
+  }
+  else if (pdiv-scale_str == 0)
+  {
+    _num = 1;
+    _denum = atof(pdiv + 1);
+}
+  else
+{
+    _num = atof(scale_str);
+    _denum = atof(pdiv+1);
+  }
+
+  if (_num == 0.0) _num = 1.0;
+  if (_denum == 0.0) _denum = 1.0;
+
+  *num = _num;
+  *denum = _denum;
+
+  dt_conf_set_string("plugins/lighttable/export/resizing_factor", scale_str);
+  return scale_str;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

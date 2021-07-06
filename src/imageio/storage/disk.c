@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -141,6 +141,7 @@ static void button_clicked(GtkWidget *widget, dt_imageio_module_storage_t *self)
     gchar *escaped = dt_util_str_replace(composed, "\\", "\\\\");
 
     gtk_entry_set_text(GTK_ENTRY(d->entry), escaped); // the signal handler will write this to conf
+    gtk_editable_set_position(GTK_EDITABLE(d->entry), strlen(escaped));
     g_free(dir);
     g_free(composed);
     g_free(escaped);
@@ -174,6 +175,7 @@ void gui_init(dt_imageio_module_storage_t *self)
   if(dir)
   {
     gtk_entry_set_text(GTK_ENTRY(widget), dir);
+    gtk_editable_set_position(GTK_EDITABLE(widget), strlen(dir));
     g_free(dir);
   }
 
@@ -190,13 +192,14 @@ void gui_init(dt_imageio_module_storage_t *self)
   gtk_widget_set_tooltip_text(widget, tooltip_text);
   g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(entry_changed_callback), self);
 
-  widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_DO_NOT_USE_BORDER, NULL);
+  widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
+  gtk_widget_set_name(widget, "non-flat");
   gtk_widget_set_tooltip_text(widget, _("select directory"));
   gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(widget), "clicked", G_CALLBACK(button_clicked), self);
 
   d->onsave_action = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->onsave_action, NULL, _("on conflict"));
+  dt_bauhaus_widget_set_label(d->onsave_action, NULL, N_("on conflict"));
   dt_bauhaus_combobox_add(d->onsave_action, _("create unique filename"));
   dt_bauhaus_combobox_add(d->onsave_action, _("overwrite"));
   dt_bauhaus_combobox_add(d->onsave_action, _("skip"));
@@ -219,6 +222,8 @@ void gui_reset(dt_imageio_module_storage_t *self)
   disk_t *d = (disk_t *)self->gui_data;
   // global default can be annoying:
   // gtk_entry_set_text(GTK_ENTRY(d->entry), "$(FILE_FOLDER)/darktable_exported/$(FILE_NAME)");
+  gtk_entry_set_text(d->entry, dt_confgen_get("plugins/imageio/storage/disk/file_directory", DT_DEFAULT));
+  dt_bauhaus_combobox_set(d->onsave_action, dt_confgen_get_int("plugins/imageio/storage/disk/overwrite", DT_DEFAULT));
   dt_conf_set_string("plugins/imageio/storage/disk/file_directory", gtk_entry_get_text(d->entry));
   dt_conf_set_int("plugins/imageio/storage/disk/overwrite", dt_bauhaus_combobox_get(d->onsave_action));
 }
@@ -239,7 +244,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
   dt_image_full_path(imgid, input_dir, sizeof(input_dir), &from_cache);
   // set max_width and max_height values to expand them afterwards in darktable variables
   dt_variables_set_max_width_height(d->vp, fdata->max_width, fdata->max_height);
-  int fail = 0;
+  gboolean fail = FALSE;
   // we're potentially called in parallel. have sequence number synchronized:
   dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
   {
@@ -280,14 +285,14 @@ try_again:
     {
       fprintf(stderr, "[imageio_storage_disk] could not create directory: `%s'!\n", output_dir);
       dt_control_log(_("could not create directory `%s'!"), output_dir);
-      fail = 1;
+      fail = TRUE;
       goto failed;
     }
     if(g_access(output_dir, W_OK | X_OK) != 0)
     {
       fprintf(stderr, "[imageio_storage_disk] could not write to directory: `%s'!\n", output_dir);
       dt_control_log(_("could not write to directory `%s'!"), output_dir);
-      fail = 1;
+      fail = TRUE;
       goto failed;
     }
 
@@ -385,6 +390,7 @@ int set_params(dt_imageio_module_storage_t *self, const void *params, const int 
   if(size != self->params_size(self)) return 1;
 
   gtk_entry_set_text(GTK_ENTRY(g->entry), d->filename);
+  gtk_editable_set_position(GTK_EDITABLE(g->entry), strlen(d->filename));
   dt_bauhaus_combobox_set(g->onsave_action, d->onsave_action);
   return 0;
 }
@@ -392,7 +398,7 @@ int set_params(dt_imageio_module_storage_t *self, const void *params, const int 
 char *ask_user_confirmation(dt_imageio_module_storage_t *self)
 {
   disk_t *g = (disk_t *)self->gui_data;
-  if(dt_bauhaus_combobox_get(g->onsave_action) == DT_EXPORT_ONCONFLICT_OVERWRITE)
+  if(dt_bauhaus_combobox_get(g->onsave_action) == DT_EXPORT_ONCONFLICT_OVERWRITE && dt_conf_get_bool("plugins/lighttable/export/ask_before_export_overwrite"))
   {
     return g_strdup(_("you are going to export on overwrite mode, this will overwrite any existing images\n\n"
         "do you really want to continue?"));

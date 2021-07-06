@@ -1,4 +1,4 @@
-include_directories("${CMAKE_CURRENT_BINARY_DIR}/../")
+include_directories("${DARKTABLE_BINDIR}")
 
 include(manage-symbol-visibility)
 
@@ -23,7 +23,7 @@ macro (add_iop _lib _src)
   set(_input ${CMAKE_CURRENT_SOURCE_DIR}/${_src})
   set(_output ${CMAKE_CURRENT_BINARY_DIR}/introspection_${_src}) # keep ${_src} in the end to keep the file extension (c vs. cc)
   add_custom_command(
-    DEPENDS ${_input} ${CMAKE_SOURCE_DIR}/src/common/introspection.h
+    DEPENDS ${_input} ${CMAKE_SOURCE_DIR}/src/common/introspection.h ${CMAKE_SOURCE_DIR}/tools/introspection/ast.pm
     OUTPUT ${_output}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/introspection/
     COMMAND ${perl_BIN} ${CMAKE_SOURCE_DIR}/tools/introspection/parser.pl ${CMAKE_CURRENT_SOURCE_DIR}/../ ${_input} ${_output}
@@ -47,7 +47,7 @@ macro (add_iop _lib _src)
                             INSTALL_RPATH ${CMAKE_INSTALL_LIBDIR_RPATH})
   endif(WIN32)
 
-  install(TARGETS  ${_lib} DESTINATION ${CMAKE_INSTALL_LIBDIR}/darktable/plugins COMPONENT DTApplication)
+  install(TARGETS ${_lib} DESTINATION ${CMAKE_INSTALL_LIBDIR}/darktable/plugins COMPONENT DTApplication)
 
   list(APPEND _iop_list ${_lib})
 
@@ -84,6 +84,7 @@ add_iop(colorin "colorin.c" DEFAULT_VISIBLE)
 add_iop(colorout "colorout.c")
 add_iop(colorchecker "colorchecker.c")
 add_iop(clipping "clipping.c" DEFAULT_VISIBLE)
+add_iop(crop "crop.c" DEFAULT_VISIBLE)
 add_iop(sharpen "sharpen.c" DEFAULT_VISIBLE)
 add_iop(dither "dither.c")
 add_iop(monochrome "monochrome.c")
@@ -142,6 +143,11 @@ endif(GMIC_FOUND)
 add_iop(toneequal "toneequal.c" DEFAULT_VISIBLE)
 add_iop(filmicrgb "filmicrgb.c")
 add_iop(negadoctor "negadoctor.c")
+add_iop(channelmixerrgb "channelmixerrgb.c" "../chart/common.c")
+add_iop(censorize "censorize.c")
+add_iop(colorbalancergb "colorbalancergb.c")
+add_iop(cacorrectrgb "cacorrectrgb.c")
+add_iop(diffuse "diffuse.c")
 
 if(Rsvg2_FOUND)
   add_iop(watermark "watermark.c")

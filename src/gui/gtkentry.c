@@ -74,6 +74,7 @@ static gboolean on_match_select(GtkEntryCompletion *widget, GtkTreeModel *model,
   gtk_editable_set_position(e, p);
   g_value_unset(&value);
   g_free(addtext);
+  g_free(s);
   return TRUE;
 }
 
@@ -244,7 +245,7 @@ gchar *dt_gtkentry_build_completion_tooltip_text(const gchar *header,
 {
   size_t array_len = 0;
   for(dt_gtkentry_completion_spec const *p = compl_list; p->description != NULL; p++) array_len++;
-  const gchar **lines = malloc((array_len + 2) * sizeof(gchar *));
+  const gchar **lines = malloc(sizeof(gchar *) * (array_len + 2));
   const gchar **l = lines;
   *l++ = header;
 

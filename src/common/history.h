@@ -21,6 +21,7 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 #include <sqlite3.h>
+#include "develop/imageop.h"
 
 struct dt_develop_t;
 struct dt_iop_module_t;
@@ -53,7 +54,7 @@ typedef struct dt_history_copy_item_t
   GList *selops;
   GtkTreeView *items;
   int copied_imageid;
-  gboolean partial;
+  gboolean full_copy;
   gboolean copy_iop_order;
 } dt_history_copy_item_t;
 
@@ -64,7 +65,7 @@ void dt_history_item_free(gpointer data);
 int dt_history_merge_module_into_history(struct dt_develop_t *dev_dest, struct dt_develop_t *dev_src, struct dt_iop_module_t *mod_src, GList **_modules_used, const int append);
 
 /** copy history from imgid and pasts on dest_imgid, merge or overwrite... */
-int dt_history_copy_and_paste_on_image(int32_t imgid, int32_t dest_imgid, gboolean merge, GList *ops, gboolean copy_iop_order);
+int dt_history_copy_and_paste_on_image(int32_t imgid, int32_t dest_imgid, gboolean merge, GList *ops, gboolean copy_iop_order, const gboolean copy_full);
 
 /** delete all history for the given image */
 void dt_history_delete_on_image(int32_t imgid);
@@ -75,23 +76,32 @@ void dt_history_delete_on_image_ext(int32_t imgid, gboolean undo);
 /** copy history from imgid and pasts on selected images, merge or overwrite... */
 gboolean dt_history_copy(int imgid);
 gboolean dt_history_copy_parts(int imgid);
-gboolean dt_history_paste_on_list(GList *list, gboolean undo);
-gboolean dt_history_paste_parts_on_list(GList *list, gboolean undo);
+gboolean dt_history_paste_on_list(const GList *list, gboolean undo);
+gboolean dt_history_paste_parts_on_list(const GList *list, gboolean undo);
+
+static inline gboolean dt_history_module_skip_copy(const int flags)
+{
+  return flags & (IOP_FLAGS_DEPRECATED | IOP_FLAGS_UNSAFE_COPY | IOP_FLAGS_HIDDEN);
+}
 
 /** load a dt file and applies to selected images */
-int dt_history_load_and_apply_on_list(gchar *filename, GList *list);
+int dt_history_load_and_apply_on_list(gchar *filename, const GList *list);
 
 /** load a dt file and applies to specified image */
 int dt_history_load_and_apply(int imgid, gchar *filename, int history_only);
 
 /** delete historystack of selected images */
-gboolean dt_history_delete_on_list(GList *list, gboolean undo);
+gboolean dt_history_delete_on_list(const GList *list, gboolean undo);
 
 /** compress history stack */
-int dt_history_compress_on_list(GList *imgs);
-void dt_history_compress_on_image(int32_t imgid);
+int dt_history_compress_on_list(const GList *imgs);
+void dt_history_compress_on_image(const int32_t imgid);
+
+/** truncate history stack */
+void dt_history_truncate_on_image(const int32_t imgid, const int32_t history_end);
+
 /* set or clear a tag representing an error state while compressing history */
-void dt_history_set_compress_problem(int32_t imgid, gboolean set);
+void dt_history_set_compress_problem(const int32_t imgid, const gboolean set);
 /* duplicate an history list */
 GList *dt_history_duplicate(GList *hist);
 
@@ -117,10 +127,10 @@ gboolean dt_history_check_module_exists(int32_t imgid, const char *operation);
 void dt_history_hash_write_from_history(const int32_t imgid, const dt_history_hash_t type);
 
 /** return the hash history status */
-const dt_history_hash_t dt_history_hash_get_status(const int32_t imgid);
+dt_history_hash_t dt_history_hash_get_status(const int32_t imgid);
 
 /** return true if mipmap_hash = current_hash */
-const gboolean dt_history_hash_get_mipmap_sync(const int32_t imgid);
+gboolean dt_history_hash_is_mipmap_synced(const int32_t imgid);
 
 /** update mipmap hash to db (= current_hash) */
 void dt_history_hash_set_mipmap(const int32_t imgid);

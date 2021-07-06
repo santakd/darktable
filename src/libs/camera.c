@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -138,7 +138,7 @@ static dt_lib_camera_property_t *_lib_property_add_new(dt_lib_camera_t *lib, con
       dt_bauhaus_widget_set_label(prop->values, NULL, label);
       g_object_ref_sink(prop->values);
 
-      prop->osd = DTGTK_TOGGLEBUTTON(dtgtk_togglebutton_new(dtgtk_cairo_paint_eye, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL));
+      prop->osd = DTGTK_TOGGLEBUTTON(dtgtk_togglebutton_new(dtgtk_cairo_paint_eye, CPF_STYLE_FLAT, NULL));
       g_object_ref_sink(prop->osd);
       gtk_widget_set_tooltip_text(GTK_WIDGET(prop->osd), _("toggle view property in center view"));
       do
@@ -188,7 +188,7 @@ static void _camera_property_value_changed(const dt_camera_t *camera, const char
   }
 }
 
-/** Invoked when accesibility of a property is changed. */
+/** Invoked when accessibility of a property is changed. */
 static void _camera_property_accessibility_changed(const dt_camera_t *camera, const char *name,
                                                    gboolean read_only, void *data)
 {
@@ -254,11 +254,7 @@ static void _show_property_popupmenu_clicked(GtkWidget *widget, gpointer user_da
 {
   dt_lib_camera_t *lib = (dt_lib_camera_t *)user_data;
 
-#if GTK_CHECK_VERSION(3, 22, 0)
-  gtk_menu_popup_at_pointer(lib->gui.properties_menu, NULL);
-#else
-  gtk_menu_popup(lib->gui.properties_menu, NULL, NULL, NULL, NULL, 1, gtk_get_current_event_time());
-#endif
+  dt_gui_menu_popup(lib->gui.properties_menu, widget, GDK_GRAVITY_SOUTH_EAST, GDK_GRAVITY_NORTH_EAST);
 }
 
 static void _lib_property_add_to_gui(dt_lib_camera_property_t *prop, dt_lib_camera_t *lib)
@@ -363,9 +359,9 @@ static void _expose_info_bar(dt_lib_module_t *self, cairo_t *cr, int32_t width, 
 
   // Let's cook up the middle part of infobar
   gchar center[1024] = { 0 };
-  for(guint i = 0; i < g_list_length(lib->gui.properties); i++)
+  for(GList *l = lib->gui.properties; l; l = g_list_next(l))
   {
-    dt_lib_camera_property_t *prop = (dt_lib_camera_property_t *)g_list_nth_data(lib->gui.properties, i);
+    dt_lib_camera_property_t *prop = (dt_lib_camera_property_t *)l->data;
     if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(prop->osd)) == TRUE)
     {
       g_strlcat(center, "      ", sizeof(center));
@@ -425,12 +421,15 @@ void gui_init(dt_lib_module_t *self)
   lib->gui.main_grid = GTK_GRID(self->widget);
   gtk_grid_set_row_spacing(GTK_GRID(self->widget), DT_PIXEL_APPLY_DPI(5));
 
+  gtk_grid_set_column_homogeneous(GTK_GRID(self->widget), FALSE);
+
   GtkBox *hbox;
 
   // Camera control
   GtkWidget *label = dt_ui_section_label_new(_("camera control"));
+  gtk_widget_set_hexpand(label, TRUE);
   gtk_grid_attach(GTK_GRID(self->widget), label, lib->gui.rows++, 0, 2, 1);
-  dt_gui_add_help_link(self->widget, "camera_settings.html#camera_settings");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("camera_settings"));
 
   GtkWidget *modes_label = gtk_label_new(_("modes"));
   GtkWidget *timer_label = gtk_label_new(_("timer (s)"));
@@ -451,11 +450,11 @@ void gui_init(dt_lib_module_t *self)
 
   // capture modes buttons
   lib->gui.toggle_timer = DTGTK_TOGGLEBUTTON(
-      dtgtk_togglebutton_new(dtgtk_cairo_paint_timer, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL));
+      dtgtk_togglebutton_new(dtgtk_cairo_paint_timer, CPF_STYLE_FLAT, NULL));
   lib->gui.toggle_sequence = DTGTK_TOGGLEBUTTON(
-      dtgtk_togglebutton_new(dtgtk_cairo_paint_filmstrip, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL));
+      dtgtk_togglebutton_new(dtgtk_cairo_paint_filmstrip, CPF_STYLE_FLAT, NULL));
   lib->gui.toggle_bracket = DTGTK_TOGGLEBUTTON(
-      dtgtk_togglebutton_new(dtgtk_cairo_paint_bracket, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL));
+      dtgtk_togglebutton_new(dtgtk_cairo_paint_bracket, CPF_STYLE_FLAT, NULL));
 
   hbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
   gtk_box_pack_start(hbox, GTK_WIDGET(lib->gui.toggle_timer), TRUE, TRUE, 0);
@@ -507,7 +506,7 @@ void gui_init(dt_lib_module_t *self)
   // Camera settings
   label = dt_ui_section_label_new(_("properties"));
   gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(label), 0, lib->gui.rows++, 2, 1);
-  dt_gui_add_help_link(self->widget, "camera_settings.html#camera_settings");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("camera_settings"));
 
   lib->gui.prop_start = lib->gui.rows -1;
   lib->gui.prop_end = lib->gui.rows;
@@ -515,8 +514,8 @@ void gui_init(dt_lib_module_t *self)
 
   // user specified properties
   label = dt_ui_section_label_new(_("additional properties"));
-  gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(label), 0, lib->gui.rows++, 1, 1);
-  dt_gui_add_help_link(self->widget, "camera_settings.html#camera_settings");
+  gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(label), 0, lib->gui.rows++, 2, 1);
+  dt_gui_add_help_link(self->widget, dt_get_help_url("camera_settings"));
 
   label = gtk_label_new(_("label"));
   gtk_widget_set_halign(label, GTK_ALIGN_START);
@@ -599,8 +598,7 @@ void view_enter(struct dt_lib_module_t *self,struct dt_view_t *old_view,struct d
   GSList *options = dt_conf_all_string_entries("plugins/capture/tethering/properties");
   if(options)
   {
-    GSList *item = options;
-    do
+    for(GSList *item = options; item; item = g_slist_next(item))
     {
       dt_conf_string_entry_t *entry = (dt_conf_string_entry_t *)item->data;
 
@@ -612,7 +610,7 @@ void view_enter(struct dt_lib_module_t *self,struct dt_view_t *old_view,struct d
 
       if((prop = _lib_property_add_new(lib, entry->key, entry->value)) != NULL)
         _lib_property_add_to_gui(prop, lib);
-    } while((item = g_slist_next(item)) != NULL);
+    }
     g_slist_free_full(options, dt_conf_string_entry_free);
   }
   /* build the propertymenu  we do it now because it needs an actual camera */

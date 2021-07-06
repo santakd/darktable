@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2018-2020 darktable developers.
+    Copyright (C) 2018-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -31,7 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 
-// pbm -- portable bit map. values are either 0 or 1, singel channel
+// pbm -- portable bit map. values are either 0 or 1, single channel
 static dt_imageio_retval_t _read_pbm(dt_image_t *img, FILE*f, float *buf)
 {
   dt_imageio_retval_t result = DT_IMAGEIO_OK;

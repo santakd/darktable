@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2020 darktable developers.
+   Copyright (C) 2013-2021 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,8 +18,9 @@
 #include "lua/tags.h"
 #include "common/darktable.h"
 #include "common/debug.h"
-#include "common/tags.h"
 #include "common/image.h"
+#include "common/tags.h"
+#include "control/signal.h"
 #include "lua/image.h"
 #include "lua/types.h"
 
@@ -160,17 +161,14 @@ static int tag_delete(lua_State *L)
   }
   sqlite3_finalize(stmt);
 
-  dt_tag_remove(tagid, TRUE);
+  if(dt_tag_remove(tagid, TRUE))
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
 
-  GList *list_iter;
-  if((list_iter = g_list_first(tagged_images)) != NULL)
+  for(const GList *list_iter = tagged_images; list_iter; list_iter = g_list_next(list_iter))
   {
-    do
-    {
-      dt_image_synch_xmp(GPOINTER_TO_INT(list_iter->data));
-    } while((list_iter = g_list_next(list_iter)) != NULL);
+    dt_image_synch_xmp(GPOINTER_TO_INT(list_iter->data));
   }
-  g_list_free(g_list_first(tagged_images));
+  g_list_free(tagged_images);
 
   return 0;
 }
@@ -190,8 +188,11 @@ int dt_lua_tag_attach(lua_State *L)
     luaA_to(L, dt_lua_tag_t, &tagid, 1);
     luaA_to(L, dt_lua_image_t, &imgid, 2);
   }
-  dt_tag_attach_from_gui(tagid, imgid, TRUE, TRUE);
-  dt_image_synch_xmp(imgid);
+  if(dt_tag_attach(tagid, imgid, TRUE, TRUE))
+  {
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
+    dt_image_synch_xmp(imgid);
+  }
   return 0;
 }
 
@@ -209,8 +210,11 @@ int dt_lua_tag_detach(lua_State *L)
     luaA_to(L, dt_lua_tag_t, &tagid, 1);
     luaA_to(L, dt_lua_image_t, &imgid, 2);
   }
-  dt_tag_detach(tagid, imgid, TRUE, TRUE);
-  dt_image_synch_xmp(imgid);
+  if(dt_tag_detach(tagid, imgid, TRUE, TRUE))
+  {
+    dt_image_synch_xmp(imgid);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
+  }
   return 0;
 }
 

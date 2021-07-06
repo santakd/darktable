@@ -3,14 +3,17 @@ add_subdirectory(external)
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
+include(CheckCXXSymbolExists)
 
 #
 # Add files for libdarktable
 #
 FILE(GLOB SOURCE_FILES
   "bauhaus/bauhaus.c"
+  "common/atomic.c"
   "common/bilateral.c"
   "common/bilateralcl.c"
+  "common/box_filters.c"
   "common/cache.c"
   "common/calculator.c"
   "common/collection.c"
@@ -25,6 +28,7 @@ FILE(GLOB SOURCE_FILES
   "common/database.c"
   "common/dbus.c"
   "common/dtpthread.c"
+  "common/eaw.c"
   "common/exif.cc"
   "common/film.c"
   "common/file_location.c"
@@ -38,6 +42,7 @@ FILE(GLOB SOURCE_FILES
   "common/image.c"
   "common/image_cache.c"
   "common/image_compression.c"
+  "common/imagebuf.c"
   "common/imageio.c"
   "common/imageio_jpeg.c"
   "common/imageio_png.c"
@@ -59,12 +64,14 @@ FILE(GLOB SOURCE_FILES
   "common/mipmap_cache.c"
   "common/module.c"
   "common/noiseprofiles.c"
+  "common/nlmeans_core.c"
   "common/pdf.c"
   "common/presets.c"
   "common/styles.c"
   "common/selection.c"
   "common/system_signal_handling.c"
   "common/tags.c"
+  "common/map_locations.c"
   "common/utility.c"
   "common/variables.c"
   "common/pwstorage/backend_kwallet.c"
@@ -93,14 +100,25 @@ FILE(GLOB SOURCE_FILES
   "develop/develop.c"
   "develop/imageop.c"
   "develop/imageop_math.c"
+  "develop/imageop_gui.c"
   "develop/lightroom.c"
   "develop/pixelpipe.c"
   "develop/blend.c"
   "develop/blend_gui.c"
+  "develop/blends/blendif_lab.c"
+  "develop/blends/blendif_raw.c"
+  "develop/blends/blendif_rgb_hsl.c"
+  "develop/blends/blendif_rgb_jzczhz.c"
   "develop/tiling.c"
   "common/dwt.c"
   "common/heal.c"
+  "develop/masks/brush.c"
+  "develop/masks/circle.c"
+  "develop/masks/group.c"
+  "develop/masks/ellipse.c"
+  "develop/masks/gradient.c"
   "develop/masks/masks.c"
+  "develop/masks/path.c"
   "develop/format.c"
   "dtgtk/button.c"
   "dtgtk/culling.c"
@@ -133,7 +151,13 @@ FILE(GLOB HEADER_FILES "*.h" "common/*.h" "external/OpenCL/CL/*.h" "control/*.h"
 if(APPLE)
   list(APPEND SOURCE_FILES "osx/osx.mm")
   list(APPEND HEADER_FILES "osx/osx.h")
-  set_source_files_properties(osx/osx.mm PROPERTIES LANGUAGE CXX)
+  include(CheckLanguage)
+  check_language(OBJCXX)
+  if(CMAKE_OBJCXX_COMPILER)
+    enable_language(OBJCXX)
+  else()
+    set_source_files_properties(osx/osx.mm PROPERTIES LANGUAGE CXX)
+  endif()
 endif(APPLE)
 
 if(WIN32)
@@ -260,16 +284,16 @@ if(USE_OPENMP)
 endif(USE_OPENMP)
 
 if(USE_DARKTABLE_PROFILING)
-  add_definitions(-DUSE_DARKTABLE_PROFILING)
-  set(SOURCES ${SOURCES} "common/profiling.c")
+	add_definitions(-DUSE_DARKTABLE_PROFILING)
+	set(SOURCES ${SOURCES} "common/profiling.c")
 endif()
 
 #
 # Find all other required libraries for building
 #
 # GTK3 does pull glib, but this allows us to check for the version
-find_package(Glib 2.40 REQUIRED)
-add_definitions("-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_40")
+find_package(Glib 2.56 REQUIRED)
+add_definitions("-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_56")
 add_definitions("-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_MIN_REQUIRED")
 include_directories(SYSTEM ${Glib_INCLUDE_DIRS})
 list(APPEND LIBS ${Glib_LIBRARIES})
@@ -287,7 +311,7 @@ include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
 list(APPEND LIBS ${LIBXML2_LIBRARIES})
 add_definitions(${LIBXML2_DEFINITIONS})
 
-# used to launch a tiny http server, used by facebook exporter
+# used to launch a tiny http server, which could be used by OAuth services
 find_package(LibSoup2)
 if(LibSoup2_FOUND)
   include_directories(SYSTEM ${LibSoup2_INCLUDE_DIRS})
@@ -305,7 +329,12 @@ if(USE_CAMERA_SUPPORT)
 endif(USE_CAMERA_SUPPORT)
 
 if(USE_OPENEXR)
-  find_package(OpenEXR)
+  find_package(OpenEXR 3.0 CONFIG)
+  if(TARGET OpenEXR::OpenEXR)
+    set(OpenEXR_LIBRARIES OpenEXR::OpenEXR)
+  else()
+    find_package(OpenEXR)
+  endif()
   if(OpenEXR_FOUND)
     include_directories(SYSTEM ${OpenEXR_INCLUDE_DIRS})
     list(APPEND LIBS ${OpenEXR_LIBRARIES})
@@ -324,7 +353,7 @@ if(USE_WEBP)
 endif(USE_WEBP)
 
 if (USE_AVIF)
-    find_package(libavif 0.7.2 CONFIG)
+    find_package(libavif 0.8.2 CONFIG)
     if (TARGET avif)
         list(APPEND LIBS avif)
         add_definitions(-DHAVE_LIBAVIF=1)
@@ -365,6 +394,25 @@ find_package(Exiv2 0.24 REQUIRED)
 include_directories(SYSTEM ${Exiv2_INCLUDE_DIRS})
 list(APPEND LIBS ${Exiv2_LIBRARIES})
 add_definitions(${Exiv2_DEFINITIONS})
+
+# Optionally enable ISOBMFF support in Exiv2
+if (USE_ISOBMFF)
+  if(Exiv2_VERSION VERSION_GREATER_EQUAL "0.27.4")
+    # exiv2 >= 0.27.4 provides optional support for ISOBMFF files.
+    # This must be manually enabled during exiv2 build and can be checked with
+    # the EXV_ENABLE_BMFF symbol.
+    check_cxx_symbol_exists(EXV_ENABLE_BMFF "exiv2/exiv2.hpp" HAVE_EXV_ENABLE_BMFF)
+    if(HAVE_EXV_ENABLE_BMFF)
+      add_definitions(-DHAVE_LIBEXIV2_WITH_ISOBMFF=1)
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 heif CACHE INTERNAL "")
+      message(STATUS "Exiv2 >= 0.27.4 found with ISOBMFF support (CR3, AVIF, HEIF)")
+    else()
+      message(STATUS "Exiv2 >= 0.27.4 found, but was not compiled with ISOBMFF support (CR3, AVIF, HEIF)")
+    endif()
+  else()
+    message(STATUS "Exiv2 < 0.27.4 found, no support for ISOBMFF files (CR3, AVIF, HEIF)")
+  endif()
+endif()
 
 if(USE_OPENJPEG)
   find_package(OpenJPEG)
@@ -412,11 +460,11 @@ endif(USE_KWALLET)
 
 if(USE_MAC_INTEGRATION)
   find_package(MacIntegration)
-  if(MACINTEGRATION_FOUND)
+  if(MacIntegration_FOUND)
     include_directories(SYSTEM ${MacIntegration_INCLUDE_DIRS})
     list(APPEND LIBS ${MacIntegration_LIBRARIES})
     add_definitions("-DMAC_INTEGRATION")
-  endif(MACINTEGRATION_FOUND)
+  endif(MacIntegration_FOUND)
 endif(USE_MAC_INTEGRATION)
 
 if(USE_UNITY)
@@ -462,6 +510,15 @@ if(USE_GMIC)
   endif(GMIC_FOUND)
 endif(USE_GMIC)
 
+if(USE_ICU)
+  find_package(ICU)
+  if(ICU_FOUND)
+    add_definitions(-DHAVE_ICU -DSQLITE_CORE -DSQLITE_ENABLE_ICU)
+    list(APPEND LIBS ${ICU_LIBRARIES})
+    set(SOURCES ${SOURCES} "common/sqliteicu.c")
+  endif(ICU_FOUND)
+endif(USE_ICU)
+
 #
 # Add HAVE_xxx defines used by darktable
 #
@@ -481,7 +538,7 @@ endif(USE_OPENCL)
 
 
 if(Gphoto2_FOUND)
-  set(SOURCES ${SOURCES} "common/camera_control.c" "control/jobs/camera_jobs.c" "gui/camera_import_dialog.c" )
+  set(SOURCES ${SOURCES} "common/camera_control.c" "control/jobs/camera_jobs.c" )
   add_definitions("-DHAVE_GPHOTO2")
 
   # Gphoto 2.5 changed the prototype of a set of callback functions.
@@ -555,15 +612,9 @@ if(NOT CUSTOM_CFLAGS)
   #endif()
 
   #-g MUST be set for ALL builds, or there will be no support for them when bugs happen
-
-  # TODO: check if these flags bring some good :
-  # -ftree-loop-distribution -fivopts -fipa-matrix-reorg -ftracer -fvect-cost-model -fvariable-expansion-in-unroller
-  # -fprefetch-loop-arrays -ftree-vect-loop-version -freorder-blocks-and-partition -fmodulo-sched-allow-regmoves
-  # -ftree-loop-im -ftree-loop-ivcanon -fsplit-ivs-in-unroller -funroll-loops
-  # also, in IOPs, in-loops branches could be forced to be compiled as different loops variants
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2")
-  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
   if(CMAKE_COMPILER_IS_GNUCC)
     if(BUILD_SSE2_CODEPATHS)
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
@@ -577,7 +628,7 @@ if(NOT CUSTOM_CFLAGS)
 
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2")
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
   if(CMAKE_COMPILER_IS_GNUCXX)
     if(BUILD_SSE2_CODEPATHS)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpmath=sse")
@@ -597,7 +648,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 # Generate config.h
 #
 string(REPLACE ";" "\", \"" DT_SUPPORTED_EXTENSIONS_STRING "${DT_SUPPORTED_EXTENSIONS}")
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config.cmake.h" "${CMAKE_CURRENT_BINARY_DIR}/config.h" @ONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config.cmake.h" "${DARKTABLE_BINDIR}/config.h" @ONLY)
 
 
 #
@@ -642,6 +693,7 @@ if(USE_LUA)
       "lua/lualib.c"
       "lua/luastorage.c"
       "lua/modules.c"
+      "lua/password.c"
       "lua/preferences.c"
       "lua/print.c"
       "lua/storage.c"
@@ -688,7 +740,7 @@ include_directories(SYSTEM ${Pugixml_INCLUDE_DIRS})
 list(APPEND LIBS ${Pugixml_LIBRARIES})
 
 if(NOT SOURCE_PACKAGE)
-  add_definitions(-Werror)
+  add_definitions(-Werror -Wfatal-errors )
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -754,6 +806,8 @@ if(BUILD_PRINT)
       "common/cups_print.h"
       "common/cups_print.c"
       "common/printprof.c"
+      "common/printing.h"
+      "common/printing.c"
       )
     set(SOURCES ${SOURCES} ${SOURCE_FILES_PRINT})
     list(APPEND LIBS ${CUPS_LIBRARIES})
@@ -774,6 +828,13 @@ else(USE_GAME)
   message(STATUS "Game: no")
 endif(USE_GAME)
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(HAVE_EXECINFO_H)
+    add_definitions("-DDT_HAVE_SIGNAL_TRACE")
+    message(STATUS "Signal debug: print-trace possible")
+  endif(HAVE_EXECINFO_H)
+endif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+
 #
 # set development flags for our code
 #
@@ -787,18 +848,30 @@ endif()
 #
 if(NOT ${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
   add_custom_command(
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_prefs.xsl ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.dtd ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.xml
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl ${CMAKE_SOURCE_DIR}/data/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
-    COMMAND ${Xsltproc_BIN} --nonet --stringparam HAVE_OPENCL ${HAVE_OPENCL} ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_prefs.xsl ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.xml > ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
+    COMMAND ${Xsltproc_BIN} --nonet --stringparam HAVE_OPENCL ${HAVE_OPENCL} ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl ${DARKTABLE_DATADIR}/darktableconfig.xml > ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
     COMMENT "Generating preferences"
+  )
+  add_custom_command(
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_darktablerc_conf.xsl ${DARKTABLE_DATADIR}/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/conf_gen.h
+    COMMAND ${Xsltproc_BIN} --nonet --stringparam HAVE_OPENCL ${HAVE_OPENCL} ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_darktablerc_conf.xsl ${DARKTABLE_DATADIR}/darktableconfig.xml > ${CMAKE_CURRENT_BINARY_DIR}/conf_gen.h
+    COMMENT "Generating configuration min/max/default/type"
   )
 else(NOT ${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
   if(NOT ${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
     add_custom_command(
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_prefs.xsl ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.dtd ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.xml
+      DEPENDS ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl ${CMAKE_SOURCE_DIR}/data/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
-      COMMAND ${Saxon_BIN} ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.xml ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_prefs.xsl HAVE_OPENCL=${HAVE_OPENCL} > ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
+      COMMAND ${Saxon_BIN} ${DARKTABLE_DATADIR}/darktableconfig.xml ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl HAVE_OPENCL=${HAVE_OPENCL} > ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
       COMMENT "Generating preferences"
+    )
+    add_custom_command(
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_darktablerc_conf.xsl ${DARKTABLE_DATADIR}/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/conf_gen.h
+      COMMAND ${Saxon_BIN} ${DARKTABLE_DATADIR}/darktableconfig.xml ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_darktablerc_conf.xsl HAVE_OPENCL=${HAVE_OPENCL} > ${CMAKE_CURRENT_BINARY_DIR}/conf_gen.h
+      COMMENT "Generating configuration min/max/default/type"
     )
   else(NOT ${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
     message(FATAL_ERROR "Don't know how to generate preferences")
@@ -807,22 +880,28 @@ endif(NOT ${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
 
 add_custom_target(
   generate_preferences ALL
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_prefs.xsl ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.dtd ${CMAKE_CURRENT_BINARY_DIR}/../data/darktableconfig.xml ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
+  DEPENDS ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl ${CMAKE_SOURCE_DIR}/data/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+add_custom_target(
+  generate_conf ALL
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate_darktablerc_conf.xsl ${DARKTABLE_DATADIR}/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml ${CMAKE_CURRENT_BINARY_DIR}/conf_gen.h
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 if(USE_XMLLINT)
-  add_dependencies(generate_preferences validate_darktableconfig_xml)
+  add_dependencies(generate_preferences validate_darktableconfig_xml generate_conf)
 endif(USE_XMLLINT)
 
 #
 # build libdarktable
 #
-add_library(lib_darktable SHARED ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h ${CMAKE_BINARY_DIR}/src/version_gen.c ${SOURCES})
+add_library(lib_darktable SHARED ${DARKTABLE_BINDIR}/preferences_gen.h ${DARKTABLE_BINDIR}/version_gen.c ${SOURCES})
 
 # cmake implicitly sets GENERATED on the source file in the directory of the custom command
 # since this isn't the same directory we do have to manually set it
-set_source_files_properties(${CMAKE_BINARY_DIR}/src/version_gen.c PROPERTIES GENERATED TRUE)
+set_source_files_properties(${DARKTABLE_BINDIR}/version_gen.c PROPERTIES GENERATED TRUE)
 
+add_dependencies(lib_darktable generate_conf)
 add_dependencies(lib_darktable generate_version)
 add_dependencies(lib_darktable generate_preferences)
 
@@ -842,6 +921,7 @@ endif()
 
 target_link_libraries(lib_darktable PUBLIC ${STATIC_LIBS})
 target_link_libraries(lib_darktable PRIVATE rawspeed)
+target_link_libraries(lib_darktable PRIVATE whereami)
 target_link_libraries(lib_darktable PUBLIC ${LIBS})
 
 unset(LIBS)
@@ -859,16 +939,16 @@ else(WIN32)
 endif(WIN32)
 
 # Compile views modules
-add_subdirectory(views)
+add_subdirectory(views ${DARKTABLE_LIBDIR}/views)
 
 # Compile lighttable modules
-add_subdirectory(libs)
+add_subdirectory(libs ${DARKTABLE_LIBDIR}/plugins/lighttable)
 
 # Compile darkroom modules
-add_subdirectory(iop)
+add_subdirectory(iop ${DARKTABLE_LIBDIR}/plugins)
 
 # Compile export modules
-add_subdirectory(imageio)
+add_subdirectory(imageio ${DARKTABLE_LIBDIR}/plugins/imageio)
 
 if(HAVE_OPENCL)
   # have a small test program, to be run as root on some systems to enable the driver to run cl stuff

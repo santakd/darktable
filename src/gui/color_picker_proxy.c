@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2018-2020 darktable developers.
+    Copyright (C) 2018-2021 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU Lesser General Public License as published by
@@ -49,13 +49,11 @@ static gboolean _iop_record_point_area(dt_iop_color_picker_t *self)
     {
       if(self->pick_pos[k] != self->module->color_picker_point[k])
       {
-      
         self->pick_pos[k] = self->module->color_picker_point[k];
         selection_changed = TRUE;
       }
-
     }
-    for(int k = 0; k < 4; k++) 
+    for(int k = 0; k < 4; k++)
     {
       if (self->pick_box[k] != self->module->color_picker_box[k])
       {
@@ -100,13 +98,13 @@ static void _iop_color_picker_apply(dt_iop_module_t *module, dt_dev_pixelpipe_io
   {
     if(!module->blend_data || !blend_color_picker_apply(module, module->picker->colorpick, piece))
     {
-      if(module->color_picker_apply) 
+      if(module->color_picker_apply)
         module->color_picker_apply(module, module->picker->colorpick, piece);
     }
   }
 }
 
-static void _iop_color_picker_reset(dt_iop_color_picker_t *picker, gboolean update)
+static void _iop_color_picker_reset(dt_iop_color_picker_t *picker)
 {
   if(picker)
   {
@@ -121,13 +119,13 @@ static void _iop_color_picker_reset(dt_iop_color_picker_t *picker, gboolean upda
   }
 }
 
-void dt_iop_color_picker_reset(dt_iop_module_t *module, gboolean update)
+void dt_iop_color_picker_reset(dt_iop_module_t *module, gboolean keep)
 {
   if(module && module->picker)
   {
-    if(strcmp(gtk_widget_get_name(module->picker->colorpick), "keep-active") != 0)
+    if(!keep || (strcmp(gtk_widget_get_name(module->picker->colorpick), "keep-active") != 0))
     {
-      _iop_color_picker_reset(module->picker, update);
+      _iop_color_picker_reset(module->picker);
       module->picker = NULL;
       module->request_color_pick = DT_REQUEST_COLORPICK_OFF;
     }
@@ -139,33 +137,32 @@ static void _iop_init_picker(dt_iop_color_picker_t *picker, dt_iop_module_t *mod
 {
   picker->module     = module;
   picker->kind       = kind;
-  picker->picker_cst = iop_cs_NONE;
+  picker->picker_cst = module ? module->default_colorspace(module, NULL, NULL) : iop_cs_NONE;
   picker->colorpick  = button;
-  
+
   for(int j = 0; j<2; j++) picker->pick_pos[j] = NAN;
   for(int j = 0; j < 4; j++) picker->pick_box[j] = NAN;
 
-  _iop_color_picker_reset(picker, TRUE);
+  _iop_color_picker_reset(picker);
 }
 
 static gboolean _iop_color_picker_callback_button_press(GtkWidget *button, GdkEventButton *e, dt_iop_color_picker_t *self)
 {
   dt_iop_module_t *module = self->module ? self->module : dt_iop_get_colorout_module();
 
-  if(!module || module->dt->gui->reset) return FALSE;
+  if(!module || darktable.gui->reset) return FALSE;
 
   // set module active if not yet the case
   if(module->off) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(module->off), TRUE);
 
-  const uint32_t state = e != NULL
-                        ? e->state
-                        : gdk_keymap_get_modifier_state(gdk_keymap_get_for_display(gdk_display_get_default()));
-  gboolean ctrl_key_pressed = (state & gtk_accelerator_get_default_mod_mask()) == GDK_CONTROL_MASK;
+  const GdkModifierType state = e != NULL ? e->state : dt_key_modifier_state();
+  const gboolean ctrl_key_pressed = dt_modifier_is(state, GDK_CONTROL_MASK);
   dt_iop_color_picker_kind_t kind = self->kind;
+
+  _iop_color_picker_reset(module->picker);
 
   if (module->picker != self || (ctrl_key_pressed && kind == DT_COLOR_PICKER_POINT_AREA))
   {
-    _iop_color_picker_reset(module->picker, TRUE);
     module->picker = self;
 
     ++darktable.gui->reset;
@@ -203,7 +200,6 @@ static gboolean _iop_color_picker_callback_button_press(GtkWidget *button, GdkEv
   }
   else
   {
-    _iop_color_picker_reset(module->picker, TRUE);
     module->picker = NULL;
     module->request_color_pick = DT_REQUEST_COLORPICK_OFF;
   }
@@ -220,8 +216,11 @@ static void _iop_color_picker_callback(GtkWidget *button, dt_iop_color_picker_t 
 
 void dt_iop_color_picker_set_cst(dt_iop_module_t *module, const dt_iop_colorspace_type_t picker_cst)
 {
-  if(module->picker) 
+  if(module->picker && module->picker->picker_cst != picker_cst)
+  {
     module->picker->picker_cst = picker_cst;
+    module->picker->pick_pos[0] = NAN; // trigger difference on next apply
+  }
 }
 
 dt_iop_colorspace_type_t dt_iop_color_picker_get_active_cst(dt_iop_module_t *module)
@@ -235,29 +234,44 @@ dt_iop_colorspace_type_t dt_iop_color_picker_get_active_cst(dt_iop_module_t *mod
 static void _iop_color_picker_signal_callback(gpointer instance, dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece,
                                               gpointer user_data)
 {
+  dt_develop_t *dev = module->dev;
+
+  // Invalidate the cache to ensure it will be fully recomputed.
+  // modules between colorin & colorout may need the work_profile
+  // to work properly. This will force colorin to be run and it
+  // will set the work_profile if needed.
+
+  if(!dev) return;
+
+  dev->preview_pipe->changed |= DT_DEV_PIPE_REMOVE;
+  dev->preview_pipe->cache_obsolete = 1;
+
   _iop_color_picker_apply(module, piece);
 }
 
 void dt_iop_color_picker_init(void)
 {
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_CONTROL_PICKERDATA_READY,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CONTROL_PICKERDATA_READY,
                             G_CALLBACK(_iop_color_picker_signal_callback), NULL);
 }
 
 void dt_iop_color_picker_cleanup(void)
 {
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_iop_color_picker_signal_callback), NULL);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_iop_color_picker_signal_callback), NULL);
 }
 
-GtkWidget *dt_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w)
+static GtkWidget *_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w,
+                                    const gboolean init_cst, const dt_iop_colorspace_type_t cst)
 {
   dt_iop_color_picker_t *color_picker = (dt_iop_color_picker_t *)g_malloc(sizeof(dt_iop_color_picker_t));
 
   if(w == NULL || GTK_IS_BOX(w))
   {
-    GtkWidget *button = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_BG_TRANSPARENT | CPF_DO_NOT_USE_BORDER, NULL);
+    GtkWidget *button = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_BG_TRANSPARENT, NULL);
     _iop_init_picker(color_picker, module, kind, button);
-    g_signal_connect_data(G_OBJECT(button), "button-press-event", 
+    if(init_cst)
+      color_picker->picker_cst = cst;
+    g_signal_connect_data(G_OBJECT(button), "button-press-event",
                           G_CALLBACK(_iop_color_picker_callback_button_press), color_picker, (GClosureNotify)g_free, 0);
     if (w) gtk_box_pack_start(GTK_BOX(w), button, FALSE, FALSE, 0);
 
@@ -265,14 +279,27 @@ GtkWidget *dt_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind
   }
   else
   {
-    dt_bauhaus_widget_set_quad_paint(w, dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+    dt_bauhaus_widget_set_quad_paint(w, dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT, NULL);
     dt_bauhaus_widget_set_quad_toggle(w, TRUE);
     _iop_init_picker(color_picker, module, kind, w);
-    g_signal_connect_data(G_OBJECT(w), "quad-pressed", 
+    if(init_cst)
+      color_picker->picker_cst = cst;
+    g_signal_connect_data(G_OBJECT(w), "quad-pressed",
                           G_CALLBACK(_iop_color_picker_callback), color_picker, (GClosureNotify)g_free, 0);
 
     return w;
   }
+}
+
+GtkWidget *dt_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w)
+{
+  return _color_picker_new(module, kind, w, FALSE, iop_cs_NONE);
+}
+
+GtkWidget *dt_color_picker_new_with_cst(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w,
+                                        const dt_iop_colorspace_type_t cst)
+{
+  return _color_picker_new(module, kind, w, TRUE, cst);
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

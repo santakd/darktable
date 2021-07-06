@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2020 darktable developers.
+   Copyright (C) 2013-2021 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -148,11 +148,30 @@ static void destroy_pref_element(pref_element *elt)
 
 static pref_element *pref_list = NULL;
 
+// get all the darktablerc keys
+static int get_keys(lua_State *L)
+{
+  dt_pthread_mutex_lock(&darktable.conf->mutex);
+  GList* keys = g_hash_table_get_keys(darktable.conf->table);
+  dt_pthread_mutex_unlock(&darktable.conf->mutex);
+
+  keys = g_list_sort(keys, (GCompareFunc) strcmp);
+  lua_newtable(L);
+  for(const GList* key = keys; key; key = g_list_next(key))
+  {
+    lua_pushstring(L, key->data);
+    luaL_ref(L, -2);
+  }
+  g_list_free(keys);
+  return 1;
+}
+  
 static void get_pref_name(char *tgt, size_t size, const char *script, const char *name)
 {
   snprintf(tgt, size, "lua/%s/%s", script, name);
 }
 
+// read lua and darktable prefs
 static int read_pref(lua_State *L)
 {
   const char *script = luaL_checkstring(L, 1);
@@ -161,7 +180,10 @@ static int read_pref(lua_State *L)
   luaA_to(L, lua_pref_type, &i, 3);
 
   char pref_name[1024];
-  get_pref_name(pref_name, sizeof(pref_name), script, name);
+  if(strcmp(script, "darktable") != 0)
+    get_pref_name(pref_name, sizeof(pref_name), script, name);
+  else 
+    snprintf(pref_name, sizeof(pref_name), "%s", name);
   switch(i)
   {
     case pref_enum:
@@ -212,6 +234,7 @@ static int read_pref(lua_State *L)
   return 1;
 }
 
+// write lua prefs
 static int write_pref(lua_State *L)
 {
   const char *script = luaL_checkstring(L, 1);
@@ -253,6 +276,21 @@ static int write_pref(lua_State *L)
   return 0;
 }
 
+// destroy lua prefs
+static int destroy_pref(lua_State *L)
+{
+  gboolean result;
+  const char *script = luaL_checkstring(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+
+  char pref_name[1024];
+  get_pref_name(pref_name, sizeof(pref_name), script, name);
+  dt_pthread_mutex_lock(&darktable.conf->mutex);
+  result = g_hash_table_remove(darktable.conf->table, pref_name);
+  dt_pthread_mutex_unlock(&darktable.conf->mutex);
+  lua_pushboolean(L, result);
+  return 1;
+}
 
 static void response_callback_enum(GtkDialog *dialog, gint response_id, pref_element *cur_elt)
 {
@@ -286,7 +324,9 @@ static void response_callback_file(GtkDialog *dialog, gint response_id, pref_ele
   {
     char pref_name[1024];
     get_pref_name(pref_name, sizeof(pref_name), cur_elt->script, cur_elt->name);
-    dt_conf_set_string(pref_name, gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(cur_elt->widget)));
+    gchar *file = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(cur_elt->widget));
+    dt_conf_set_string(pref_name, file);
+    g_free(file);
   }
 }
 
@@ -447,6 +487,7 @@ static gboolean reset_widget_lua(GtkWidget *label, GdkEventButton *event, pref_e
     lua_call(L,3,0);
     dt_lua_unlock();
     dt_conf_set_string(pref_name, old_str);
+    free(old_str);
     return TRUE;
   }
   return FALSE;
@@ -799,8 +840,7 @@ GtkGrid* init_tab_lua(GtkWidget *dialog, GtkWidget *stack)
   gtk_container_add(GTK_CONTAINER(viewport), grid);
   gtk_stack_add_titled(GTK_STACK(stack), scroll, _("lua options"), _("lua options"));
 
-  pref_element *cur_elt = pref_list;
-  while(cur_elt)
+  for(pref_element *cur_elt = pref_list; cur_elt; cur_elt = cur_elt->next)
   {
     char pref_name[1024];
     get_pref_name(pref_name, sizeof(pref_name), cur_elt->script, cur_elt->name);
@@ -815,7 +855,6 @@ GtkGrid* init_tab_lua(GtkWidget *dialog, GtkWidget *stack)
     gtk_widget_set_tooltip_text(cur_elt->widget, cur_elt->tooltip);
     gtk_grid_attach(GTK_GRID(grid), labelev, 0, line, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), cur_elt->widget, 1, line, 1, 1);
-    cur_elt = cur_elt->next;
     line++;
   }
   return GTK_GRID(grid);
@@ -852,6 +891,12 @@ int dt_lua_init_preferences(lua_State *L)
 
   lua_pushcfunction(L, write_pref);
   lua_setfield(L, -2, "write");
+
+  lua_pushcfunction(L, destroy_pref);
+  lua_setfield(L, -2, "destroy");
+
+  lua_pushcfunction(L, get_keys);
+  lua_setfield(L, -2, "get_keys");
 
   lua_pop(L, 1);
   return 0;
