@@ -18,16 +18,16 @@
 
 #include "develop/imageop.h"
 #include "bauhaus/bauhaus.h"
-#include "common/debug.h"
-#include "common/exif.h"
 #include "common/collection.h"
+#include "common/debug.h"
 #include "common/dtpthread.h"
+#include "common/exif.h"
+#include "common/history.h"
 #include "common/imagebuf.h"
 #include "common/imageio_rawspeed.h"
 #include "common/interpolation.h"
 #include "common/iop_group.h"
 #include "common/module.h"
-#include "common/history.h"
 #include "common/opencl.h"
 #include "common/usermanual_url.h"
 #include "control/control.h"
@@ -41,9 +41,10 @@
 #include "dtgtk/gradientslider.h"
 #include "dtgtk/icon.h"
 #include "gui/accelerators.h"
-#include "gui/gtk.h"
-#include "gui/presets.h"
 #include "gui/color_picker_proxy.h"
+#include "gui/gtk.h"
+#include "gui/guides.h"
+#include "gui/presets.h"
 #include "libs/modulegroups.h"
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
@@ -562,16 +563,7 @@ static void dt_iop_gui_delete_callback(GtkButton *button, dt_iop_module_t *modul
   // we update show params for multi-instances for each other instances
   dt_dev_modules_update_multishow(dev);
 
-  // we refresh the pipe
-  dev->pipe->changed |= DT_DEV_PIPE_REMOVE;
-  dev->preview_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  dev->preview2_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  dev->pipe->cache_obsolete = 1;
-  dev->preview_pipe->cache_obsolete = 1;
-  dev->preview2_pipe->cache_obsolete = 1;
-
-  // invalidate buffers and force redraw of darkroom
-  dt_dev_invalidate_all(dev);
+  dt_dev_pixelpipe_rebuild(dev);
 
   /* redraw */
   dt_control_queue_redraw_center();
@@ -654,20 +646,12 @@ static void dt_iop_gui_movedown_callback(GtkButton *button, dt_iop_module_t *mod
 
   dt_ioppr_check_iop_order(module->dev, 0, "dt_iop_gui_movedown_callback end");
 
-  // we rebuild the pipe
-  module->dev->pipe->changed |= DT_DEV_PIPE_REMOVE;
-  module->dev->preview_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  module->dev->preview2_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  module->dev->pipe->cache_obsolete = 1;
-  module->dev->preview_pipe->cache_obsolete = 1;
-  module->dev->preview2_pipe->cache_obsolete = 1;
-
   // rebuild the accelerators
   dt_iop_connect_accels_multi(module->so);
-  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_MODULE_MOVED);
 
-  // invalidate buffers and force redraw of darkroom
-  dt_dev_invalidate_all(module->dev);
+  dt_dev_pixelpipe_rebuild(module->dev);
+
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_MODULE_MOVED);
 }
 
 static void dt_iop_gui_moveup_callback(GtkButton *button, dt_iop_module_t *module)
@@ -698,20 +682,12 @@ static void dt_iop_gui_moveup_callback(GtkButton *button, dt_iop_module_t *modul
 
   dt_ioppr_check_iop_order(module->dev, 0, "dt_iop_gui_moveup_callback end");
 
-  // we rebuild the pipe
-  next->dev->pipe->changed |= DT_DEV_PIPE_REMOVE;
-  next->dev->preview_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  next->dev->preview2_pipe->changed |= DT_DEV_PIPE_REMOVE;
-  next->dev->pipe->cache_obsolete = 1;
-  next->dev->preview_pipe->cache_obsolete = 1;
-  next->dev->preview2_pipe->cache_obsolete = 1;
-
   // rebuild the accelerators
   dt_iop_connect_accels_multi(module->so);
-  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_MODULE_MOVED);
 
-  // invalidate buffers and force redraw of darkroom
-  dt_dev_invalidate_all(next->dev);
+  dt_dev_pixelpipe_rebuild(next->dev);
+
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_DEVELOP_MODULE_MOVED);
 }
 
 dt_iop_module_t *dt_iop_gui_duplicate(dt_iop_module_t *base, gboolean copy_params)
@@ -798,15 +774,7 @@ dt_iop_module_t *dt_iop_gui_duplicate(dt_iop_module_t *base, gboolean copy_param
 
   if(module->dev->gui_attached)
   {
-    module->dev->pipe->changed |= DT_DEV_PIPE_REMOVE;
-    module->dev->preview_pipe->changed |= DT_DEV_PIPE_REMOVE;
-    module->dev->preview2_pipe->changed |= DT_DEV_PIPE_REMOVE;
-    module->dev->pipe->cache_obsolete = 1;
-    module->dev->preview_pipe->cache_obsolete = 1;
-    module->dev->preview2_pipe->cache_obsolete = 1;
-
-    // invalidate buffers and force redraw of darkroom
-    dt_dev_invalidate_all(module->dev);
+    dt_dev_pixelpipe_rebuild(module->dev);
   }
 
   /* update ui to new parameters */
@@ -1815,8 +1783,16 @@ void dt_iop_gui_update(dt_iop_module_t *module)
   {
     if(module->gui_data)
     {
-      if(module->params && module->gui_update) module->gui_update(module);
-
+      if(module->params && module->gui_update)
+      {
+        if(module->widget && dt_conf_get_bool("plugins/darkroom/show_warnings"))
+        {
+          GtkWidget *label_widget = dt_gui_container_first_child(GTK_CONTAINER(gtk_widget_get_parent(module->widget)));
+          if(!g_strcmp0(gtk_widget_get_name(label_widget), "iop-plugin-warning")) gtk_widget_destroy(label_widget);
+          module->has_trouble = FALSE;
+        }
+        module->gui_update(module);
+      }
       dt_iop_gui_update_blending(module);
       dt_iop_gui_update_expanded(module);
     }
@@ -1960,6 +1936,9 @@ void dt_iop_request_focus(dt_iop_module_t *module)
   /* update sticky accels window */
   if(darktable.view_manager->accels_window.window && darktable.view_manager->accels_window.sticky)
     dt_view_accels_refresh(darktable.view_manager);
+
+  // update guides button state
+  dt_guides_update_button_state();
 
   dt_control_change_cursor(GDK_LEFT_PTR);
   dt_control_queue_redraw_center();
@@ -2215,7 +2194,7 @@ gboolean dt_iop_show_hide_header_buttons(GtkWidget *header, GdkEventCrossing *ev
      event->detail == GDK_NOTIFY_INFERIOR ||
      event->mode != GDK_CROSSING_NORMAL)) return TRUE;
 
-  gchar *config = dt_conf_get_string("darkroom/ui/hide_header_buttons");
+  const char *config = dt_conf_get_string_const("darkroom/ui/hide_header_buttons");
 
   gboolean dynamic = FALSE;
   double opacity = 1.0;
@@ -2232,8 +2211,6 @@ gboolean dt_iop_show_hide_header_buttons(GtkWidget *header, GdkEventCrossing *ev
     ;
   else
     dynamic = TRUE;
-
-  g_free(config);
 
   GList *children = gtk_container_get_children(GTK_CONTAINER(header));
 
@@ -2670,7 +2647,7 @@ void dt_iop_set_darktable_iop_table()
   if(module_list)
   {
     module_list[strlen(module_list) - 1] = '\0';
-    char *query = dt_util_dstrcat(NULL, "INSERT INTO memory.darktable_iop_names (operation, name) VALUES %s", module_list);
+    gchar *query = g_strdup_printf("INSERT INTO memory.darktable_iop_names (operation, name) VALUES %s", module_list);
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -3068,7 +3045,7 @@ char *dt_iop_warning_message(const char *message)
   if(dt_conf_get_bool("plugins/darkroom/show_warnings"))
     return g_strdup_printf("<span foreground='red'>⚠</span> %s", message);
   else
-    return g_strdup_printf("%s", message);
+    return g_strdup(message);
 }
 
 char *dt_iop_set_description(dt_iop_module_t *module, const char *main_text, const char *purpose, const char *input, const char *process,

@@ -103,7 +103,7 @@ inline float4 sqf(const float4 in)
 }
 
 inline void rotation_matrix_isophote(const float4 c2,
-                                     const float4 cos_theta, const float4 sin_theta,
+                                     const float4 cos_theta_sin_theta,
                                      const float4 cos_theta2, const float4 sin_theta2,
                                      float4 a[2][2])
 {
@@ -112,13 +112,13 @@ inline void rotation_matrix_isophote(const float4 c2,
   //  [ a12, a22 ]]
   // taken from https://www.researchgate.net/publication/220663968
   // c dampens the gradient direction
-  a[0][0] = clamp(cos_theta2 + c2 * sin_theta2, 0.f, 1.f);
-  a[1][1] = clamp(c2 * cos_theta2 + sin_theta2, 0.f, 1.f);
-  a[0][1] = a[1][0] = clamp((c2 - 1.0f) * cos_theta * sin_theta, 0.f, 1.f);
+  a[0][0] = cos_theta2 + c2 * sin_theta2;
+  a[1][1] = c2 * cos_theta2 + sin_theta2;
+  a[0][1] = a[1][0] = (c2 - 1.0f) * cos_theta_sin_theta;
 }
 
 inline void rotation_matrix_gradient(const float4 c2,
-                                     const float4 cos_theta, const float4 sin_theta,
+                                     const float4 cos_theta_sin_theta,
                                      const float4 cos_theta2, const float4 sin_theta2,
                                      float4 a[2][2])
 {
@@ -127,9 +127,9 @@ inline void rotation_matrix_gradient(const float4 c2,
   //  [ a12, a22 ]]
   // based on https://www.researchgate.net/publication/220663968 and inverted
   // c dampens the isophote direction
-  a[0][0] = clamp(c2 * cos_theta2 + sin_theta2, 0.f, 1.f);
-  a[1][1] = clamp(cos_theta2 + c2 * sin_theta2, 0.f, 1.f);
-  a[0][1] = a[1][0] = clamp((1.0f - c2) * cos_theta * sin_theta, 0.f, 1.f);
+  a[0][0] = c2 * cos_theta2 + sin_theta2;
+  a[1][1] = cos_theta2 + c2 * sin_theta2;
+  a[0][1] = a[1][0] = (1.0f - c2) * cos_theta_sin_theta;
 }
 
 
@@ -173,7 +173,7 @@ inline void isotrope_laplacian(float4 kern[9])
 
 
 inline void compute_kern(const float4 c2,
-                           const float4 cos_theta, const float4 sin_theta,
+                           const float4 cos_theta_sin_theta,
                            const float4 cos_theta2, const float4 sin_theta2,
                            const dt_isotropy_t isotropy_type,
                            float4 kern[9])
@@ -191,14 +191,14 @@ inline void compute_kern(const float4 c2,
     case(DT_ISOTROPY_ISOPHOTE):
     {
       float4 a[2][2] = { { (float4)0.f } };
-      rotation_matrix_isophote(c2, cos_theta, sin_theta, cos_theta2, sin_theta2, a);
+      rotation_matrix_isophote(c2, cos_theta_sin_theta, cos_theta2, sin_theta2, a);
       build_matrix(a, kern);
       break;
     }
     case(DT_ISOTROPY_GRADIENT):
     {
       float4 a[2][2] = { { (float4)0.f } };
-      rotation_matrix_gradient(c2, cos_theta, sin_theta, cos_theta2, sin_theta2, a);
+      rotation_matrix_gradient(c2, cos_theta_sin_theta, cos_theta2, sin_theta2, a);
       build_matrix(a, kern);
       break;
     }
@@ -222,6 +222,8 @@ diffuse_pde(read_only image2d_t HF, read_only image2d_t LF,
   if(x >= width || y >= height) return;
 
   const char opacity = (has_mask) ? read_imageui(mask, sampleri, (int2)(x, y)).x : 1;
+
+  const float4 regularization_factor = regularization * current_radius_square / 9.f;
 
   float4 out;
 
@@ -249,39 +251,47 @@ diffuse_pde(read_only image2d_t HF, read_only image2d_t LF,
       }
 
     // build the local anisotropic convolution filters for gradients and laplacians
-    // we use the low freq layer all the type as it is less likely to be nosy
     float4 gradient[2], laplacian[2];
     find_gradient(neighbour_pixel_LF, gradient);
     find_gradient(neighbour_pixel_HF, laplacian);
 
-    const float4 magnitude_grad = hypot(gradient[0], gradient[1]);
-    const float4 magnitude_lapl = hypot(laplacian[0], laplacian[1]);
+    const float4 magnitude_grad = native_sqrt(sqf(gradient[0]) + sqf(gradient[1]));
+    // Compute cos(arg(grad)) = dx / hypot - force arg(grad) = 0 if hypot == 0
+    gradient[0] = (magnitude_grad != 0.f) ? gradient[0] / magnitude_grad
+                                          : 1.f; // cos(0)
+    // Compute sin (arg(grad))= dy / hypot - force arg(grad) = 0 if hypot == 0
+    gradient[1] = (magnitude_grad != 0.f) ? gradient[1] / magnitude_grad
+                                          : 0.f; // sin(0)
+    // Warning : now gradient[2] = { cos(arg(grad)) , sin(arg(grad)) }
 
-    const float4 theta_grad = atan2(gradient[1], gradient[0]);
-    const float4 theta_lapl = atan2(laplacian[1], laplacian[0]);
+    const float4 magnitude_lapl = native_sqrt(sqf(laplacian[0]) + sqf(laplacian[1]));
+    // Compute cos(arg(lapl)) = dx / hypot - force arg(lapl) = 0 if hypot == 0
+    laplacian[0] = (magnitude_lapl != 0.f) ? laplacian[0] / magnitude_lapl
+                                           : 1.f; // cos(0)
+    // Compute sin (arg(lapl))= dy / hypot - force arg(lapl) = 0 if hypot == 0
+    laplacian[1] = (magnitude_lapl != 0.f) ? laplacian[1] / magnitude_lapl
+                                           : 0.f; // sin(0)
+    // Warning : now laplacian[2] = { cos(arg(lapl)) , sin(arg(lapl)) }
 
-    const float4 cos_theta_grad = native_cos(theta_grad);
-    const float4 cos_theta_lapl = native_cos(theta_lapl);
-    const float4 sin_theta_grad = native_sin(theta_grad);
-    const float4 sin_theta_lapl = native_sin(theta_lapl);
-
-    const float4 cos_theta_grad_sq = sqf(cos_theta_grad);
-    const float4 sin_theta_grad_sq = sqf(sin_theta_grad);
-    const float4 cos_theta_lapl_sq = sqf(cos_theta_lapl);
-    const float4 sin_theta_lapl_sq = sqf(sin_theta_lapl);
+    const float4 cos_theta_grad_sq = sqf(gradient[0]);
+    const float4 sin_theta_grad_sq = sqf(gradient[1]);
+    const float4 cos_theta_sin_theta_grad = gradient[0] * gradient[1];
+    const float4 cos_theta_lapl_sq = sqf(laplacian[0]);
+    const float4 sin_theta_lapl_sq = sqf(laplacian[1]);
+    const float4 cos_theta_sin_theta_lapl = laplacian[0] * laplacian[1];
 
     // c² in https://www.researchgate.net/publication/220663968
     // warning : in c2[s], s is the order of the derivative
-    const float4 c2[4] = { native_exp(-magnitude_grad / anisotropy.x),
-                           native_exp(-magnitude_lapl / anisotropy.y),
-                           native_exp(-magnitude_grad / anisotropy.z),
-                           native_exp(-magnitude_lapl / anisotropy.w) };
+    const float4 c2[4] = { native_exp(-magnitude_grad * anisotropy.x),
+                           native_exp(-magnitude_lapl * anisotropy.y),
+                           native_exp(-magnitude_grad * anisotropy.z),
+                           native_exp(-magnitude_lapl * anisotropy.w) };
 
     float4 kern_first[9], kern_second[9], kern_third[9], kern_fourth[9];
-    compute_kern(c2[0], cos_theta_grad, sin_theta_grad, cos_theta_grad_sq, sin_theta_grad_sq, isotropy_type.x, kern_first);
-    compute_kern(c2[1], cos_theta_lapl, sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type.y, kern_second);
-    compute_kern(c2[2], cos_theta_grad, sin_theta_grad, cos_theta_grad_sq, sin_theta_grad_sq, isotropy_type.z, kern_third);
-    compute_kern(c2[3], cos_theta_lapl, sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type.w, kern_fourth);
+    compute_kern(c2[0], cos_theta_sin_theta_grad, cos_theta_grad_sq, sin_theta_grad_sq, isotropy_type.x, kern_first);
+    compute_kern(c2[1], cos_theta_sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type.y, kern_second);
+    compute_kern(c2[2], cos_theta_sin_theta_grad, cos_theta_grad_sq, sin_theta_grad_sq, isotropy_type.z, kern_third);
+    compute_kern(c2[3], cos_theta_sin_theta_lapl, cos_theta_lapl_sq, sin_theta_lapl_sq, isotropy_type.w, kern_fourth);
 
     // convolve filters and compute the variance and the regularization term
     float4 derivatives[4] = { (float4)0.f };
@@ -301,8 +311,7 @@ diffuse_pde(read_only image2d_t HF, read_only image2d_t LF,
     // This allows to keep the scene-referred variance roughly constant
     // regardless of the wavelet scale where we compute it.
     // Prevents large scale halos when deblurring.
-    variance /= 9.f / current_radius_square;
-    variance = variance_threshold + native_sqrt(variance * regularization);
+    variance = variance_threshold + native_sqrt(variance * regularization_factor);
 
     // compute the update
     float4 acc = (float4)0.f;

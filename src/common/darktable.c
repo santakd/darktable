@@ -329,17 +329,15 @@ static void dt_codepaths_init()
 #endif
   {
     darktable.codepath.OPENMP_SIMD = 1;
-    fprintf(stderr, "[dt_codepaths_init] will be using HIGHLY EXPERIMENTAL plain OpenMP SIMD codepath.\n");
+    fprintf(stderr, "[dt_codepaths_init] will be using experimental plain OpenMP SIMD codepath.\n");
   }
 
 #if defined(__SSE__)
   if(darktable.codepath._no_intrinsics)
-#endif
   {
     fprintf(stderr, "[dt_codepaths_init] SSE2-optimized codepath is disabled or unavailable.\n");
-    fprintf(stderr,
-            "[dt_codepaths_init] expect a LOT of functionality to be broken. you have been warned.\n");
   }
+#endif
 }
 
 int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data, lua_State *L)
@@ -1007,10 +1005,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   }
 
   // we initialize grouping early because it's needed for collection init
+  // idem for folder reachability
   if(init_gui)
   {
     darktable.gui = (dt_gui_gtk_t *)calloc(1, sizeof(dt_gui_gtk_t));
     darktable.gui->grouping = dt_conf_get_bool("ui_last/grouping");
+    dt_film_set_folder_status();
   }
 
   // initialize collection query

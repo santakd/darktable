@@ -91,8 +91,8 @@ int operation_tags()
 
 int flags()
 {
-  return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_TILING_FULL_ROI | IOP_FLAGS_ONE_INSTANCE
-    | IOP_FLAGS_UNSAFE_COPY;
+  return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_TILING_FULL_ROI | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_UNSAFE_COPY
+         | IOP_FLAGS_GUIDES_WIDGET;
 }
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -201,9 +201,9 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
   if (d->orientation == 0) return 1;
 
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
+#pragma omp parallel for default(none) \
     dt_omp_firstprivate(points_count, points, d, piece) \
-    schedule(static) if(points_count > 100) aligned(points:64)
+    schedule(static) if(points_count > 500)
 #endif
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
@@ -233,9 +233,9 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   if (d->orientation == 0) return 1;
 
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
+#pragma omp parallel for default(none) \
     dt_omp_firstprivate(points_count, points, d, piece) \
-    schedule(static) if(points_count > 100) aligned(points:64)
+    schedule(static) if(points_count > 500)
 #endif
   for(size_t i = 0; i < points_count * 2; i += 2)
   {

@@ -28,6 +28,7 @@
 #include "develop/develop.h"
 #include "gui/accelerators.h"
 #include "gui/gtk.h"
+#include "gui/guides.h"
 #include "gui/presets.h"
 #include "libs/modulegroups.h"
 #ifdef GDK_WINDOWING_QUARTZ
@@ -55,7 +56,7 @@ static const char *_dt_gui_presets_aperture_value_str[]
 
 // format string and corresponding flag stored into the database
 static const char *_dt_gui_presets_format_value_str[5]
-    = { N_("normal images"), N_("raw"), N_("HDR"), N_("monochrome"), N_("color") };
+    = { N_("non-raw"), N_("raw"), N_("HDR"), N_("monochrome"), N_("color") };
 static const int _dt_gui_presets_format_flag[5] = { FOR_LDR, FOR_RAW, FOR_HDR, FOR_NOT_MONO, FOR_NOT_COLOR };
 
 // this is also called for non-gui applications linking to libdarktable!
@@ -270,8 +271,7 @@ static void _edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_pr
     if(g->old_id >= 0)
     {
       // we update presets values
-      query = dt_util_dstrcat(query,
-                              "UPDATE data.presets "
+      query = g_strdup_printf("UPDATE data.presets "
                               "SET"
                               " name=?1, description=?2,"
                               " model=?3, maker=?4, lens=?5, iso_min=?6, iso_max=?7, exposure_min=?8,"
@@ -284,8 +284,7 @@ static void _edit_preset_response(GtkDialog *dialog, gint response_id, dt_gui_pr
     else
     {
       // we create a new preset
-      query = dt_util_dstrcat(query,
-                              "INSERT INTO data.presets"
+      query = g_strdup_printf("INSERT INTO data.presets"
                               " (name, description, "
                               "  model, maker, lens, iso_min, iso_max, exposure_min, exposure_max, aperture_min,"
                               "  aperture_max, focal_length_min, focal_length_max, autoapply,"
@@ -505,6 +504,8 @@ static void _presets_show_edit_dialog(dt_gui_presets_edit_dialog_t *g, gboolean 
   gtk_box_pack_start(box, GTK_WIDGET(g->filter), FALSE, FALSE, 0);
   if(!g->iop)
   {
+    // lib usually don't support autoapply
+    gtk_widget_set_no_show_all(GTK_WIDGET(g->autoapply), !dt_presets_module_can_autoapply(g->module_name));
     // for libs, we don't want the filtering option as it's not implemented...
     gtk_widget_set_no_show_all(GTK_WIDGET(g->filter), TRUE);
   }
@@ -919,11 +920,10 @@ gboolean dt_gui_presets_autoapply_for_module(dt_iop_module_t *module)
 {
   dt_image_t *image = &module->dev->image_storage;
 
-  gchar *workflow = dt_conf_get_string("plugins/darkroom/workflow");
+  const char *workflow = dt_conf_get_string_const("plugins/darkroom/workflow");
   const gboolean is_display_referred = strcmp(workflow, "display-referred") == 0;
   const gboolean is_scene_referred = strcmp(workflow, "scene-referred") == 0;
   const gboolean has_matrix = dt_image_is_matrix_correction_supported(image);
-  g_free(workflow);
 
   char query[2024];
   snprintf(query, sizeof(query),
@@ -1150,7 +1150,7 @@ static void _menuitem_manage_quick_presets(GtkMenuItem *menuitem, gpointer data)
         const char *name = (char *)sqlite3_column_text(stmt, 0);
         gchar *presetname = g_markup_escape_text(name, -1);
         // is this preset part of the list ?
-        gchar *txt = dt_util_dstrcat(NULL, "ꬹ%s|%sꬹ", iop->op, name);
+        gchar *txt = g_strdup_printf("ꬹ%s|%sꬹ", iop->op, name);
         const gboolean inlist = (config && strstr(config, txt));
         g_free(txt);
         gtk_tree_store_append(treestore, &child, &toplevel);
@@ -1228,14 +1228,14 @@ void dt_gui_favorite_presets_menu_show()
         if(retrieve_list)
         {
           // we only show it if module is in favorite
-          gchar *key = dt_util_dstrcat(NULL, "plugins/darkroom/%s/favorite", iop->so->op);
+          gchar *key = g_strdup_printf("plugins/darkroom/%s/favorite", iop->so->op);
           const gboolean fav = dt_conf_get_bool(key);
           g_free(key);
           if(fav) config = dt_util_dstrcat(config, "ꬹ%s|%sꬹ", iop->so->op, name);
         }
 
         // check that this preset is in the config list
-        gchar *txt = dt_util_dstrcat(NULL, "ꬹ%s|%sꬹ", iop->so->op, name);
+        gchar *txt = g_strdup_printf("ꬹ%s|%sꬹ", iop->so->op, name);
         if(config && strstr(config, txt))
         {
           GtkMenuItem *mi = (GtkMenuItem *)gtk_menu_item_new_with_label(name);
@@ -1392,8 +1392,8 @@ static void _dt_gui_presets_popup_menu_show_internal(dt_dev_operation_t op, int3
     if(isdefault)
       label = g_strdup_printf("%s %s", name, _("(default)"));
     else
-      label = g_strdup_printf("%s", name);
-    mi = gtk_menu_item_new_with_label(label);
+      label = g_strdup(name);
+    mi = gtk_check_menu_item_new_with_label(label);
     g_free(label);
 
     if(module
@@ -1404,6 +1404,7 @@ static void _dt_gui_presets_popup_menu_show_internal(dt_dev_operation_t op, int3
       active_preset = cnt;
       writeprotect = sqlite3_column_int(stmt, 2);
       gtk_style_context_add_class(gtk_widget_get_style_context(mi), "active-menu-item");
+      gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
     }
 
     if(isdisabled)
@@ -1460,6 +1461,16 @@ static void _dt_gui_presets_popup_menu_show_internal(dt_dev_operation_t op, int3
         g_free(markup);
       }
     }
+  }
+
+  // and the parameters entry if needed
+  if(module && (module->set_preferences || module->flags() & IOP_FLAGS_GUIDES_WIDGET))
+  {
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    // the guide checkbox
+    if(module->flags() & IOP_FLAGS_GUIDES_WIDGET) dt_guides_add_module_menuitem(menu, module);
+    // the specific parameters
+    if(module->set_preferences) module->set_preferences(GTK_MENU_SHELL(menu), module);
   }
 }
 

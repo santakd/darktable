@@ -169,9 +169,9 @@ const char *description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("affect color, brightness and contrast"),
                                       _("corrective or creative"),
-                                      _("linear, Lab, scene-referred"),
+                                      _("linear, RGB, scene-referred"),
                                       _("non-linear, RGB"),
-                                      _("non-linear, Lab, scene-referred"));
+                                      _("non-linear, RGB, scene-referred"));
 }
 
 int flags()
@@ -1346,7 +1346,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
   const size_t checker_2 = 2 * checker_1;
 
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
+#pragma omp parallel for default(none) \
   dt_omp_firstprivate(data, graph_height, line_height, checker_1, checker_2) \
   schedule(static) collapse(2)
 #endif

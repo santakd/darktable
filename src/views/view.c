@@ -297,8 +297,12 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 
   if(new_view->try_enter)
   {
-    int error = new_view->try_enter(new_view);
-    if(error) return error;
+    const int error = new_view->try_enter(new_view);
+    if(error)
+    {
+      DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_VIEWMANAGER_VIEW_CANNOT_CHANGE, old_view, new_view);
+      return error;
+    }
   }
 
   /* cleanup current view before initialization of new  */
@@ -684,8 +688,7 @@ static void _images_to_act_on_insert_in_list(GList **list, const int imgid, gboo
     else
     {
       sqlite3_stmt *stmt;
-      gchar *query = dt_util_dstrcat(
-          NULL,
+      gchar *query = g_strdup_printf(
           "SELECT id"
           "  FROM main.images"
           "  WHERE group_id = %d AND id IN (%s)",
@@ -765,7 +768,7 @@ const GList *dt_view_get_images_to_act_on(const gboolean only_visible, const gbo
     {
       // column 1,2
       sqlite3_stmt *stmt;
-      gchar *query = dt_util_dstrcat(NULL, "SELECT imgid FROM main.selected_images WHERE imgid=%d", mouseover);
+      gchar *query = g_strdup_printf("SELECT imgid FROM main.selected_images WHERE imgid=%d", mouseover);
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
       if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
       {
@@ -873,7 +876,7 @@ gchar *dt_view_get_images_to_act_on_query(const gboolean only_visible)
     {
       // column 1,2
       sqlite3_stmt *stmt;
-      gchar *query = dt_util_dstrcat(NULL, "SELECT imgid FROM main.selected_images WHERE imgid =%d", mouseover);
+      gchar *query = g_strdup_printf("SELECT imgid FROM main.selected_images WHERE imgid =%d", mouseover);
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
       if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
       {
@@ -935,10 +938,11 @@ gchar *dt_view_get_images_to_act_on_query(const gboolean only_visible)
   }
   if(images)
   {
+    // remove trailing comma
     images[strlen(images) - 1] = '\0';
   }
   else
-    images = dt_util_dstrcat(NULL, " ");
+    images = g_strdup(" ");
   return images;
 }
 
@@ -1508,10 +1512,7 @@ GSList *dt_mouse_action_create_format(GSList *actions, dt_mouse_action_type_t ty
 
 static gchar *_mouse_action_get_string(dt_mouse_action_t *ma)
 {
-  gchar *accel_label = gtk_accelerator_get_label(ma->key.accel_key, ma->key.accel_mods);
-  gchar *atxt = dt_util_dstrcat(NULL, "%s", accel_label);
-  g_free(accel_label);
-
+  gchar *atxt = gtk_accelerator_get_label(ma->key.accel_key, ma->key.accel_mods);
   if(strcmp(atxt, ""))
     atxt = dt_util_dstrcat(atxt, "+");
 

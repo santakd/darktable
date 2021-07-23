@@ -123,7 +123,7 @@ void dt_conf_set_float(const char *name, float val)
 
 void dt_conf_set_bool(const char *name, int val)
 {
-  char *str = g_strdup_printf("%s", val ? "TRUE" : "FALSE");
+  char *str = g_strdup(val ? "TRUE" : "FALSE");
   if(dt_conf_set_if_not_overridden(name, str)) g_free(str);
 }
 
@@ -305,13 +305,17 @@ gchar *dt_conf_get_string(const char *name)
   return g_strdup(str);
 }
 
+const char *dt_conf_get_string_const(const char *name)
+{
+  return dt_conf_get_var(name);
+}
+
 gboolean dt_conf_get_folder_to_file_chooser(const char *name, GtkWidget *chooser)
 {
-  gchar *folder = dt_conf_get_string(name);
+  const gchar *folder = dt_conf_get_string_const(name);
   if (folder)
   {
     gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser),folder);
-    g_free(folder);
     return TRUE;
   }
   return FALSE;
@@ -369,7 +373,7 @@ static char *_sanitize_confgen(const char *name, const char *value)
     case DT_BOOL:
     {
       if(strcasecmp(value, "true") && strcasecmp(value, "false"))
-        result = g_strdup_printf("%s", dt_confgen_get(name, DT_DEFAULT));
+        result = g_strdup(dt_confgen_get(name, DT_DEFAULT));
       else
         result = g_strdup(value);
     }
@@ -378,7 +382,7 @@ static char *_sanitize_confgen(const char *name, const char *value)
     {
       char *v = g_strdup_printf("[%s]", value);
       if(!strstr(item->enum_values, v))
-        result = g_strdup_printf("%s", dt_confgen_get(name, DT_DEFAULT));
+        result = g_strdup(dt_confgen_get(name, DT_DEFAULT));
       else
         result = g_strdup(value);
       g_free(v);

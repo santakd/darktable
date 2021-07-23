@@ -57,19 +57,19 @@ static gchar *_thumbs_get_overlays_class(dt_thumbnail_overlay_t over)
   switch(over)
   {
     case DT_THUMBNAIL_OVERLAYS_NONE:
-      return dt_util_dstrcat(NULL, "dt_overlays_none");
+      return g_strdup("dt_overlays_none");
     case DT_THUMBNAIL_OVERLAYS_HOVER_EXTENDED:
-      return dt_util_dstrcat(NULL, "dt_overlays_hover_extended");
+      return g_strdup("dt_overlays_hover_extended");
     case DT_THUMBNAIL_OVERLAYS_ALWAYS_NORMAL:
-      return dt_util_dstrcat(NULL, "dt_overlays_always");
+      return g_strdup("dt_overlays_always");
     case DT_THUMBNAIL_OVERLAYS_ALWAYS_EXTENDED:
-      return dt_util_dstrcat(NULL, "dt_overlays_always_extended");
+      return g_strdup("dt_overlays_always_extended");
     case DT_THUMBNAIL_OVERLAYS_MIXED:
-      return dt_util_dstrcat(NULL, "dt_overlays_mixed");
+      return g_strdup("dt_overlays_mixed");
     case DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK:
-      return dt_util_dstrcat(NULL, "dt_overlays_hover_block");
+      return g_strdup("dt_overlays_hover_block");
     default:
-      return dt_util_dstrcat(NULL, "dt_overlays_hover");
+      return g_strdup("dt_overlays_hover");
   }
 }
 
@@ -79,7 +79,7 @@ static int _thumbs_get_prefs_size(dt_thumbtable_t *table)
   // we get the size delimitations to differentiate sizes categories
   // one we set as many categories as we want (this can be useful if
   // we want to finetune css very precisely)
-  gchar *txt = dt_conf_get_string("plugins/lighttable/thumbnail_sizes");
+  const char *txt = dt_conf_get_string_const("plugins/lighttable/thumbnail_sizes");
   gchar **ts = g_strsplit(txt, "|", -1);
   int i = 0;
   while(ts[i])
@@ -89,7 +89,6 @@ static int _thumbs_get_prefs_size(dt_thumbtable_t *table)
     i++;
   }
   g_strfreev(ts);
-  g_free(txt);
   return i;
 }
 
@@ -99,8 +98,8 @@ static void _thumbs_update_overlays_mode(dt_thumbtable_t *table)
   int ns = _thumbs_get_prefs_size(table);
 
   // we change the class that indicate the thumb size
-  gchar *c0 = dt_util_dstrcat(NULL, "dt_thumbnails_%d", table->prefs_size);
-  gchar *c1 = dt_util_dstrcat(NULL, "dt_thumbnails_%d", ns);
+  gchar *c0 = g_strdup_printf("dt_thumbnails_%d", table->prefs_size);
+  gchar *c1 = g_strdup_printf("dt_thumbnails_%d", ns);
   GtkStyleContext *context = gtk_widget_get_style_context(table->widget);
   gtk_style_context_remove_class(context, c0);
   gtk_style_context_add_class(context, c1);
@@ -109,10 +108,10 @@ static void _thumbs_update_overlays_mode(dt_thumbtable_t *table)
   table->prefs_size = ns;
 
   // we change the overlay mode
-  gchar *txt = dt_util_dstrcat(NULL, "plugins/lighttable/overlays/%d/%d", table->mode, ns);
+  gchar *txt = g_strdup_printf("plugins/lighttable/overlays/%d/%d", table->mode, ns);
   dt_thumbnail_overlay_t over = dt_conf_get_int(txt);
   g_free(txt);
-  txt = dt_util_dstrcat(NULL, "plugins/lighttable/tooltips/%d/%d", table->mode, ns);
+  txt = g_strdup_printf("plugins/lighttable/tooltips/%d/%d", table->mode, ns);
   table->show_tooltips = dt_conf_get_bool(txt);
   g_free(txt);
 
@@ -124,7 +123,7 @@ void dt_thumbtable_set_overlays_mode(dt_thumbtable_t *table, dt_thumbnail_overla
 {
   if(!table) return;
   // we ensure the tooltips change in any cases
-  gchar *txt = dt_util_dstrcat(NULL, "plugins/lighttable/tooltips/%d/%d", table->mode, table->prefs_size);
+  gchar *txt = g_strdup_printf("plugins/lighttable/tooltips/%d/%d", table->mode, table->prefs_size);
   dt_conf_set_bool(txt, table->show_tooltips);
   g_free(txt);
   for(const GList *l = table->list; l; l = g_list_next(l))
@@ -135,7 +134,7 @@ void dt_thumbtable_set_overlays_mode(dt_thumbtable_t *table, dt_thumbnail_overla
   }
 
   if(over == table->overlays) return;
-  txt = dt_util_dstrcat(NULL, "plugins/lighttable/overlays/%d/%d", table->mode, table->prefs_size);
+  txt = g_strdup_printf("plugins/lighttable/overlays/%d/%d", table->mode, table->prefs_size);
   dt_conf_set_int(txt, over);
   g_free(txt);
   gchar *cl0 = _thumbs_get_overlays_class(table->overlays);
@@ -145,7 +144,7 @@ void dt_thumbtable_set_overlays_mode(dt_thumbtable_t *table, dt_thumbnail_overla
   gtk_style_context_remove_class(context, cl0);
   gtk_style_context_add_class(context, cl1);
 
-  txt = dt_util_dstrcat(NULL, "plugins/lighttable/overlays_block_timeout/%d/%d", table->mode, table->prefs_size);
+  txt = g_strdup_printf("plugins/lighttable/overlays_block_timeout/%d/%d", table->mode, table->prefs_size);
   int timeout = 2;
   if(!dt_conf_key_exists(txt))
     timeout = dt_conf_get_int("plugins/lighttable/overlay_timeout");
@@ -173,8 +172,7 @@ void dt_thumbtable_set_overlays_mode(dt_thumbtable_t *table, dt_thumbnail_overla
 void dt_thumbtable_set_overlays_block_timeout(dt_thumbtable_t *table, const int timeout)
 {
   if(!table) return;
-  gchar *txt
-      = dt_util_dstrcat(NULL, "plugins/lighttable/overlays_block_timeout/%d/%d", table->mode, table->prefs_size);
+  gchar *txt = g_strdup_printf("plugins/lighttable/overlays_block_timeout/%d/%d", table->mode, table->prefs_size);
   dt_conf_set_int(txt, timeout);
   g_free(txt);
 
@@ -219,7 +217,7 @@ static int _thumb_get_imgid(int rowid)
 {
   int id = -1;
   sqlite3_stmt *stmt;
-  gchar *query = dt_util_dstrcat(NULL, "SELECT imgid FROM memory.collected_images WHERE rowid=%d", rowid);
+  gchar *query = g_strdup_printf("SELECT imgid FROM memory.collected_images WHERE rowid=%d", rowid);
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
   if(sqlite3_step(stmt) == SQLITE_ROW)
   {
@@ -234,7 +232,7 @@ static int _thumb_get_rowid(int imgid)
 {
   int id = -1;
   sqlite3_stmt *stmt;
-  gchar *query = dt_util_dstrcat(NULL, "SELECT rowid FROM memory.collected_images WHERE imgid=%d", imgid);
+  gchar *query = g_strdup_printf("SELECT rowid FROM memory.collected_images WHERE imgid=%d", imgid);
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
   if(sqlite3_step(stmt) == SQLITE_ROW)
   {
@@ -521,8 +519,7 @@ static int _thumbs_load_needed(dt_thumbtable_t *table)
     int space = first->y;
     if(table->mode == DT_THUMBTABLE_MODE_FILMSTRIP) space = first->x;
     const int nb_to_load = space / table->thumb_size + (space % table->thumb_size != 0);
-    gchar *query = dt_util_dstrcat
-      (NULL,
+    gchar *query = g_strdup_printf(
        "SELECT rowid, imgid"
        " FROM memory.collected_images"
        " WHERE rowid<%d"
@@ -576,8 +573,7 @@ static int _thumbs_load_needed(dt_thumbtable_t *table)
     if(table->mode == DT_THUMBTABLE_MODE_FILMSTRIP)
       space = table->view_width - (last->x + table->thumb_size);
     const int nb_to_load = space / table->thumb_size + (space % table->thumb_size != 0);
-    gchar *query = dt_util_dstrcat
-      (NULL,
+    gchar *query = g_strdup_printf(
        "SELECT rowid, imgid"
        " FROM memory.collected_images"
        " WHERE rowid>%d"
@@ -1153,12 +1149,10 @@ static void _thumbtable_restore_scrollbars(dt_thumbtable_t *table)
 static void _thumbs_ask_for_discard(dt_thumbtable_t *table)
 {
   // we get "new values"
-  gchar *hq = dt_conf_get_string("plugins/lighttable/thumbnail_hq_min_level");
+  const char *hq = dt_conf_get_string_const("plugins/lighttable/thumbnail_hq_min_level");
   dt_mipmap_size_t hql = dt_mipmap_cache_get_min_mip_from_pref(hq);
-  g_free(hq);
-  gchar *embedded = dt_conf_get_string("plugins/lighttable/thumbnail_raw_min_level");
+  const char *embedded = dt_conf_get_string_const("plugins/lighttable/thumbnail_raw_min_level");
   dt_mipmap_size_t embeddedl = dt_mipmap_cache_get_min_mip_from_pref(embedded);
-  g_free(embedded);
 
   int min_level = 8;
   int max_level = 0;
@@ -1178,8 +1172,7 @@ static void _thumbs_ask_for_discard(dt_thumbtable_t *table)
     GtkWidget *dialog;
     GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
 
-    gchar *txt
-        = dt_util_dstrcat(NULL, _("you have changed the settings related to how thumbnails are generated.\n"));
+    gchar *txt = g_strdup(_("you have changed the settings related to how thumbnails are generated.\n"));
     if(max_level >= DT_MIPMAP_8 && min_level == DT_MIPMAP_0)
       txt = dt_util_dstrcat(txt, _("all cached thumbnails need to be invalidated.\n\n"));
     else if(max_level >= DT_MIPMAP_8)
@@ -1429,8 +1422,7 @@ static void _dt_collection_changed_callback(gpointer instance, dt_collection_cha
         if(table->navigate_inside_selection)
         {
           sqlite3_stmt *stmt;
-          gchar *query = dt_util_dstrcat(
-              NULL,
+          gchar *query = g_strdup_printf(
               "SELECT m.imgid"
               " FROM memory.collected_images AS m, main.selected_images AS s"
               " WHERE m.imgid=s.imgid"
@@ -1447,8 +1439,7 @@ static void _dt_collection_changed_callback(gpointer instance, dt_collection_cha
             // no select image after, search before
             g_free(query);
             sqlite3_finalize(stmt);
-            query = dt_util_dstrcat(
-                NULL,
+            query = g_strdup_printf(
                 "SELECT m.imgid"
                 " FROM memory.collected_images AS m, main.selected_images AS s"
                 " WHERE m.imgid=s.imgid"
@@ -1777,12 +1768,10 @@ dt_thumbtable_t *dt_thumbtable_new()
   dt_gui_add_help_link(table->widget, dt_get_help_url("lighttable_filemanager"));
 
   // get thumb generation pref for reference in case of change
-  gchar *tx = dt_conf_get_string("plugins/lighttable/thumbnail_hq_min_level");
+  const char *tx = dt_conf_get_string_const("plugins/lighttable/thumbnail_hq_min_level");
   table->pref_hq = dt_mipmap_cache_get_min_mip_from_pref(tx);
-  g_free(tx);
-  tx = dt_conf_get_string("plugins/lighttable/thumbnail_raw_min_level");
+  tx = dt_conf_get_string_const("plugins/lighttable/thumbnail_raw_min_level");
   table->pref_embedded = dt_mipmap_cache_get_min_mip_from_pref(tx);
-  g_free(tx);
 
   // set css name and class
   gtk_widget_set_name(table->widget, "thumbtable_filemanager");
@@ -1966,7 +1955,7 @@ void dt_thumbtable_full_redraw(dt_thumbtable_t *table, gboolean force)
     GList *newlist = NULL;
     int nbnew = 0;
     gchar *query
-        = dt_util_dstrcat(NULL, "SELECT rowid, imgid FROM memory.collected_images WHERE rowid>=%d LIMIT %d",
+        = g_strdup_printf("SELECT rowid, imgid FROM memory.collected_images WHERE rowid>=%d LIMIT %d",
                           offset, table->rows * table->thumbs_per_row - empty_start);
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
     while(sqlite3_step(stmt) == SQLITE_ROW)

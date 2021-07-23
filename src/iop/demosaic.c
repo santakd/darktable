@@ -2817,17 +2817,26 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   roi_in->width /= roi_out->scale;
   roi_in->height /= roi_out->scale;
   roi_in->scale = 1.0f;
+
+  dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
+  const int method = data->demosaicing_method;
+  const gboolean passthrough = (method == DT_IOP_DEMOSAIC_PASSTHROUGH_MONOCHROME) ||
+                               (method == DT_IOP_DEMOSAIC_PASSTHR_MONOX);
+
   // clamp to even x/y, to make demosaic pattern still hold..
-  if(piece->pipe->dsc.filters != 9u)
+  if(!passthrough)
   {
-    roi_in->x = MAX(0, roi_in->x & ~1);
-    roi_in->y = MAX(0, roi_in->y & ~1);
-  }
-  else
-  {
-    // Markesteijn needs factors of 3
-    roi_in->x = MAX(0, roi_in->x - (roi_in->x % 3));
-    roi_in->y = MAX(0, roi_in->y - (roi_in->y % 3));
+    if(piece->pipe->dsc.filters != 9u)
+    {
+      roi_in->x = MAX(0, roi_in->x & ~1);
+      roi_in->y = MAX(0, roi_in->y & ~1);
+    }
+    else
+    {
+      // Markesteijn needs factors of 3
+      roi_in->x = MAX(0, roi_in->x - (roi_in->x % 3));
+      roi_in->y = MAX(0, roi_in->y - (roi_in->y % 3));
+    }
   }
 
   // clamp numeric inaccuracies to full buffer, to avoid scaling/copying in pixelpipe:
@@ -2841,14 +2850,13 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
 static int get_quality()
 {
   int qual = 1;
-  gchar *quality = dt_conf_get_string("plugins/darkroom/demosaic/quality");
+  const char *quality = dt_conf_get_string("plugins/darkroom/demosaic/quality");
   if(quality)
   {
     if(!strcmp(quality, "always bilinear (fast)"))
       qual = 0;
     else if(!strcmp(quality, "full (possibly slow)"))
       qual = 2;
-    g_free(quality);
   }
   return qual;
 }
@@ -2856,11 +2864,9 @@ static int get_quality()
 static int get_thumb_quality(int width, int height)
 {
   // we check if we need ultra-high quality thumbnail for this size
-  char *min = dt_conf_get_string("plugins/lighttable/thumbnail_hq_min_level");
-
   const int level = dt_mipmap_cache_get_matching_size(darktable.mipmap_cache, width, height);
+  const char *min = dt_conf_get_string_const("plugins/lighttable/thumbnail_hq_min_level");
   const dt_mipmap_size_t min_s = dt_mipmap_cache_get_min_mip_from_pref(min);
-  g_free(min);
 
   return (level >= min_s);
 }
@@ -5760,7 +5766,7 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), g->dual_mask, FALSE, FALSE, 0);
 
   g->lmmse_refine = dt_bauhaus_combobox_from_params(self, "lmmse_refine");
-  gtk_widget_set_tooltip_text(g->lmmse_refine, _("LMMSE refinement steps. the median steps avarage the output,\nrefine adds some recalculation of red & blue channels."));
+  gtk_widget_set_tooltip_text(g->lmmse_refine, _("LMMSE refinement steps. the median steps average the output,\nrefine adds some recalculation of red & blue channels."));
 
   g->color_smoothing = dt_bauhaus_combobox_from_params(self, "color_smoothing");
   gtk_widget_set_tooltip_text(g->color_smoothing, _("how many color smoothing median steps after demosaicing"));

@@ -1156,7 +1156,7 @@ static void _blendop_blendif_showmask_clicked(GtkWidget *button, GdkEventButton 
 
     // note that a ctrl+click followed by a shift-click must keep the
     // toggle button active. But a single click must invert current
-    // toggle buttong.  That's why we check for request_mask_display
+    // toggle button.  That's why we check for request_mask_display
     // value below. But note that the toggle button state has not yet
     // been inverted by Gtk at this stage. So if a button must be ON
     // we ensure it is OFF now.
@@ -1725,24 +1725,33 @@ static void _blendif_options_callback(GtkButton *button, GdkEventButton *event, 
     // should not be activated for RGB modules before colorin and after colorout)
     if(module_cst == DEVELOP_BLEND_CS_LAB)
     {
-      mi = gtk_menu_item_new_with_label(_("Lab"));
+      mi = gtk_check_menu_item_new_with_label(_("Lab"));
       if(module_blend_cst == DEVELOP_BLEND_CS_LAB)
+      {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
         gtk_style_context_add_class(gtk_widget_get_style_context(mi), "active-menu-item");
+      }
       g_object_set_data_full(G_OBJECT(mi), "dt-blend-cst", GINT_TO_POINTER(DEVELOP_BLEND_CS_LAB), NULL);
       g_signal_connect(G_OBJECT(mi), "activate", G_CALLBACK(_blendif_select_colorspace), module);
       gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     }
 
-    mi = gtk_menu_item_new_with_label(_("RGB (display)"));
+    mi = gtk_check_menu_item_new_with_label(_("RGB (display)"));
     if(module_blend_cst == DEVELOP_BLEND_CS_RGB_DISPLAY)
+    {
+      gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
       gtk_style_context_add_class(gtk_widget_get_style_context(mi), "active-menu-item");
+    }
     g_object_set_data_full(G_OBJECT(mi), "dt-blend-cst", GINT_TO_POINTER(DEVELOP_BLEND_CS_RGB_DISPLAY), NULL);
     g_signal_connect(G_OBJECT(mi), "activate", G_CALLBACK(_blendif_select_colorspace), module);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
 
-    mi = gtk_menu_item_new_with_label(_("RGB (scene)"));
+    mi = gtk_check_menu_item_new_with_label(_("RGB (scene)"));
     if(module_blend_cst == DEVELOP_BLEND_CS_RGB_SCENE)
+    {
+      gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
       gtk_style_context_add_class(gtk_widget_get_style_context(mi), "active-menu-item");
+    }
     g_object_set_data_full(G_OBJECT(mi), "dt-blend-cst", GINT_TO_POINTER(DEVELOP_BLEND_CS_RGB_SCENE), NULL);
     g_signal_connect(G_OBJECT(mi), "activate", G_CALLBACK(_blendif_select_colorspace), module);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
@@ -3081,7 +3090,8 @@ void dt_iop_gui_init_blending(GtkWidget *iopw, dt_iop_module_t *module)
 
     bd->details_slider = dt_bauhaus_slider_new_with_range(module, -1.0f, 1.0f, .01f, 0.0f, 2);
     dt_bauhaus_widget_set_label(bd->details_slider, N_("blend"), N_("details threshold"));
-    dt_bauhaus_slider_set_format(bd->details_slider, "%.2f");
+    dt_bauhaus_slider_set_factor(bd->details_slider, 100.0f);
+    dt_bauhaus_slider_set_format(bd->details_slider, "%.0f%%");
     gtk_widget_set_tooltip_text(bd->details_slider, _("adjust the threshold for the details mask (using raw data), "
                                                       "\npositive values selects areas with strong details, "
                                                       "\nnegative values select flat areas"));
@@ -3094,21 +3104,22 @@ void dt_iop_gui_init_blending(GtkWidget *iopw, dt_iop_module_t *module)
 
     bd->feathering_radius_slider = dt_bauhaus_slider_new_with_range(module, 0.0, 250.0, 0.1, 0.0, 1);
     dt_bauhaus_widget_set_label(bd->feathering_radius_slider, N_("blend"), N_("feathering radius"));
-    dt_bauhaus_slider_set_format(bd->feathering_radius_slider, "%.1f");
+    dt_bauhaus_slider_set_format(bd->feathering_radius_slider, "%.1f px");
     gtk_widget_set_tooltip_text(bd->feathering_radius_slider, _("spatial radius of feathering"));
     g_signal_connect(G_OBJECT(bd->feathering_radius_slider), "value-changed",
                      G_CALLBACK(dt_iop_slider_float_callback), &module->blend_params->feathering_radius);
 
     bd->blur_radius_slider = dt_bauhaus_slider_new_with_range(module, 0.0, 100.0, 0.1, 0.0, 1);
-    dt_bauhaus_widget_set_label(bd->blur_radius_slider, N_("blend"), N_("mask blur"));
-    dt_bauhaus_slider_set_format(bd->blur_radius_slider, "%.1f");
+    dt_bauhaus_widget_set_label(bd->blur_radius_slider, N_("blend"), N_("blurring radius"));
+    dt_bauhaus_slider_set_format(bd->blur_radius_slider, "%.1f px");
     gtk_widget_set_tooltip_text(bd->blur_radius_slider, _("radius for gaussian blur of blend mask"));
     g_signal_connect(G_OBJECT(bd->blur_radius_slider), "value-changed",
                      G_CALLBACK(dt_iop_slider_float_callback), &module->blend_params->blur_radius);
 
     bd->brightness_slider = dt_bauhaus_slider_new_with_range(module, -1.0, 1.0, 0.01, 0.0, 2);
     dt_bauhaus_widget_set_label(bd->brightness_slider, N_("blend"), N_("mask opacity"));
-    dt_bauhaus_slider_set_format(bd->brightness_slider, "%.2f");
+    dt_bauhaus_slider_set_factor(bd->brightness_slider, 100.0f);
+    dt_bauhaus_slider_set_format(bd->brightness_slider, "%+.0f%%");
     gtk_widget_set_tooltip_text(bd->brightness_slider, _("shifts and tilts the tone curve of the blend mask to adjust its "
                                                          "brightness without affecting fully transparent/fully opaque "
                                                          "regions"));
@@ -3117,7 +3128,8 @@ void dt_iop_gui_init_blending(GtkWidget *iopw, dt_iop_module_t *module)
 
     bd->contrast_slider = dt_bauhaus_slider_new_with_range(module, -1.0, 1.0, 0.01, 0.0, 2);
     dt_bauhaus_widget_set_label(bd->contrast_slider, N_("blend"), N_("mask contrast"));
-    dt_bauhaus_slider_set_format(bd->contrast_slider, "%.2f");
+    dt_bauhaus_slider_set_factor(bd->contrast_slider, 100.0f);
+    dt_bauhaus_slider_set_format(bd->contrast_slider, "%+.0f%%");
     gtk_widget_set_tooltip_text(bd->contrast_slider, _("gives the tone curve of the blend mask an s-like shape to "
                                                        "adjust its contrast"));
     g_signal_connect(G_OBJECT(bd->contrast_slider), "value-changed",

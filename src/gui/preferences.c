@@ -164,9 +164,8 @@ static void load_themes(void)
 
 static void reload_ui_last_theme(void)
 {
-  gchar *theme = dt_conf_get_string("ui_last/theme");
+  const char *theme = dt_conf_get_string_const("ui_last/theme");
   dt_gui_load_theme(theme);
-  g_free(theme);
   dt_bauhaus_load_theme();
 }
 
@@ -580,10 +579,8 @@ void dt_gui_preferences_show()
   init_tab_import(_preferences_dialog, stack);
   init_tab_lighttable(_preferences_dialog, stack);
   init_tab_darkroom(_preferences_dialog, stack);
-  init_tab_other_views(_preferences_dialog, stack);
   init_tab_processing(_preferences_dialog, stack);
   init_tab_security(_preferences_dialog, stack);
-  init_tab_cpugpu(_preferences_dialog, stack);
   init_tab_storage(_preferences_dialog, stack);
   init_tab_misc(_preferences_dialog, stack);
   init_tab_accels(stack);
@@ -618,19 +615,6 @@ void dt_gui_preferences_show()
 static void cairo_destroy_from_pixbuf(guchar *pixels, gpointer data)
 {
   cairo_destroy((cairo_t *)data);
-}
-
-static gboolean _module_can_autoapply(const gchar *operation)
-{
-  for (const GList * lib_modules = darktable.lib->plugins; lib_modules; lib_modules = g_list_next(lib_modules))
-  {
-    dt_lib_module_t *lib_module = (dt_lib_module_t *)lib_modules->data;
-    if(!strcmp(lib_module->plugin_name, operation))
-    {
-      return dt_lib_presets_can_autoapply(lib_module);
-    }
-  }
-  return TRUE;
 }
 
 static void tree_insert_presets(GtkTreeStore *tree_model)
@@ -700,7 +684,7 @@ static void tree_insert_presets(GtkTreeStore *tree_model)
     if(module == NULL) module = g_strdup(dt_lib_get_localized_name(operation));
     if(module == NULL) module = g_strdup(operation);
 
-    if(!_module_can_autoapply(operation))
+    if(!dt_presets_module_can_autoapply(operation))
     {
       iso = g_strdup("");
       exposure = g_strdup("");
@@ -1509,9 +1493,8 @@ _gui_preferences_string_reset(GtkWidget *label, GdkEventButton *event, GtkWidget
 void dt_gui_preferences_string_update(GtkWidget *widget)
 {
   const char *key = gtk_widget_get_name(widget);
-  char *str = dt_conf_get_string(key);
+  const char *str = dt_conf_get_string_const(key);
   gtk_entry_set_text(GTK_ENTRY(widget), str);
-  g_free(str);
 }
 
 GtkWidget *dt_gui_preferences_string(GtkGrid *grid, const char *key, const guint col,
@@ -1524,9 +1507,8 @@ GtkWidget *dt_gui_preferences_string(GtkGrid *grid, const char *key, const guint
   gtk_container_add(GTK_CONTAINER(labelev), w_label);
 
   GtkWidget *w = gtk_entry_new();
-  gchar *str = dt_conf_get_string(key);
+  const char *str = dt_conf_get_string_const(key);
   gtk_entry_set_text(GTK_ENTRY(w), str);
-  g_free(str);
   gtk_widget_set_hexpand(w, TRUE);
   gtk_widget_set_name(w, key);
 

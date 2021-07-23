@@ -640,7 +640,9 @@ static inline void luma_chroma(const float input[4], const float saturation[4], 
   }
 }
 
-
+#ifdef _OPENMP
+#pragma omp declare simd aligned(in, out, XYZ_to_RGB, RGB_to_XYZ, MIX : 64) aligned(illuminant, saturation, lightness, grey:16)
+#endif
 static inline void loop_switch(const float *const restrict in, float *const restrict out,
                                const size_t width, const size_t height, const size_t ch,
                                const float XYZ_to_RGB[3][4], const float RGB_to_XYZ[3][4], const float MIX[3][4],
@@ -650,9 +652,8 @@ static inline void loop_switch(const float *const restrict in, float *const rest
                                const dt_iop_channelmixer_rgb_version_t version)
 {
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
+#pragma omp parallel for default(none) \
   dt_omp_firstprivate(width, height, ch, in, out, XYZ_to_RGB, RGB_to_XYZ, MIX, illuminant, saturation, lightness, grey, p, gamut, clip, apply_grey, kind, version) \
-  aligned(in, out, XYZ_to_RGB, RGB_to_XYZ, MIX:64) aligned(illuminant, saturation, lightness, grey:16)\
   schedule(simd:static)
 #endif
   for(size_t k = 0; k < height * width * 4; k += 4)
@@ -758,6 +759,11 @@ static inline void loop_switch(const float *const restrict in, float *const rest
         // Convert from RGB to XYZ
         dot_product(temp_one, RGB_to_XYZ, temp_two);
 
+        for(size_t c = 0; c < DT_PIXEL_SIMD_CHANNELS; ++c) temp_one[c] = temp_two[c];
+        break;
+      }
+      default:
+      {
         for(size_t c = 0; c < DT_PIXEL_SIMD_CHANNELS; ++c) temp_one[c] = temp_two[c];
         break;
       }
@@ -873,10 +879,9 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
 
    // Convert RGB to xy
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
+#pragma omp parallel for default(none) \
   dt_omp_firstprivate(width, height, ch, in, temp, RGB_to_XYZ) \
-  aligned(in, temp, RGB_to_XYZ:64) collapse(2)\
-  schedule(simd:static)
+  collapse(2) schedule(simd:static)
 #endif
   for(size_t i = 0; i < height; i++)
     for(size_t j = 0; j < width; j++)
@@ -886,7 +891,8 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
       float DT_ALIGNED_PIXEL XYZ[4];
 
       // Clip negatives
-      for(size_t c = 0; c < 3; c++) RGB[c] = fmaxf(in[index + c], 0.0f);
+      for_each_channel(c,aligned(in))
+        RGB[c] = fmaxf(in[index + c], 0.0f);
 
       // Convert to XYZ
       dot_product(RGB, RGB_to_XYZ, XYZ);
@@ -912,9 +918,8 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
   if(illuminant == DT_ILLUMINANT_DETECT_SURFACES)
   {
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) reduction(+:xyY, elements) \
-  dt_omp_firstprivate(width, height, ch, temp) \
-  aligned(temp:64) \
+#pragma omp parallel for default(none) reduction(+:xyY, elements) \
+  dt_omp_firstprivate(width, height, temp, ch) \
   schedule(simd:static)
 #endif
     for(size_t i = 2 * OFF; i < height - 4 * OFF; i += OFF)
@@ -981,9 +986,8 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
   else if(illuminant == DT_ILLUMINANT_DETECT_EDGES)
   {
     #ifdef _OPENMP
-#pragma omp parallel for simd default(none) reduction(+:xyY, elements) \
-  dt_omp_firstprivate(width, height, ch, temp) \
-  aligned(temp:64) \
+#pragma omp parallel for default(none) reduction(+:xyY, elements) \
+  dt_omp_firstprivate(width, height, temp, ch) \
   schedule(simd:static)
 #endif
     for(size_t i = 2 * OFF; i < height - 4 * OFF; i += OFF)
@@ -1566,9 +1570,9 @@ void extract_color_checker(const float *const restrict in, float *const restrict
       GET_WEIGHT;
     }
     else if(g->optimization == DT_SOLVE_OPTIMIZE_AVG_DELTA_E)
-      w = sqrtf(sqrtf(g->delta_E_in[k] / 100.f));
+      w = sqrtf(sqrtf(1.f / g->delta_E_in[k]));
     else if(g->optimization == DT_SOLVE_OPTIMIZE_MAX_DELTA_E)
-      w = sqrtf(g->delta_E_in[k] / 100.f);
+      w = sqrtf(sqrtf(g->delta_E_in[k]));
 
     // fill 3 rows of the y column vector
     for(size_t c = 0; c < 3; c++) Y[k * 3 + c] = w * LMS_ref[c];
@@ -3491,6 +3495,11 @@ void reload_defaults(dt_iop_module_t *module)
     dt_bauhaus_slider_set_default(g->temperature, d->temperature);
     dt_bauhaus_combobox_set_default(g->illuminant, d->illuminant);
     dt_bauhaus_combobox_set_default(g->adaptation, d->adaptation);
+    if(g->delta_E_label_text) 
+    {
+      g_free(g->delta_E_label_text);
+      g->delta_E_label_text = NULL;
+    }
 
     if(dt_image_is_matrix_correction_supported(img))
     {

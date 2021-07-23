@@ -35,6 +35,9 @@
 #include "libs/lib.h"
 #include "libs/lib_api.h"
 #include "views/view.h"
+#ifndef _WIN32
+#include <gio/gunixmounts.h>
+#endif
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
 #endif
@@ -70,6 +73,11 @@ typedef struct dt_lib_collect_t
 
   gboolean singleclick;
   struct dt_lib_collect_params_t *params;
+#ifdef _WIN32
+  GVolumeMonitor *vmonitor;
+#else
+  GUnixMountMonitor *vmonitor;
+#endif
 } dt_lib_collect_t;
 
 typedef struct dt_lib_collect_params_rule_t
@@ -330,11 +338,10 @@ static void _lib_collect_update_params(dt_lib_collect_t *d)
 
     /* get string */
     snprintf(confname, sizeof(confname), "plugins/lighttable/collect/string%1d", i);
-    gchar *string = dt_conf_get_string(confname);
+    const char *string = dt_conf_get_string_const(confname);
     if(string != NULL)
     {
       g_strlcpy(p->rule[i].string, string, PARAM_STRING_SIZE);
-      g_free(string);
     }
 
     // fprintf(stderr,"[%i] %d,%d,%s\n",i, p->rule[i].item, p->rule[i].mode,  p->rule[i].string);
@@ -452,8 +459,7 @@ static void view_popup_menu_onSearchFilmroll(GtkWidget *menuitem, gpointer userd
     {
       gchar *old = NULL;
 
-      gchar *q_tree_path = NULL;
-      q_tree_path = dt_util_dstrcat(q_tree_path, "%s%%", tree_path);
+      gchar *q_tree_path = g_strdup_printf("%s%%", tree_path);
       query = "SELECT id, folder FROM main.film_rolls WHERE folder LIKE ?1";
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
       DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 1, q_tree_path, -1, SQLITE_TRANSIENT);
@@ -466,8 +472,7 @@ static void view_popup_menu_onSearchFilmroll(GtkWidget *menuitem, gpointer userd
         id = sqlite3_column_int(stmt, 0);
         old = (gchar *)sqlite3_column_text(stmt, 1);
 
-        query = NULL;
-        query = dt_util_dstrcat(query, "UPDATE main.film_rolls SET folder=?1 WHERE id=?2");
+        query = g_strdup("UPDATE main.film_rolls SET folder=?1 WHERE id=?2");
 
         gchar trailing[1024] = { 0 };
         gchar final[1024] = { 0 };
@@ -538,8 +543,7 @@ static void view_popup_menu_onRemove(GtkWidget *menuitem, gpointer userdata)
     /* Clean selected images, and add to the table those which are going to be deleted */
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "DELETE FROM main.selected_images", NULL, NULL, NULL);
 
-    fullq = dt_util_dstrcat(fullq,
-                            "INSERT INTO main.selected_images"
+    fullq = g_strdup_printf("INSERT INTO main.selected_images"
                             " SELECT id"
                             " FROM main.images"
                             " WHERE film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s%%')",
@@ -987,16 +991,12 @@ static void tree_set_visibility(GtkTreeModel *model, gpointer data)
 static void _lib_folders_update_collection(const gchar *filmroll)
 {
 
-  gchar *complete_query = NULL;
-
   // remove from selected images where not in this query.
   sqlite3_stmt *stmt = NULL;
   const gchar *cquery = dt_collection_get_query(darktable.collection);
-  // complete_query = NULL;
   if(cquery && cquery[0] != '\0')
   {
-    complete_query
-        = dt_util_dstrcat(complete_query,
+    gchar *complete_query = g_strdup_printf(
                           "DELETE FROM main.selected_images WHERE imgid NOT IN (%s)",
                           cquery);
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), complete_query, -1, &stmt, NULL);
@@ -1142,7 +1142,7 @@ static char **split_path(const char *path)
 typedef struct name_key_tuple_t
 {
   char *name, *collate_key;
-  int count;
+  int count, status;
 } name_key_tuple_t;
 
 static void free_tuple(gpointer data)
@@ -1255,9 +1255,12 @@ static void tree_view(dt_lib_collect_rule_t *dr)
     switch (property)
     {
       case DT_COLLECTION_PROP_FOLDERS:
-        query = g_strdup_printf("SELECT folder, film_rolls_id, COUNT(*) AS count"
+        query = g_strdup_printf("SELECT folder, film_rolls_id, COUNT(*) AS count, status"
                                 " FROM main.images AS mi"
-                                " JOIN (SELECT id AS film_rolls_id, folder FROM main.film_rolls)"
+                                " JOIN (SELECT fr.id AS film_rolls_id, folder, status"
+                                "       FROM main.film_rolls AS fr"
+                                "       JOIN memory.film_folder AS ff"
+                                "       ON fr.id = ff.id)"
                                 "   ON film_id = film_rolls_id "
                                 " WHERE %s"
                                 " GROUP BY folder, film_rolls_id", where_ext);
@@ -1392,6 +1395,7 @@ static void tree_view(dt_lib_collect_rule_t *dr)
       tuple->name = name;
       tuple->collate_key = collate_key;
       tuple->count = count;
+      tuple->status = property == DT_COLLECTION_PROP_FOLDERS ? sqlite3_column_int(stmt, 3) : -1;
       sorted_names = g_list_prepend(sorted_names, tuple);
     }
     sqlite3_finalize(stmt);
@@ -1411,6 +1415,7 @@ static void tree_view(dt_lib_collect_rule_t *dr)
       name_key_tuple_t *tuple = (name_key_tuple_t *)names->data;
       char *name = tuple->name;
       const int count = tuple->count;
+      const int status = tuple->status;
       if(name == NULL) continue; // safeguard against degenerated db entries
 
       // this is just for tags
@@ -1502,7 +1507,8 @@ static void tree_view(dt_lib_collect_rule_t *dr)
                                               DT_LIB_COLLECT_COL_TEXT, *token,
                                               DT_LIB_COLLECT_COL_PATH, pth2, DT_LIB_COLLECT_COL_VISIBLE, TRUE,
                                               DT_LIB_COLLECT_COL_COUNT, (*(token + 1)?0:count),
-                                              DT_LIB_COLLECT_COL_INDEX, index, -1);
+                                              DT_LIB_COLLECT_COL_INDEX, index,
+                                              DT_LIB_COLLECT_COL_UNREACHABLE, (*(token + 1) ? 0 : !status), -1);
             index++;
             // also add the item count to parents
             if((property == DT_COLLECTION_PROP_DAY
@@ -1520,9 +1526,6 @@ static void tree_view(dt_lib_collect_rule_t *dr)
               }
             }
 
-            if(property == DT_COLLECTION_PROP_FOLDERS)
-              gtk_tree_store_set(GTK_TREE_STORE(model), &iter, DT_LIB_COLLECT_COL_UNREACHABLE,
-                                 !(g_file_test(pth, G_FILE_TEST_IS_DIR)), -1);
             common_length++;
             parent = iter;
             g_free(pth2);
@@ -1634,9 +1637,8 @@ static void list_view(dt_lib_collect_rule_t *dr)
     {
       case DT_COLLECTION_PROP_CAMERA:; // camera
         int index = 0;
-        gchar *makermodel_query = NULL;
-        makermodel_query = dt_util_dstrcat(makermodel_query, "SELECT maker, model, COUNT(*) AS count "
-                "FROM main.images AS mi WHERE %s GROUP BY maker, model", where_ext);
+        gchar *makermodel_query = g_strdup_printf("SELECT maker, model, COUNT(*) AS count "
+                                                  "FROM main.images AS mi WHERE %s GROUP BY maker, model", where_ext);
 
         DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                                 makermodel_query,
@@ -1837,7 +1839,7 @@ static void list_view(dt_lib_collect_rule_t *dr)
         {
           const int keyid = dt_metadata_get_keyid_by_display_order(property - DT_COLLECTION_PROP_METADATA);
           const char *name = (gchar *)dt_metadata_get_name(keyid);
-          char *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
+          char *setting = g_strdup_printf("plugins/lighttable/metadata/%s_flag", name);
           const gboolean hidden = dt_conf_get_int(setting) & DT_METADATA_FLAG_HIDDEN;
           g_free(setting);
           if(!hidden)
@@ -1860,7 +1862,7 @@ static void list_view(dt_lib_collect_rule_t *dr)
         // filmroll
         {
           gchar *order_by = NULL;
-          gchar *filmroll_sort = dt_conf_get_string("plugins/collect/filmroll_sort");
+          const char *filmroll_sort = dt_conf_get_string_const("plugins/collect/filmroll_sort");
           if(strcmp(filmroll_sort, "id") == 0)
             order_by = g_strdup("film_rolls_id DESC");
           else
@@ -1868,13 +1870,14 @@ static void list_view(dt_lib_collect_rule_t *dr)
               order_by = g_strdup("folder DESC");
             else
               order_by = g_strdup("folder");
-          g_free(filmroll_sort);
 
           g_snprintf(query, sizeof(query),
-                     "SELECT folder, film_rolls_id, COUNT(*) AS count"
+                     "SELECT folder, film_rolls_id, COUNT(*) AS count, status"
                      " FROM main.images AS mi"
-                     " JOIN (SELECT id AS film_rolls_id, folder"
-                     "       FROM main.film_rolls)"
+                     " JOIN (SELECT fr.id AS film_rolls_id, folder, status"
+                     "       FROM main.film_rolls AS fr"
+                     "        JOIN memory.film_folder AS ff"
+                     "        ON ff.id = fr.id)"
                      "   ON film_id = film_rolls_id "
                      " WHERE %s"
                      " GROUP BY folder"
@@ -1896,9 +1899,11 @@ static void list_view(dt_lib_collect_rule_t *dr)
         if(folder == NULL) continue; // safeguard against degenerated db entries
 
         gtk_list_store_append(GTK_LIST_STORE(model), &iter);
+        int status = 0;
         if(property == DT_COLLECTION_PROP_FILMROLL)
         {
           folder = dt_image_film_roll_name(folder);
+          status = !sqlite3_column_int(stmt, 3);
         }
         const gchar *value = (gchar *)sqlite3_column_text(stmt, 0);
         const int count = sqlite3_column_int(stmt, 2);
@@ -1913,14 +1918,8 @@ static void list_view(dt_lib_collect_rule_t *dr)
         gtk_list_store_set(GTK_LIST_STORE(model), &iter, DT_LIB_COLLECT_COL_TEXT, folder,
                            DT_LIB_COLLECT_COL_ID, sqlite3_column_int(stmt, 1), DT_LIB_COLLECT_COL_TOOLTIP,
                            escaped_text, DT_LIB_COLLECT_COL_PATH, value, DT_LIB_COLLECT_COL_VISIBLE, TRUE,
-                           DT_LIB_COLLECT_COL_COUNT, count,
+                           DT_LIB_COLLECT_COL_COUNT, count, DT_LIB_COLLECT_COL_UNREACHABLE, status,
                            -1);
-
-        if(property == DT_COLLECTION_PROP_FILMROLL)
-        {
-          gtk_list_store_set(GTK_LIST_STORE(model), &iter,
-                             DT_LIB_COLLECT_COL_UNREACHABLE, !(g_file_test(value, G_FILE_TEST_IS_DIR)), -1);
-        }
 
         g_free(text);
         g_free(escaped_text);
@@ -2131,14 +2130,13 @@ static void _lib_collect_gui_update(dt_lib_module_t *self)
     snprintf(confname, sizeof(confname), "plugins/lighttable/collect/item%1d", i);
     _combo_set_active_collection(d->rule[i].combo, dt_conf_get_int(confname));
     snprintf(confname, sizeof(confname), "plugins/lighttable/collect/string%1d", i);
-    gchar *text = dt_conf_get_string(confname);
+    const char *text = dt_conf_get_string_const(confname);
     if(text)
     {
       g_signal_handlers_block_matched(d->rule[i].text, G_SIGNAL_MATCH_FUNC, 0, 0, NULL, entry_changed, NULL);
       gtk_entry_set_text(GTK_ENTRY(d->rule[i].text), text);
       gtk_editable_set_position(GTK_EDITABLE(d->rule[i].text), -1);
       g_signal_handlers_unblock_matched(d->rule[i].text, G_SIGNAL_MATCH_FUNC, 0, 0, NULL, entry_changed, NULL);
-      g_free(text);
       d->rule[i].typing = FALSE;
     }
 
@@ -2791,7 +2789,7 @@ static void _populate_collect_combo(GtkWidget *w)
     {
       const uint32_t keyid = dt_metadata_get_keyid_by_display_order(i);
       const gchar *name = dt_metadata_get_name(keyid);
-      gchar *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
+      gchar *setting = g_strdup_printf("plugins/lighttable/metadata/%s_flag", name);
       const gboolean hidden = dt_conf_get_int(setting) & DT_METADATA_FLAG_HIDDEN;
       g_free(setting);
       const int meta_type = dt_metadata_get_type(keyid);
@@ -2861,6 +2859,32 @@ static gint _sort_model_func(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b
   gtk_tree_model_get(model, a, DT_LIB_COLLECT_COL_INDEX, &ia, -1);
   gtk_tree_model_get(model, b, DT_LIB_COLLECT_COL_INDEX, &ib, -1);
   return ib - ia;
+}
+
+#ifdef _WIN32
+void _mount_changed(GVolumeMonitor *volume_monitor, GMount *mount, dt_lib_module_t *self)
+#else
+void _mount_changed(GUnixMountMonitor *monitor, dt_lib_module_t *self)
+#endif
+{
+  dt_lib_collect_t *d = (dt_lib_collect_t *)self->data;
+  dt_film_set_folder_status();
+  // very rough update (rebuild the view). As these events are not too many that remains acceptable
+  // adding film_id to treeview and listview would be cleaner to update just the parameter "reachable"
+  dt_lib_collect_rule_t *dr = d->rule + d->active_rule;
+  const int property = _combo_get_active_collection(dr->combo);
+  if(property == DT_COLLECTION_PROP_FOLDERS)
+  {
+    d->rule[d->active_rule].typing = FALSE;
+    d->view_rule = -1;
+    tree_view(dr);
+  }
+  else if(property == DT_COLLECTION_PROP_FILMROLL)
+  {
+    d->rule[d->active_rule].typing = FALSE;
+    d->view_rule = -1;
+    list_view(dr);
+  }
 }
 
 void gui_init(dt_lib_module_t *self)
@@ -2963,9 +2987,18 @@ void gui_init(dt_lib_module_t *self)
 
   if(_combo_get_active_collection(d->rule[0].combo) == DT_COLLECTION_PROP_TAG)
   {
-    gchar *tag = dt_conf_get_string("plugins/lighttable/collect/string0");
+    const char *tag = dt_conf_get_string_const("plugins/lighttable/collect/string0");
     dt_collection_set_tag_id((dt_collection_t *)darktable.collection, dt_tag_get_tag_id_by_name(tag));
   }
+
+#ifdef _WIN32
+  d->vmonitor = g_volume_monitor_get();
+  g_signal_connect(G_OBJECT(d->vmonitor), "mount-changed", G_CALLBACK(_mount_changed), self);
+  g_signal_connect(G_OBJECT(d->vmonitor), "mount-added", G_CALLBACK(_mount_changed), self);
+#else
+  d->vmonitor = g_unix_mount_monitor_get();
+  g_signal_connect(G_OBJECT(d->vmonitor), "mounts-changed", G_CALLBACK(_mount_changed), self);
+#endif
 
   // force redraw collection images because of late update of the table memory.darktable_iop_names
   if(has_iop_name_rule)
@@ -3019,6 +3052,7 @@ void gui_cleanup(dt_lib_module_t *self)
 
   g_object_unref(d->treefilter);
   g_object_unref(d->listfilter);
+  g_object_unref(d->vmonitor);
 
   /* TODO: Make sure we are cleaning up all allocations */
 
@@ -3189,7 +3223,7 @@ void init(struct dt_lib_module_t *self)
     if(dt_metadata_get_type(i) != DT_METADATA_TYPE_INTERNAL)
     {
       const char *name = dt_metadata_get_name(i);
-      char *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
+      gchar *setting = g_strdup_printf("plugins/lighttable/metadata/%s_flag", name);
       const gboolean hidden = dt_conf_get_int(setting) & DT_METADATA_FLAG_HIDDEN;
       g_free(setting);
 
