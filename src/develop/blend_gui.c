@@ -1474,9 +1474,9 @@ gboolean blend_color_picker_apply(dt_iop_module_t *module, GtkWidget *picker, dt
     dt_develop_blend_params_t *bp = module->blend_params;
 
     const int tab = data->tab;
-    float raw_min[4] DT_ALIGNED_PIXEL, raw_max[4] DT_ALIGNED_PIXEL;
+    dt_aligned_pixel_t raw_min, raw_max;
     float picker_min[8] DT_ALIGNED_PIXEL, picker_max[8] DT_ALIGNED_PIXEL;
-    float picker_values[4] DT_ALIGNED_PIXEL;
+    dt_aligned_pixel_t picker_values;
 
     const int in_out = ((dt_key_modifier_state() == GDK_CONTROL_MASK) && data->output_channels_shown) ? 1 : 0;
 
@@ -1726,6 +1726,7 @@ static void _blendif_options_callback(GtkButton *button, GdkEventButton *event, 
     if(module_cst == DEVELOP_BLEND_CS_LAB)
     {
       mi = gtk_check_menu_item_new_with_label(_("Lab"));
+      gtk_style_context_add_class(gtk_widget_get_style_context(mi), "check-menu-item");
       if(module_blend_cst == DEVELOP_BLEND_CS_LAB)
       {
         gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
@@ -1737,6 +1738,7 @@ static void _blendif_options_callback(GtkButton *button, GdkEventButton *event, 
     }
 
     mi = gtk_check_menu_item_new_with_label(_("RGB (display)"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(mi), "check-menu-item");
     if(module_blend_cst == DEVELOP_BLEND_CS_RGB_DISPLAY)
     {
       gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
@@ -1747,6 +1749,7 @@ static void _blendif_options_callback(GtkButton *button, GdkEventButton *event, 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
 
     mi = gtk_check_menu_item_new_with_label(_("RGB (scene)"));
+    gtk_style_context_add_class(gtk_widget_get_style_context(mi), "check-menu-item");
     if(module_blend_cst == DEVELOP_BLEND_CS_RGB_SCENE)
     {
       gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);

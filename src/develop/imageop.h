@@ -209,13 +209,13 @@ typedef struct dt_iop_module_t
   /** color picker proxy */
   struct dt_iop_color_picker_t *picker;
   /** bounding box in which the mean color is requested. */
-  float color_picker_box[4];
+  dt_boundingbox_t color_picker_box;
   /** single point to pick if in point mode */
   float color_picker_point[2];
   /** place to store the picked color of module input. */
-  float picked_color[4], picked_color_min[4], picked_color_max[4];
+  dt_aligned_pixel_t picked_color, picked_color_min, picked_color_max;
   /** place to store the picked color of module output (before blending). */
-  float picked_output_color[4], picked_output_color_min[4], picked_output_color_max[4];
+  dt_aligned_pixel_t picked_output_color, picked_output_color_min, picked_output_color_max;
   /** pointer to pre-module histogram data; if available: histogram_bins_count bins with 4 channels each */
   uint32_t *histogram;
   /** stats of captured histogram */
@@ -467,7 +467,7 @@ void dt_iop_queue_history_update(dt_iop_module_t *module, gboolean extend_prior)
 void dt_iop_cancel_history_update(dt_iop_module_t *module);
 
 /** (un)hide iop module header right side buttons */
-gboolean dt_iop_show_hide_header_buttons(GtkWidget *header, GdkEventCrossing *event, gboolean show_buttons, gboolean always_hide);
+gboolean dt_iop_show_hide_header_buttons(dt_iop_module_t *module, GdkEventCrossing *event, gboolean show_buttons, gboolean always_hide);
 
 /** add/remove mask indicator to iop module header */
 void add_remove_mask_indicator(dt_iop_module_t *module, gboolean add);

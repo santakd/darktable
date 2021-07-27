@@ -1062,7 +1062,7 @@ static void xtrans_markesteijn_interpolate(float *out, const float *const in,
             else if(hm[d] > hm[d + 4])
               hm[d + 4] = 0;
           }
-          float avg[4] = { 0.0f };
+          dt_aligned_pixel_t avg = { 0.0f };
           for(int d = 0; d < ndir; d++)
           {
             if(hm[d] >= maxval)
@@ -2098,7 +2098,7 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
           float complex C18m = qmat[7] * modulator[6];
           qmat[0] = *(i_src + row * TS + col) - C2m - C3m - C5m - C6m - 2.0f * C7m - C12m - C18m;
           // get the rgb components from fdc
-          float rgbpix[3] = { 0.f, 0.f, 0.f };
+          dt_aligned_pixel_t rgbpix = { 0.f, 0.f, 0.f };
           // multiply with the inverse matrix of M
           for(int color = 0; color < 3; color++)
             for(int c = 0; c < 8; c++)
@@ -2135,7 +2135,7 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
               hm[d + 4] = 0;
           }
 
-          float avg[4] = { 0.f };
+          dt_aligned_pixel_t avg = { 0.f };
           for(int d = 0; d < ndir; d++)
           {
             if(hm[d] >= maxval)
@@ -2144,7 +2144,7 @@ static void xtrans_fdc_interpolate(struct dt_iop_module_t *self, float *out, con
               avg[3]++;
             }
           }
-          float rgbpix[3];
+          dt_aligned_pixel_t rgbpix;
           for(int c = 0; c < 3; c++) rgbpix[c] = avg[c] / avg[3];
           // preserve all components of Markesteijn for this pixel
           const float y = 0.2627f * rgbpix[0] + 0.6780f * rgbpix[1] + 0.0593f * rgbpix[2];
@@ -2221,7 +2221,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
   for(int row = 0; row < roi_out->height; row++)
     for(int col = 0; col < roi_out->width; col++)
     {
-      float sum[4] = { 0.0f };
+      dt_aligned_pixel_t sum = { 0.0f };
       uint8_t count[4] = { 0 };
       if(col == 1 && row >= 1 && row < roi_out->height - 1) col = roi_out->width - 1;
       // average all the adjoining pixels inside image by color
@@ -2301,7 +2301,7 @@ static void lin_interpolate(float *out, const float *const in, const dt_iop_roi_
     const float *buf_in = in + roi_in->width * row + 1;
     for(int col = 1; col < roi_out->width - 1; col++)
     {
-      float sum[4] = { 0.0f };
+      dt_aligned_pixel_t sum = { 0.0f };
       int *ip = &(lookup[row % size][col % size][0]);
       // for each adjoining pixel not of this pixel's color, sum up its weighted values
       for(int i = *ip++; i--; ip += 3) sum[ip[2]] += buf_in[ip[0]] * ip[1];
@@ -2461,7 +2461,7 @@ static void vng_interpolate(float *out, const float *const in,
         continue;
       }
       const float thold = gmin + (gmax * 0.5f);
-      float sum[4] = { 0.0f };
+      dt_aligned_pixel_t sum = { 0.0f };
       const int color = fcol(row + roi_in->y, col + roi_in->x, filters4, xtrans);
       int num = 0;
       for(g = 0; g < 8; g++, ip += 2) /* Average the neighbors */
@@ -2650,7 +2650,7 @@ static void demosaic_ppg(float *const out, const float *const in, const dt_iop_r
     for(int i = 3; i < roi_out->width - 3; i++)
     {
       const int c = FC(j, i, filters);
-      float color[4];
+      dt_aligned_pixel_t color;
       const float pc = buf_in[0];
       // if(__builtin_expect(c == 0 || c == 2, 1))
       if(c == 0 || c == 2)
@@ -2716,7 +2716,7 @@ static void demosaic_ppg(float *const out, const float *const in, const dt_iop_r
     {
       // also prefetch direct nbs top/bottom
       const int c = FC(j, i, filters);
-      float color[4] = { buf[0], buf[1], buf[2], buf[3] };
+      dt_aligned_pixel_t color = { buf[0], buf[1], buf[2], buf[3] };
 
       // fill all four pixels with correctly interpolated stuff: r/b for green1/2
       // b for r and r for b
@@ -5652,6 +5652,8 @@ void reload_defaults(dt_iop_module_t *module)
   module->hide_enable_button = 1;
 
   module->default_enabled = dt_image_is_raw(&module->dev->image_storage);
+  if(module->widget)
+    gtk_stack_set_visible_child_name(GTK_STACK(module->widget), module->default_enabled ? "raw" : "non_raw");
 }
 
 void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)

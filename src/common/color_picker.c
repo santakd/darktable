@@ -35,12 +35,12 @@ static inline size_t _box_size(const int *const box)
 static inline void rgb_to_JzCzhz(const float *const rgb, float *const JzCzhz,
                                  const dt_iop_order_iccprofile_info_t *const profile)
 {
-  float XYZ_D65[3] DT_ALIGNED_PIXEL = { 0.0f, 0.0f, 0.0f };
-  float JzAzBz[3] DT_ALIGNED_PIXEL = { 0.0f, 0.0f, 0.0f };
+  dt_aligned_pixel_t XYZ_D65 = { 0.0f, 0.0f, 0.0f };
+  dt_aligned_pixel_t JzAzBz = { 0.0f, 0.0f, 0.0f };
 
   if(profile)
   {
-    float XYZ_D50[3] DT_ALIGNED_PIXEL = { 0.0f, 0.0f, 0.0f };
+    dt_aligned_pixel_t XYZ_D50 = { 0.0f, 0.0f, 0.0f };
     dt_ioppr_rgb_matrix_to_xyz(rgb, XYZ_D50, profile->matrix_in, profile->lut_in, profile->unbounded_coeffs_in,
                                profile->lutsize, profile->nonlinearlut);
     dt_XYZ_D50_2_XYZ_D65(XYZ_D50, XYZ_D65);
@@ -63,7 +63,7 @@ static inline void _color_picker_rgb_or_lab(float *const avg, float *const min, 
 {
   for(size_t i = 0; i < width; i += 4)
   {
-    float pick[4] DT_ALIGNED_PIXEL = { pixels[i], pixels[i + 1], pixels[i + 2], 0.0f };
+    dt_aligned_pixel_t pick = { pixels[i], pixels[i + 1], pixels[i + 2], 0.0f };
     for(size_t k = 0; k < 4; k++)
     {
       avg[k] += w * pick[k];
@@ -81,7 +81,7 @@ static inline void _color_picker_lch(float *const avg, float *const min, float *
 {
   for(size_t i = 0; i < width; i += 4)
   {
-    float pick[4] DT_ALIGNED_PIXEL;
+    dt_aligned_pixel_t pick;
     dt_Lab_2_LCH(pixels + i, pick);
     pick[3] = pick[2] < 0.5f ? pick[2] + 0.5f : pick[2] - 0.5f;
     for(size_t k = 0; k < 4; k++)
@@ -101,7 +101,7 @@ static inline void _color_picker_hsl(float *const avg, float *const min, float *
 {
   for(size_t i = 0; i < width; i += 4)
   {
-    float pick[4] DT_ALIGNED_PIXEL;
+    dt_aligned_pixel_t pick;
     dt_RGB_2_HSL(pixels + i, pick);
     pick[3] = pick[0] < 0.5f ? pick[0] + 0.5f : pick[0] - 0.5f;
     for(size_t k = 0; k < 4; k++)
@@ -122,7 +122,7 @@ static inline void _color_picker_jzczhz(float *const avg, float *const min, floa
 {
   for(size_t i = 0; i < width; i += 4)
   {
-    float pick[4] DT_ALIGNED_PIXEL;
+    dt_aligned_pixel_t pick;
     rgb_to_JzCzhz(pixels + i, pick, profile);
     pick[3] = pick[2] < 0.5f ? pick[2] + 0.5f : pick[2] - 0.5f;
     for(size_t k = 0; k < 4; k++)

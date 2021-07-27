@@ -162,8 +162,8 @@ static void gui_update_from_coeffs(dt_iop_module_t *self)
   const dt_image_t *img = &self->dev->image_storage;
   if(img->flags & DT_IMAGE_4BAYER)
   {
-    float rgb[4];
-    for(int k = 0; k < 4; k++) rgb[k] = p->color[k];
+    dt_aligned_pixel_t rgb;
+    for_four_channels(k) rgb[k] = p->color[k];
 
     dt_colorspaces_cygm_to_rgb(rgb, 1, g->CAM_to_RGB);
 
@@ -177,16 +177,16 @@ static void gui_update_from_coeffs(dt_iop_module_t *self)
 
 void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
 {
-  static float old[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+  static dt_aligned_pixel_t old = { 0.0f, 0.0f, 0.0f, 0.0f };
 
   const float *grayrgb = self->picked_color;
 
   if(grayrgb[0] == old[0] && grayrgb[1] == old[1] && grayrgb[2] == old[2] && grayrgb[3] == old[3]) return;
 
-  for(int k = 0; k < 4; k++) old[k] = grayrgb[k];
+  for_four_channels(k) old[k] = grayrgb[k];
 
   dt_iop_invert_params_t *p = self->params;
-  for(int k = 0; k < 4; k++) p->color[k] = grayrgb[k];
+  for_four_channels(k) p->color[k] = grayrgb[k];
 
   ++darktable.gui->reset;
   gui_update_from_coeffs(self);
@@ -229,7 +229,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const float *const m = piece->pipe->dsc.processed_maximum;
 
-  const float film_rgb_f[4]
+  const dt_aligned_pixel_t film_rgb_f
       = { d->color[0] * m[0], d->color[1] * m[1], d->color[2] * m[2], d->color[3] * m[3] };
 
   // FIXME: it could be wise to make this a NOP when picking colors. not sure about that though.
@@ -313,7 +313,7 @@ void process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, c
 
   const float *const m = piece->pipe->dsc.processed_maximum;
 
-  const float film_rgb_f[4]
+  const dt_aligned_pixel_t film_rgb_f
       = { d->color[0] * m[0], d->color[1] * m[1], d->color[2] * m[2], d->color[3] * m[3] };
 
   // FIXME: it could be wise to make this a NOP when picking colors. not sure about that though.
@@ -467,7 +467,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   cl_int err = -999;
   int kernel = -1;
 
-  float film_rgb_f[4] = { d->color[0], d->color[1], d->color[2], d->color[3] };
+  dt_aligned_pixel_t film_rgb_f = { d->color[0], d->color[1], d->color[2], d->color[3] };
 
   if(filters)
   {

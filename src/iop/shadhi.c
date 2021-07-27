@@ -331,8 +331,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   if(data->shadhi_algo == SHADHI_ALGO_GAUSSIAN)
   {
-    float Labmax[4] = { 100.0f, 128.0f, 128.0f, 1.0f };
-    float Labmin[4] = { 0.0f, -128.0f, -128.0f, 0.0f };
+    dt_aligned_pixel_t Labmax = { 100.0f, 128.0f, 128.0f, 1.0f };
+    dt_aligned_pixel_t Labmin = { 0.0f, -128.0f, -128.0f, 0.0f };
 
     if(unbound_mask)
     {
@@ -359,8 +359,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     dt_bilateral_free(b);
   }
 
-  const float max[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-  const float min[4] = { 0.0f, -1.0f, -1.0f, 0.0f };
+  const dt_aligned_pixel_t max = { 1.0f, 1.0f, 1.0f, 1.0f };
+  const dt_aligned_pixel_t min = { 0.0f, -1.0f, -1.0f, 0.0f };
   const float lmin = 0.0f;
   const float lmax = max[0] + fabsf(min[0]);
   const float halfmax = lmax / 2.0;
@@ -378,7 +378,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 #endif
   for(size_t j = 0; j < (size_t)width * height * ch; j += ch)
   {
-    float ta[3], tb[3];
+    dt_aligned_pixel_t ta, tb;
     _Lab_scale(&in[j], ta);
     // invert and desaturate the blurred output pixel
     out[j + 0] = 100.0f - out[j + 0];
@@ -501,8 +501,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   if(d->shadhi_algo == SHADHI_ALGO_GAUSSIAN)
   {
-    float Labmax[4] = { 100.0f, 128.0f, 128.0f, 1.0f };
-    float Labmin[4] = { 0.0f, -128.0f, -128.0f, 0.0f };
+    dt_aligned_pixel_t Labmax = { 100.0f, 128.0f, 128.0f, 1.0f };
+    dt_aligned_pixel_t Labmin = { 0.0f, -128.0f, -128.0f, 0.0f };
 
     if(unbound_mask)
     {

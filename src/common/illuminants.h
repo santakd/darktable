@@ -180,7 +180,7 @@ static inline void CCT_to_xy_blackbody(const float t, float *x, float *y)
 #ifdef _OPENMP
 #pragma omp declare simd
 #endif
-static inline void illuminant_xy_to_XYZ(const float x, const float y, float XYZ[3])
+static inline void illuminant_xy_to_XYZ(const float x, const float y, dt_aligned_pixel_t XYZ)
 {
   XYZ[0] = x / y;             // X
   XYZ[1] = 1.f;               // Y is always 1 by definition, for an illuminant
@@ -191,10 +191,10 @@ static inline void illuminant_xy_to_XYZ(const float x, const float y, float XYZ[
 #ifdef _OPENMP
 #pragma omp declare simd
 #endif
-static inline void illuminant_xy_to_RGB(const float x, const float y, float RGB[4])
+static inline void illuminant_xy_to_RGB(const float x, const float y, dt_aligned_pixel_t RGB)
 {
   // Get an sRGB preview of current illuminant
-  float DT_ALIGNED_PIXEL XYZ[4];
+  dt_aligned_pixel_t XYZ;
   illuminant_xy_to_XYZ(x, y, XYZ);
 
   // Fixme : convert to RGB display space instead of sRGB but first the display profile should be global in dt,
@@ -210,7 +210,7 @@ static inline void illuminant_xy_to_RGB(const float x, const float y, float RGB[
 #ifdef _OPENMP
 #pragma omp declare simd
 #endif
-static inline void illuminant_CCT_to_RGB(const float t, float RGB[4])
+static inline void illuminant_CCT_to_RGB(const float t, dt_aligned_pixel_t RGB)
 {
   float x, y;
   if(t > 4000.f)
@@ -223,12 +223,13 @@ static inline void illuminant_CCT_to_RGB(const float t, float RGB[4])
 
 
 // Fetch image from pipeline and read EXIF for camera RAW WB coeffs
-static inline int find_temperature_from_raw_coeffs(const dt_image_t *img, const float custom_wb[4], float *chroma_x, float *chroma_y);
+static inline int find_temperature_from_raw_coeffs(const dt_image_t *img, const dt_aligned_pixel_t custom_wb,
+                                                   float *chroma_x, float *chroma_y);
 
 
 static inline int illuminant_to_xy(const dt_illuminant_t illuminant, // primary type of illuminant
                                    const dt_image_t *img,            // image container
-                                   const float custom_wb[4],         // optional user-set WB coeffs
+                                   const dt_aligned_pixel_t custom_wb, // optional user-set WB coeffs
                                    float *x_out, float *y_out,       // chromaticity output
                                    const float t,                    // temperature in K, if needed
                                    const dt_illuminant_fluo_t fluo,  // sub-type of fluorescent illuminant, if needed
@@ -327,11 +328,11 @@ static inline int illuminant_to_xy(const dt_illuminant_t illuminant, // primary 
 }
 
 
-static inline void WB_coeffs_to_illuminant_xy(const float CAM_to_XYZ[4][3], const float WB[4], float *x, float *y)
+static inline void WB_coeffs_to_illuminant_xy(const float CAM_to_XYZ[4][3], const dt_aligned_pixel_t WB,
+                                              float *x, float *y)
 {
   // Find the illuminant chromaticity x y from RAW WB coeffs and camera input matrice
-  float XYZ[4];
-  float LMS[4];
+  dt_aligned_pixel_t XYZ, LMS;
   // Simulate white point, aka convert (1, 1, 1) in camera space to XYZ
   // warning : we multiply the transpose of CAM_to_XYZ  since the pseudoinverse transposes it
   XYZ[0] = CAM_to_XYZ[0][0] / WB[0] + CAM_to_XYZ[1][0] / WB[1] + CAM_to_XYZ[2][0] / WB[2];
@@ -339,7 +340,7 @@ static inline void WB_coeffs_to_illuminant_xy(const float CAM_to_XYZ[4][3], cons
   XYZ[2] = CAM_to_XYZ[0][2] / WB[0] + CAM_to_XYZ[1][2] / WB[1] + CAM_to_XYZ[2][2] / WB[2];
 
   // Matrices white point is D65. We need to convert it for darktable's pipe (D50)
-  static const float DT_ALIGNED_PIXEL D65[4] = { 0.941238f, 1.040633f, 1.088932f, 0.f };
+  static const dt_aligned_pixel_t D65 = { 0.941238f, 1.040633f, 1.088932f, 0.f };
   const float p = powf(1.088932f / 0.818155f, 0.0834f);
 
   convert_XYZ_to_bradford_LMS(XYZ, LMS);
@@ -358,7 +359,7 @@ static inline void WB_coeffs_to_illuminant_xy(const float CAM_to_XYZ[4][3], cons
 
 static inline void matrice_pseudoinverse(float (*in)[3], float (*out)[3], int size)
 {
-  float work[3][6];
+  float DT_ALIGNED_ARRAY work[3][6];
 
   for(int i = 0; i < 3; i++)
   {
@@ -391,7 +392,8 @@ static inline void matrice_pseudoinverse(float (*in)[3], float (*out)[3], int si
 }
 
 
-static int find_temperature_from_raw_coeffs(const dt_image_t *img, const float custom_wb[4], float *chroma_x, float *chroma_y)
+static int find_temperature_from_raw_coeffs(const dt_image_t *img, const dt_aligned_pixel_t custom_wb,
+                                            float *chroma_x, float *chroma_y)
 {
   if(img == NULL) return FALSE;
   if(!dt_image_is_matrix_correction_supported(img)) return FALSE;
@@ -406,10 +408,7 @@ static int find_temperature_from_raw_coeffs(const dt_image_t *img, const float c
   if(!has_valid_coeffs) return FALSE;
 
   // Get white balance camera factors
-  float WB[4] = { img->wb_coeffs[0],
-                  img->wb_coeffs[1],
-                  img->wb_coeffs[2],
-                  img->wb_coeffs[3] };
+  dt_aligned_pixel_t WB = { img->wb_coeffs[0], img->wb_coeffs[1], img->wb_coeffs[2], img->wb_coeffs[3] };
 
   // Adapt the camera coeffs with custom white balance if provided
   // this can deal with WB coeffs that don't use the input matrix reference

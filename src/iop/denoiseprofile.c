@@ -750,9 +750,9 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 }
 
 static inline void precondition(const float *const in, float *const buf, const int wd, const int ht,
-                                const float a[4], const float b[4])
+                                const dt_aligned_pixel_t a, const dt_aligned_pixel_t b)
 {
-  const float DT_ALIGNED_PIXEL sigma2_plus_3_8[4]
+  const dt_aligned_pixel_t sigma2_plus_3_8
       = { (b[0] / a[0]) * (b[0] / a[0]) + 3.f / 8.f,
           (b[1] / a[1]) * (b[1] / a[1]) + 3.f / 8.f,
           (b[2] / a[2]) * (b[2] / a[2]) + 3.f / 8.f,
@@ -775,10 +775,10 @@ static inline void precondition(const float *const in, float *const buf, const i
   }
 }
 
-static inline void backtransform(float *const buf, const int wd, const int ht, const float a[4],
-                                 const float b[4])
+static inline void backtransform(float *const buf, const int wd, const int ht, const dt_aligned_pixel_t a,
+                                 const dt_aligned_pixel_t b)
 {
-  const float DT_ALIGNED_PIXEL sigma2_plus_1_8[4]
+  const dt_aligned_pixel_t sigma2_plus_1_8
       = { (b[0] / a[0]) * (b[0] / a[0]) + 1.f / 8.f,
           (b[1] / a[1]) * (b[1] / a[1]) + 1.f / 8.f,
           (b[2] / a[2]) * (b[2] / a[2]) + 1.f / 8.f,
@@ -833,14 +833,13 @@ static inline void backtransform(float *const buf, const int wd, const int ht, c
 // is a suitable function.
 // This is the function we use here.
 static inline void precondition_v2(const float *const in, float *const buf, const int wd, const int ht,
-                                   const float a, const float p[4], const float b, const float wb[4])
+                                   const float a, const dt_aligned_pixel_t p, const float b,
+                                   const dt_aligned_pixel_t wb)
 {
   const size_t npixels = (size_t)wd * ht;
-  const float DT_ALIGNED_PIXEL expon[4] = { -p[0] / 2 + 1, -p[1] / 2 + 1, -p[2] / 2 + 1, 1.0f };
-  const float DT_ALIGNED_PIXEL denom[4] = { (-p[0] + 2) * sqrtf(a),
-                                            (-p[1] + 2) * sqrtf(a),
-                                            (-p[2] + 2) * sqrtf(a),
-                                            1.0f };
+  const dt_aligned_pixel_t expon = { -p[0] / 2 + 1, -p[1] / 2 + 1, -p[2] / 2 + 1, 1.0f };
+  const dt_aligned_pixel_t denom = { (-p[0] + 2) * sqrtf(a), (-p[1] + 2) * sqrtf(a),
+                                     (-p[2] + 2) * sqrtf(a), 1.0f };
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
@@ -916,18 +915,15 @@ static inline void precondition_v2(const float *const in, float *const buf, cons
 // control the bias:
 // we replace the 2 * p * constant / (2 - p) part of delta by user
 // defined bias controller.
-static inline void backtransform_v2(float *const buf, const int wd, const int ht, const float a, const float p[4],
-                                    const float b, const float bias, const float wb[4])
+static inline void backtransform_v2(float *const buf, const int wd, const int ht, const float a,
+                                    const dt_aligned_pixel_t p, const float b, const float bias,
+                                    const dt_aligned_pixel_t wb)
 {
   const size_t npixels = (size_t)wd * ht;
-  const float DT_ALIGNED_PIXEL expon[4] = { 1.0f / (1.0f - p[0] / 2.0f),
-                                            1.0f / (1.0f - p[1] / 2.0f),
-                                            1.0f / (1.0f - p[2] / 2.0f),
-                                            1.0f };
-  const float DT_ALIGNED_PIXEL denom[4] = { 4.0f / (sqrtf(a) * (2.0f - p[0])),
-                                            4.0f / (sqrtf(a) * (2.0f - p[1])),
-                                            4.0f / (sqrtf(a) * (2.0f - p[2])),
-                                            1.0f };
+  const dt_aligned_pixel_t expon = { 1.0f / (1.0f - p[0] / 2.0f), 1.0f / (1.0f - p[1] / 2.0f),
+                                     1.0f / (1.0f - p[2] / 2.0f), 1.0f };
+  const dt_aligned_pixel_t denom = { 4.0f / (sqrtf(a) * (2.0f - p[0])), 4.0f / (sqrtf(a) * (2.0f - p[1])),
+                                     4.0f / (sqrtf(a) * (2.0f - p[2])), 1.0f };
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(npixels, buf, b, bias, wb)   \
@@ -947,13 +943,14 @@ static inline void backtransform_v2(float *const buf, const int wd, const int ht
 }
 
 static inline void precondition_Y0U0V0(const float *const in, float *const buf, const int wd, const int ht,
-                                       const float a, const float p[4], const float b, const float toY0U0V0[3][4])
+                                       const float a, const dt_aligned_pixel_t p, const float b,
+                                       const float toY0U0V0[3][4])
 {
-  const float DT_ALIGNED_PIXEL expon[4] = { -p[0] / 2 + 1, -p[1] / 2 + 1, -p[2] / 2 + 1, 1.0f };
-  const float DT_ALIGNED_PIXEL scale[4] = { 2.0f / ((-p[0] + 2) * sqrtf(a)),
-                                            2.0f / ((-p[1] + 2) * sqrtf(a)),
-                                            2.0f / ((-p[2] + 2) * sqrtf(a)),
-                                            1.0f };
+  const dt_aligned_pixel_t expon = { -p[0] / 2 + 1, -p[1] / 2 + 1, -p[2] / 2 + 1, 1.0f };
+  const dt_aligned_pixel_t scale = { 2.0f / ((-p[0] + 2) * sqrtf(a)),
+                                     2.0f / ((-p[1] + 2) * sqrtf(a)),
+                                     2.0f / ((-p[2] + 2) * sqrtf(a)),
+                                     1.0f };
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(buf, ht, in, wd, b, toY0U0V0) \
@@ -962,7 +959,7 @@ static inline void precondition_Y0U0V0(const float *const in, float *const buf, 
 #endif
   for(size_t j = 0; j < (size_t)4 * ht * wd; j += 4)
   {
-    float DT_ALIGNED_PIXEL tmp[4]; // "unused" fourth element enables vectorization
+    dt_aligned_pixel_t tmp; // "unused" fourth element enables vectorization
     for_each_channel(c,aligned(in))
     {
       tmp[c] = powf(MAX(in[j+c] + b, 0.0f), expon[c]) * scale[c];
@@ -979,18 +976,19 @@ static inline void precondition_Y0U0V0(const float *const in, float *const buf, 
   }
 }
 
-static inline void backtransform_Y0U0V0(float *const buf, const int wd, const int ht, const float a, const float p[4],
-                                        const float b, const float bias, const float wb[4], const float toRGB[3][4])
+static inline void backtransform_Y0U0V0(float *const buf, const int wd, const int ht, const float a,
+                                        const dt_aligned_pixel_t p, const float b, const float bias,
+                                        const dt_aligned_pixel_t wb, const float toRGB[3][4])
 {
-  const float DT_ALIGNED_PIXEL bias_wb[4] = { bias * wb[0], bias * wb[1], bias * wb[2], 0.0f };
-  const float DT_ALIGNED_PIXEL expon[4] = {  1.0f / (1.0f - p[0] / 2.0f),
-                                             1.0f / (1.0f - p[1] / 2.0f),
-                                             1.0f / (1.0f - p[2] / 2.0f),
-                                             1.0f };
-  const float DT_ALIGNED_PIXEL scale[4] = { (sqrtf(a) * (2.0f - p[0])) / 4.0f,
-                                            (sqrtf(a) * (2.0f - p[1])) / 4.0f,
-                                            (sqrtf(a) * (2.0f - p[2])) / 4.0f,
-                                            1.0f };
+  const dt_aligned_pixel_t bias_wb = { bias * wb[0], bias * wb[1], bias * wb[2], 0.0f };
+  const dt_aligned_pixel_t expon = {  1.0f / (1.0f - p[0] / 2.0f),
+                                      1.0f / (1.0f - p[1] / 2.0f),
+                                      1.0f / (1.0f - p[2] / 2.0f),
+                                      1.0f };
+  const dt_aligned_pixel_t scale = { (sqrtf(a) * (2.0f - p[0])) / 4.0f,
+                                     (sqrtf(a) * (2.0f - p[1])) / 4.0f,
+                                     (sqrtf(a) * (2.0f - p[2])) / 4.0f,
+                                     1.0f };
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(buf, ht, wd, b, bias_wb, toRGB, expon, scale)  \
@@ -998,7 +996,7 @@ static inline void backtransform_Y0U0V0(float *const buf, const int wd, const in
 #endif
   for(size_t j = 0; j < (size_t)4 * ht * wd; j += 4)
   {
-    float DT_ALIGNED_PIXEL rgb[4] = { 0.0f }; // "unused" fourth element enables vectorization
+    dt_aligned_pixel_t rgb = { 0.0f }; // "unused" fourth element enables vectorization
     for(int k = 0; k < 3; k++)
     {
       for_each_channel(c,aligned(toRGB,buf))
@@ -1022,8 +1020,8 @@ static inline void backtransform_Y0U0V0(float *const buf, const int wd, const in
 
 // called by: process_wavelets, nlmeans_precondition, nlmeans_precondition_cl, process_variance,
 //     process_wavelets_cl
-static void compute_wb_factors(float wb[4],const dt_iop_denoiseprofile_data_t *const d,
-                               const dt_dev_pixelpipe_iop_t *const piece, const float weights[4])
+static void compute_wb_factors(dt_aligned_pixel_t wb,const dt_iop_denoiseprofile_data_t *const d,
+                               const dt_dev_pixelpipe_iop_t *const piece, const dt_aligned_pixel_t weights)
 {
   const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
                          + piece->pipe->dsc.temperature.coeffs[2])
@@ -1093,7 +1091,7 @@ static gboolean invert_matrix(const float in[3][4], float out[3][4])
 
 // create the white balance adaptative conversion matrices
 // supposes toY0U0V0 already contains the "normal" conversion matrix
-static void set_up_conversion_matrices(float toY0U0V0[3][4], float toRGB[3][4], float wb[4])
+static void set_up_conversion_matrices(float toY0U0V0[3][4], float toRGB[3][4], dt_aligned_pixel_t wb)
 {
   // for an explanation of the spirit of the choice of the coefficients of the
   // Y0U0V0 conversion matrix, see part 12.3.3 page 190 of
@@ -1145,7 +1143,7 @@ static void set_up_conversion_matrices(float toY0U0V0[3][4], float toRGB[3][4], 
   }
 }
 
-static void variance_stabilizing_xform(float thrs[4], const int scale, const int max_scale, const size_t npixels,
+static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale, const int max_scale, const size_t npixels,
                                        const float *const sum_y2, const dt_iop_denoiseprofile_data_t *const d)
 {
   // variance stabilizing transform maps sigma to unity.
@@ -1155,16 +1153,12 @@ static void variance_stabilizing_xform(float thrs[4], const int scale, const int
   const float sigma_band = powf(varf, scale) * sigma;
   // determine thrs as bayesshrink
   const float sb2 = sigma_band * sigma_band;
-  const float DT_ALIGNED_PIXEL var_y[4] = { sum_y2[0] / (npixels - 1.0f),
-                                            sum_y2[1] / (npixels - 1.0f),
-                                            sum_y2[2] / (npixels - 1.0f),
-                                            0.0f };
-  const float DT_ALIGNED_PIXEL std_x[4] = { sqrtf(MAX(1e-6f, var_y[0] - sb2)),
-                                            sqrtf(MAX(1e-6f, var_y[1] - sb2)),
-                                            sqrtf(MAX(1e-6f, var_y[2] - sb2)),
-                                            1.0f };
+  const dt_aligned_pixel_t var_y = { sum_y2[0] / (npixels - 1.0f), sum_y2[1] / (npixels - 1.0f),
+                                     sum_y2[2] / (npixels - 1.0f), 0.0f };
+  const dt_aligned_pixel_t std_x = { sqrtf(MAX(1e-6f, var_y[0] - sb2)), sqrtf(MAX(1e-6f, var_y[1] - sb2)),
+                                     sqrtf(MAX(1e-6f, var_y[2] - sb2)), 1.0f };
   // add 8.0 here because it seemed a little weak
-  float DT_ALIGNED_PIXEL adjt[4] = { 8.0f, 8.0f, 8.0f, 0.0f };
+  dt_aligned_pixel_t adjt = { 8.0f, 8.0f, 8.0f, 0.0f };
 
   const int offset_scale = DT_IOP_DENOISE_PROFILE_BANDS - max_scale;
   const int band_index = DT_IOP_DENOISE_PROFILE_BANDS - (scale + offset_scale + 1);
@@ -1267,15 +1261,15 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
     return;
   }
 
-  float DT_ALIGNED_PIXEL wb[4];  // the "unused" fourth element enables vectorization
-  const float DT_ALIGNED_PIXEL wb_weights[4] = { 2.0f, 1.0f, 2.0f, 0.0f };
+  dt_aligned_pixel_t wb;  // the "unused" fourth element enables vectorization
+  const dt_aligned_pixel_t wb_weights = { 2.0f, 1.0f, 2.0f, 0.0f };
   compute_wb_factors(wb,d,piece,wb_weights);
 
   // adaptive p depending on white balance (the "unused" fourth element enables vectorization
-  const float DT_ALIGNED_PIXEL p[4] = { MAX(d->shadows + 0.1 * logf(in_scale / wb[0]), 0.0f),
-                                        MAX(d->shadows + 0.1 * logf(in_scale / wb[1]), 0.0f),
-                                        MAX(d->shadows + 0.1 * logf(in_scale / wb[2]), 0.0f),
-                                        0.0f };
+  const dt_aligned_pixel_t p = { MAX(d->shadows + 0.1 * logf(in_scale / wb[0]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(in_scale / wb[1]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(in_scale / wb[2]), 0.0f),
+                                 0.0f };
 
   const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
 
@@ -1297,8 +1291,8 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   for_each_channel(i) wb[i] *= d->strength * in_scale;
 
   // only use green channel + wb for now: (the "unused" fourth element enables vectorization)
-  const float DT_ALIGNED_PIXEL aa[4] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 0.0f };
-  const float DT_ALIGNED_PIXEL bb[4] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 0.0f };
+  const dt_aligned_pixel_t aa = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 0.0f };
+  const dt_aligned_pixel_t bb = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 0.0f };
 
   if(!d->use_new_vst)
   {
@@ -1326,13 +1320,13 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
     const float sigma = 1.0f;
     const float varf = sqrtf(2.0f + 2.0f * 4.0f * 4.0f + 6.0f * 6.0f) / 16.0f; // about 0.5
     const float sigma_band = powf(varf, scale) * sigma;
-    float DT_ALIGNED_PIXEL sum_y2[4];
+    dt_aligned_pixel_t sum_y2;
     decompose(buf2, buf1, buf, sum_y2, scale, 1.0f / (sigma_band * sigma_band), width, height);
     debug_dump_PFM(piece,"/tmp/coarse_%d.pfm",buf2,width,height,scale);
     debug_dump_PFM(piece,"/tmp/detail_%d.pfm",buf,width,height,scale);
 
-    const float DT_ALIGNED_PIXEL boost[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    float DT_ALIGNED_PIXEL thrs[4];
+    const dt_aligned_pixel_t boost = { 1.0f, 1.0f, 1.0f, 1.0f };
+    dt_aligned_pixel_t thrs;
     variance_stabilizing_xform(thrs, scale, max_scale, npixels, sum_y2, d);
     synthesize(out, out, buf, thrs, boost, width, height);
 
@@ -1424,12 +1418,13 @@ static float nlmeans_scattering(int *nbhood, const dt_iop_denoiseprofile_data_t 
 // called by process_nlmeans_cpu
 // must keep synchronized with nlmeans_precondition_cl below
 static float nlmeans_precondition(const dt_iop_denoiseprofile_data_t *const d,
-                                  const dt_dev_pixelpipe_iop_t *const piece, float wb[4],
+                                  const dt_dev_pixelpipe_iop_t *const piece, dt_aligned_pixel_t wb,
                                   const void *const ivoid, const dt_iop_roi_t *const roi_in,
-                                  float scale, float *in, float aa[4], float bb[4], float p[4])
+                                  float scale, float *in, dt_aligned_pixel_t aa,
+                                  dt_aligned_pixel_t bb, dt_aligned_pixel_t p)
 {
   // the "unused" fourth array element enables vectorization
-  const float DT_ALIGNED_PIXEL wb_weights[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+  const dt_aligned_pixel_t wb_weights = { 1.0f, 1.0f, 1.0f, 0.0f };
   compute_wb_factors(wb,d,piece,wb_weights);
 
   // adaptive p depending on white balance
@@ -1462,11 +1457,12 @@ static float nlmeans_precondition(const dt_iop_denoiseprofile_data_t *const d,
 // called by process_nlmeans_cl
 // must keep synchronized with nlmeans_precondition above
 static float nlmeans_precondition_cl(const dt_iop_denoiseprofile_data_t *const d,
-                                     const dt_dev_pixelpipe_iop_t *const piece, float wb[4],
-                                     float scale, float aa[4], float bb[4], float p[4])
+                                     const dt_dev_pixelpipe_iop_t *const piece, dt_aligned_pixel_t wb,
+                                     float scale, dt_aligned_pixel_t aa, dt_aligned_pixel_t bb,
+                                     dt_aligned_pixel_t p)
 {
   // the "unused" fourth element enables vectorization
-  const float DT_ALIGNED_PIXEL wb_weights[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+  const dt_aligned_pixel_t wb_weights = { 1.0f, 1.0f, 1.0f, 0.0f };
   compute_wb_factors(wb,d,piece,wb_weights);
   wb[3] = 0.0;
 
@@ -1502,8 +1498,9 @@ static float nlmeans_precondition_cl(const dt_iop_denoiseprofile_data_t *const d
 // called by process_nlmeans_cpu
 static void nlmeans_backtransform(const dt_iop_denoiseprofile_data_t *const d, float *ovoid,
                                   const dt_iop_roi_t *const roi_in, const float scale,
-                                  const float compensate_p, const float wb[4], const float aa[4],
-                                  const float bb[4], const float p[4])
+                                  const float compensate_p, const dt_aligned_pixel_t wb,
+                                  const dt_aligned_pixel_t aa, const dt_aligned_pixel_t bb,
+                                  const dt_aligned_pixel_t p)
 {
   if(!d->use_new_vst)
   {
@@ -1544,13 +1541,12 @@ static void process_nlmeans_cpu(dt_dev_pixelpipe_iop_t *piece,
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
-  float DT_ALIGNED_PIXEL wb[4]; // the "unused" fourth array element enables vectorization
-  float DT_ALIGNED_PIXEL p[4];
-  float DT_ALIGNED_PIXEL aa[4];
-  float DT_ALIGNED_PIXEL bb[4];
+  dt_aligned_pixel_t wb; // the "unused" fourth array element enables vectorization
+  dt_aligned_pixel_t p;
+  dt_aligned_pixel_t aa, bb;
   const float compensate_p = nlmeans_precondition(d,piece,wb,ivoid,roi_in,scale,in,aa,bb,p);
 
-  float norm2[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+  const dt_aligned_pixel_t norm2 = { 1.0f, 1.0f, 1.0f, 1.0f };
   const dt_nlmeans_param_t params = { .scattering = scattering,
                                       .scale = scale,
                                       .luma = 1.0,    //no blending
@@ -1617,7 +1613,7 @@ static void sum_rec(const size_t npixels, const float *in, float *out)
 }
 
 /* this gives (npixels-1)*V[X] */
-static void variance_rec(const size_t npixels, const float *in, float *out, const float mean[4])
+static void variance_rec(const size_t npixels, const float *in, float *out, const dt_aligned_pixel_t mean)
 {
   if(npixels <= 3)
   {
@@ -1666,15 +1662,15 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   if (!dt_iop_alloc_image_buffers(self, roi_in, roi_out, 4 | DT_IMGSZ_INPUT, &in, 0))
     return;
 
-  float DT_ALIGNED_PIXEL wb[4];  // the "unused" fourth element enables vectorization
-  const float DT_ALIGNED_PIXEL wb_weights[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+  dt_aligned_pixel_t wb;  // the "unused" fourth element enables vectorization
+  const dt_aligned_pixel_t wb_weights = { 1.0f, 1.0f, 1.0f, 0.0f };
   compute_wb_factors(wb,d,piece,wb_weights);
 
   // adaptive p depending on white balance
-  const float DT_ALIGNED_PIXEL p[4] = { MAX(d->shadows - 0.1 * logf(wb[0]), 0.0f),
-                                        MAX(d->shadows - 0.1 * logf(wb[1]), 0.0f),
-                                        MAX(d->shadows - 0.1 * logf(wb[2]), 0.0f),
-                                        0.0f };
+  const dt_aligned_pixel_t p = { MAX(d->shadows - 0.1 * logf(wb[0]), 0.0f),
+                                 MAX(d->shadows - 0.1 * logf(wb[1]), 0.0f),
+                                 MAX(d->shadows - 0.1 * logf(wb[2]), 0.0f),
+                                 0.0f };
 
   // update the coeffs with strength
   for_each_channel(i) wb[i] *= d->strength;
@@ -1686,13 +1682,13 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   // we use out as a temporary buffer here
   // compute mean
   sum_rec(npixels, in, out);
-  float DT_ALIGNED_PIXEL mean[4]; // the "unused" fourth array element enables vectorization
+  dt_aligned_pixel_t mean; // the "unused" fourth array element enables vectorization
   for_each_channel(c,aligned(out))
   {
     mean[c] = out[c] / npixels;
   }
   variance_rec(npixels, in, out, mean);
-  float DT_ALIGNED_PIXEL var[4]; // the "unused" fourth array element enables vectorization
+  dt_aligned_pixel_t var; // the "unused" fourth array element enables vectorization
   for_each_channel(c,aligned(out))
   {
     var[c] = out[c] / (npixels - 1);
@@ -1736,10 +1732,10 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
   const float norm = nlmeans_norm(P,d);
   const float central_pixel_weight = d->central_pixel_weight * scale;
 
-  float DT_ALIGNED_PIXEL wb[4];
-  float DT_ALIGNED_PIXEL p[4];
-  float DT_ALIGNED_PIXEL aa[4];
-  float DT_ALIGNED_PIXEL bb[4];
+  dt_aligned_pixel_t wb;
+  dt_aligned_pixel_t p;
+  dt_aligned_pixel_t aa;
+  dt_aligned_pixel_t bb;
   (void)nlmeans_precondition_cl(d,piece,wb,scale,aa,bb,p);
 
   // allocate a buffer for a preconditioned copy of the image
@@ -1784,7 +1780,7 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
 
   if (err == CL_SUCCESS)
   {
-    const float DT_ALIGNED_PIXEL norm2[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const dt_aligned_pixel_t norm2 = { 1.0f, 1.0f, 1.0f, 1.0f };
     const dt_nlmeans_param_t params =
       {
         .scattering = scattering,
@@ -1855,14 +1851,14 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
   const float norm = nlmeans_norm(P,d);
   const float central_pixel_weight = d->central_pixel_weight * scale;
 
-  float DT_ALIGNED_PIXEL wb[4];
-  float DT_ALIGNED_PIXEL p[4];
-  float DT_ALIGNED_PIXEL aa[4];
-  float DT_ALIGNED_PIXEL bb[4];
+  dt_aligned_pixel_t wb;
+  dt_aligned_pixel_t p;
+  dt_aligned_pixel_t aa;
+  dt_aligned_pixel_t bb;
   (void)nlmeans_precondition_cl(d,piece,wb,scale,aa,bb,p);
 
-  const float DT_ALIGNED_PIXEL sigma2[4] = { (bb[0] / aa[0]) * (bb[0] / aa[0]), (bb[1] / aa[1]) * (bb[1] / aa[1]),
-                                             (bb[2] / aa[2]) * (bb[2] / aa[2]), 0.0f };
+  const dt_aligned_pixel_t sigma2 = { (bb[0] / aa[0]) * (bb[0] / aa[0]), (bb[1] / aa[1]) * (bb[1] / aa[1]),
+                                      (bb[2] / aa[2]) * (bb[2] / aa[2]), 0.0f };
 
   const int devid = piece->pipe->devid;
   cl_mem dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
@@ -2175,15 +2171,15 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
     if(dev_detail[k] == NULL) goto error;
   }
 
-  float DT_ALIGNED_PIXEL wb[4];  // the "unused" fourth element enables vectorization
-  const float wb_weights[4] = { 2.0f, 1.0f, 2.0f, 0.0f };
+  dt_aligned_pixel_t wb;  // the "unused" fourth element enables vectorization
+  const dt_aligned_pixel_t wb_weights = { 2.0f, 1.0f, 2.0f, 0.0f };
   compute_wb_factors(wb,d,piece,wb_weights);
   wb[3] = 0.0f;
 
   // adaptive p depending on white balance
-  const float p[4] = { MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f),
-                       MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f),
-                       MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f), 1.0f};
+  const dt_aligned_pixel_t p = { MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f), 1.0f};
 
   // conversion to Y0U0V0 space as defined in Secrets of image denoising cuisine
   float DT_ALIGNED_PIXEL toY0U0V0_tmp[3][4] = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
@@ -2207,10 +2203,10 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
   // update the coeffs with strength and scale
   for_each_channel(i) wb[i] *= d->strength * scale;
 
-  float aa[4] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 1.0f };
-  float bb[4] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 1.0f };
-  const float sigma2[4] = { (bb[0] / aa[0]) * (bb[0] / aa[0]), (bb[1] / aa[1]) * (bb[1] / aa[1]),
-                            (bb[2] / aa[2]) * (bb[2] / aa[2]), 0.0f };
+  dt_aligned_pixel_t aa = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 1.0f };
+  dt_aligned_pixel_t bb = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 1.0f };
+  const dt_aligned_pixel_t sigma2 = { (bb[0] / aa[0]) * (bb[0] / aa[0]), (bb[1] / aa[1]) * (bb[1] / aa[1]),
+                                      (bb[2] / aa[2]) * (bb[2] / aa[2]), 0.0f };
   const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
   if(d->use_new_vst)
   {
@@ -2317,7 +2313,7 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
     const float sigma_band = powf(varf, s) * sigma;
 
     // determine thrs as bayesshrink
-    float sum_y2[4] = { 0.0f };
+    dt_aligned_pixel_t sum_y2 = { 0.0f };
 
     size_t lsizes[3];
     size_t llocal[3];
@@ -2369,16 +2365,12 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
     }
 
     const float sb2 = sigma_band * sigma_band;
-    const float DT_ALIGNED_PIXEL var_y[4] = { sum_y2[0] / (npixels - 1.0f),
-                                              sum_y2[1] / (npixels - 1.0f),
-                                              sum_y2[2] / (npixels - 1.0f),
-                                              0.0f };
-    const float DT_ALIGNED_PIXEL std_x[4] = { sqrtf(MAX(1e-6f, var_y[0] - sb2)),
-                                              sqrtf(MAX(1e-6f, var_y[1] - sb2)),
-                                              sqrtf(MAX(1e-6f, var_y[2] - sb2)),
-                                              1.0f };
+    const dt_aligned_pixel_t var_y = { sum_y2[0] / (npixels - 1.0f), sum_y2[1] / (npixels - 1.0f),
+                                       sum_y2[2] / (npixels - 1.0f), 0.0f };
+    const dt_aligned_pixel_t std_x = { sqrtf(MAX(1e-6f, var_y[0] - sb2)), sqrtf(MAX(1e-6f, var_y[1] - sb2)),
+                                       sqrtf(MAX(1e-6f, var_y[2] - sb2)), 1.0f };
     // add 8.0 here because it seemed a little weak
-    float DT_ALIGNED_PIXEL adjt[4] = { 8.0f, 8.0f, 8.0f, 0.0f };
+    dt_aligned_pixel_t adjt = { 8.0f, 8.0f, 8.0f, 0.0f };
 
     const int offset_scale = DT_IOP_DENOISE_PROFILE_BANDS - max_scale;
     const int band_index = DT_IOP_DENOISE_PROFILE_BANDS - (s + offset_scale + 1);
@@ -2424,13 +2416,11 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
       adjt[2] *= band_force_exp_2;
     }
 
-    const float DT_ALIGNED_PIXEL thrs[4] = { adjt[0] * sb2 / std_x[0],
-                                             adjt[1] * sb2 / std_x[1],
-                                             adjt[2] * sb2 / std_x[2],
-                                             0.0f };
+    const dt_aligned_pixel_t thrs = { adjt[0] * sb2 / std_x[0], adjt[1] * sb2 / std_x[1],
+                                      adjt[2] * sb2 / std_x[2], 0.0f };
     // fprintf(stderr, "scale %d thrs %f %f %f\n", s, thrs[0], thrs[1], thrs[2]);
 
-    const float DT_ALIGNED_PIXEL boost[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const dt_aligned_pixel_t boost = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_synthesize, 0, sizeof(cl_mem),
                              (void *)&dev_buf1);

@@ -72,7 +72,7 @@ typedef struct dt_iop_rgblevels_gui_data_t
   int call_auto_levels;                         // should we calculate levels automatically?
   int draw_selected_region;                     // are we drawing the selected region?
   float posx_from, posx_to, posy_from, posy_to; // coordinates of the area
-  float box_cood[4];                            // normalized coordinates
+  dt_boundingbox_t box_cood;                    // normalized coordinates
   int button_down;                              // user pressed the mouse button?
 
   double mouse_x, mouse_y;
@@ -780,7 +780,7 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
      && self->picked_color_max[0] >= 0.0f
      && mean_picked_color != c->last_picked_color)
   {
-    float previous_color[3];
+    dt_aligned_pixel_t previous_color;
     previous_color[0] = p->levels[channel][0];
     previous_color[1] = p->levels[channel][1];
     previous_color[2] = p->levels[channel][2];
@@ -1105,7 +1105,7 @@ static void _get_selected_area(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
   {
     const int width = roi_in->width;
     const int height = roi_in->height;
-    float box_cood[4] = { g->box_cood[0], g->box_cood[1], g->box_cood[2], g->box_cood[3] };
+    dt_boundingbox_t box_cood = { g->box_cood[0], g->box_cood[1], g->box_cood[2], g->box_cood[3] };
 
     box_cood[0] *= piece->pipe->iwidth;
     box_cood[1] *= piece->pipe->iheight;
@@ -1260,9 +1260,9 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
     }
   }
 
-  const float mult[3] = { 1.f / (d->params.levels[0][2] - d->params.levels[0][0]),
-                          1.f / (d->params.levels[1][2] - d->params.levels[1][0]),
-                          1.f / (d->params.levels[2][2] - d->params.levels[2][0]) };
+  const dt_aligned_pixel_t mult = { 1.f / (d->params.levels[0][2] - d->params.levels[0][0]),
+                                    1.f / (d->params.levels[1][2] - d->params.levels[1][0]),
+                                    1.f / (d->params.levels[2][2] - d->params.levels[2][0]) };
 
   const size_t npixels = (size_t)roi_out->width * roi_out->height;
   const float *const restrict in = (const float*)ivoid;

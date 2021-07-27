@@ -523,10 +523,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
         const size_t p = (size_t)j * width + i;
         out[p] = in[p] * d_coeffs[FC(offset_j, i + roi_out->x, filters)];
       }
-      const float DT_ALIGNED_PIXEL coeffs[4] = { d_coeffs[FC(offset_j, i + roi_out->x, filters)],
-                                                 d_coeffs[FC(offset_j, i + roi_out->x + 1,filters)],
-                                                 d_coeffs[FC(offset_j, i + roi_out->x + 2, filters)],
-                                                 d_coeffs[FC(offset_j, i + roi_out->x + 3, filters)] };
+      const dt_aligned_pixel_t coeffs = { d_coeffs[FC(offset_j, i + roi_out->x, filters)],
+                                          d_coeffs[FC(offset_j, i + roi_out->x + 1,filters)],
+                                          d_coeffs[FC(offset_j, i + roi_out->x + 2, filters)],
+                                          d_coeffs[FC(offset_j, i + roi_out->x + 3, filters)] };
       // process sensels four at a time
       for(; i < (width & ~3); i += 4)
       {
@@ -1028,8 +1028,10 @@ void color_temptint_sliders(struct dt_iop_module_t *self)
       coeffs_tint[3] /= coeffs_tint[1];
       coeffs_tint[1] = 1.0;
 
-      float sRGB_K[3] = { dayligh_white[0]*coeffs_K[0], dayligh_white[1]*coeffs_K[1], dayligh_white[2]*coeffs_K[2] };
-      float sRGB_tint[3] = {cur_white[0]*coeffs_tint[0], cur_white[1]*coeffs_tint[1], cur_white[2]*coeffs_tint[2]};
+      dt_aligned_pixel_t sRGB_K = { dayligh_white[0]*coeffs_K[0], dayligh_white[1]*coeffs_K[1],
+                                    dayligh_white[2]*coeffs_K[2] };
+      dt_aligned_pixel_t sRGB_tint = {cur_white[0]*coeffs_tint[0], cur_white[1]*coeffs_tint[1],
+                                      cur_white[2]*coeffs_tint[2]};
       const float maxsRGB_K = fmaxf(fmaxf(sRGB_K[0], sRGB_K[1]), sRGB_K[2]);
       const float maxsRGB_tint = fmaxf(fmaxf(sRGB_tint[0], sRGB_tint[1]),sRGB_tint[2]);
 
@@ -1062,10 +1064,10 @@ void color_temptint_sliders(struct dt_iop_module_t *self)
 
       const cmsCIEXYZ cmsXYZ_temp = temperature_tint_to_XYZ(K,cur_tint);
       const cmsCIEXYZ cmsXYZ_tint = temperature_tint_to_XYZ(cur_temp, tint);
-      float DT_ALIGNED_PIXEL XYZ_temp[4] = {cmsXYZ_temp.X, cmsXYZ_temp.Y, cmsXYZ_temp.Z};
-      float DT_ALIGNED_PIXEL XYZ_tint[4] = {cmsXYZ_tint.X, cmsXYZ_tint.Y, cmsXYZ_tint.Z};
-      float DT_ALIGNED_PIXEL sRGB_temp[4];
-      float DT_ALIGNED_PIXEL sRGB_tint[4];
+      dt_aligned_pixel_t XYZ_temp = {cmsXYZ_temp.X, cmsXYZ_temp.Y, cmsXYZ_temp.Z};
+      dt_aligned_pixel_t XYZ_tint = {cmsXYZ_tint.X, cmsXYZ_tint.Y, cmsXYZ_tint.Z};
+      dt_aligned_pixel_t sRGB_temp;
+      dt_aligned_pixel_t sRGB_tint;
 
       dt_XYZ_to_Rec709_D65(XYZ_temp, sRGB_temp);
       dt_XYZ_to_Rec709_D65(XYZ_tint, sRGB_tint);

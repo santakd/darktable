@@ -609,7 +609,7 @@ static void print_patches(dt_lut_t *self, FILE *fd, GList *patch_names)
       continue;
     }
 
-    float source_Lab[3] = { 0.0 }, reference_Lab[3] = { 0.0 };
+    dt_aligned_pixel_t source_Lab = { 0.0 }, reference_Lab = { 0.0 };
     get_Lab_from_box(source_patch, source_Lab);
     get_Lab_from_box(reference_patch, reference_Lab);
 
@@ -753,7 +753,7 @@ static void add_patches_to_array(dt_lut_t *self, GList *patch_names, int *N, int
       continue;
     }
 
-    float source_Lab[3] = { 0.0 }, reference_Lab[3] = { 0.0 };
+    dt_aligned_pixel_t source_Lab = { 0.0 }, reference_Lab = { 0.0 };
     get_Lab_from_box(source_patch, source_Lab);
     get_Lab_from_box(reference_patch, reference_Lab);
 
@@ -1018,7 +1018,7 @@ static void process_data(dt_lut_t *self, double *target_L, double *target_a, dou
   cx[num_tonecurve - 1] = cy[num_tonecurve - 1] = 100.0; // fix white
   for(int k = 1; k < num_tonecurve-1; k++)
   {
-    float DT_ALIGNED_PIXEL rgb[4], Lab[4] = { 0.0f, 0.0f, 0.0f };
+    dt_aligned_pixel_t rgb, Lab = { 0.0f, 0.0f, 0.0f };
     Lab[0] = grays[6*k+0];
     dt_Lab_to_prophotorgb(Lab, rgb);
     cx[k] = rgb[0];
@@ -1032,7 +1032,7 @@ static void process_data(dt_lut_t *self, double *target_L, double *target_a, dou
   // now unapply the curve:
   for(int k = 0; k < N; k++)
   {
-    float DT_ALIGNED_PIXEL rgb[4], Lab[4] = { 0.0f, 0.0f, 0.0f };
+    dt_aligned_pixel_t rgb, Lab = { 0.0f, 0.0f, 0.0f };
     Lab[0] = target_L[k];
     Lab[1] = target_a[k];
     Lab[2] = target_b[k];
@@ -1371,7 +1371,7 @@ static void update_table(dt_lut_t *self)
     box_t *box = (box_t *)g_hash_table_lookup(self->chart->box_table, name);
     if(box)
     {
-      float Lab[3] = { 0.0 };
+      dt_aligned_pixel_t Lab = { 0.0 };
       char *s_Lab_in, *s_RGB_in, *s_deltaE_1976, *s_deltaE_2000;
       float deltaE_1976 = 0.0, deltaE_2000 = 0.0;
 
@@ -1380,7 +1380,7 @@ static void update_table(dt_lut_t *self)
       box_t *patch = (box_t *)g_hash_table_lookup(self->picked_source_patches, name);
       if(patch)
       {
-        float in_Lab[3] = { 0.0 };
+        dt_aligned_pixel_t in_Lab = { 0.0 };
         get_Lab_from_box(patch, in_Lab);
         s_RGB_in = g_strdup_printf("%d; %d; %d", (int)(patch->rgb[0] * 255 + 0.5),
                                    (int)(patch->rgb[1] * 255 + 0.5), (int)(patch->rgb[2] * 255 + 0.5));
@@ -1420,7 +1420,7 @@ static void get_Lab_from_box(box_t *box, float *Lab)
   {
     case DT_COLORSPACE_XYZ:
     {
-      float DT_ALIGNED_PIXEL XYZ[4];
+      dt_aligned_pixel_t XYZ;
       for(int i = 0; i < 3; i++) XYZ[i] = box->color[i] * 0.01;
       dt_XYZ_to_Lab(XYZ, Lab);
       break;
@@ -1467,7 +1467,7 @@ static void collect_source_patches_foreach(gpointer key, gpointer value, gpointe
 {
   dt_lut_t *self = (dt_lut_t *)user_data;
   box_t *box = (box_t *)value;
-  float DT_ALIGNED_PIXEL xyz[4] /*, lab[4], srgb[4]*/;
+  dt_aligned_pixel_t xyz;
 
   box_t *patch = find_patch(self->picked_source_patches, key);
 
@@ -1480,7 +1480,7 @@ static void collect_reference_patches_foreach(gpointer key, gpointer value, gpoi
 {
   dt_lut_t *self = (dt_lut_t *)user_data;
   box_t *patch = (box_t *)value;
-  float DT_ALIGNED_PIXEL xyz[4];
+  dt_aligned_pixel_t xyz;
 
   get_xyz_sample_from_image(&self->reference, self->reference.shrink, patch, xyz);
 

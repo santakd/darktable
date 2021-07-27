@@ -143,7 +143,7 @@ typedef enum dt_iop_filmicrgb_reconstruction_type_t
 
 typedef struct dt_iop_filmic_rgb_spline_t
 {
-  float DT_ALIGNED_PIXEL M1[4], M2[4], M3[4], M4[4], M5[4]; // factors for the interpolation polynom
+  dt_aligned_pixel_t M1, M2, M3, M4, M5;                    // factors for the interpolation polynom
   float latitude_min, latitude_max;                         // bounds of the latitude == linear part by design
   float y[5];                                               // controls nodes
   float x[5];                                               // controls nodes
@@ -564,7 +564,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 #ifdef _OPENMP
 #pragma omp declare simd aligned(pixel:16)
 #endif
-static inline float pixel_rgb_norm_power(const float pixel[4])
+static inline float pixel_rgb_norm_power(const dt_aligned_pixel_t pixel)
 {
   // weird norm sort of perceptual. This is black magic really, but it looks good.
   // the full norm is (R^3 + G^3 + B^3) / (R^2 + G^2 + B^2) and it should be in ]0; +infinity[
@@ -588,7 +588,7 @@ static inline float pixel_rgb_norm_power(const float pixel[4])
 #ifdef _OPENMP
 #pragma omp declare simd aligned(pixel : 16) uniform(variant, work_profile)
 #endif
-static inline float get_pixel_norm(const float pixel[4], const dt_iop_filmicrgb_methods_type_t variant,
+static inline float get_pixel_norm(const dt_aligned_pixel_t pixel, const dt_iop_filmicrgb_methods_type_t variant,
                                    const dt_iop_order_iccprofile_info_t *const work_profile)
 {
   // a newly added norm should satisfy the condition that it is linear with respect to grey pixels:
@@ -662,8 +662,9 @@ static inline float exp_tonemapping_v2(const float x, const float grey, const fl
 #ifdef _OPENMP
 #pragma omp declare simd aligned(M1, M2, M3, M4 : 16) uniform(M1, M2, M3, M4, M5, latitude_min, latitude_max)
 #endif
-static inline float filmic_spline(const float x, const float M1[4], const float M2[4], const float M3[4],
-                                  const float M4[4], const float M5[4], const float latitude_min,
+static inline float filmic_spline(const float x, const dt_aligned_pixel_t M1, const dt_aligned_pixel_t M2,
+                                  const dt_aligned_pixel_t M3, const dt_aligned_pixel_t M4,
+                                  const dt_aligned_pixel_t M5, const float latitude_min,
                                   const float latitude_max, const dt_iop_filmicrgb_curve_type_t type[2])
 {
   // if type polynomial :
@@ -851,8 +852,8 @@ inline static void inpaint_noise(const float *const in, const float *const mask,
       const size_t index = idx * 4;
       const float weight = mask[idx];
       const float *const restrict pix_in = __builtin_assume_aligned(in + index, 16);
-      float DT_ALIGNED_ARRAY noise[4] = { 0.f };
-      float DT_ALIGNED_ARRAY sigma[4] = { 0.f };
+      dt_aligned_pixel_t noise = { 0.f };
+      dt_aligned_pixel_t sigma = { 0.f };
       const int DT_ALIGNED_ARRAY flip[4] = { TRUE, FALSE, TRUE, FALSE };
 
       for_each_channel(c,aligned(pix_in))
@@ -867,7 +868,6 @@ inline static void inpaint_noise(const float *const in, const float *const mask,
         pix_out[c] = fmaxf(pix_in[c] * (1.0f - weight) + weight * noise[c], 0.f);
     }
 }
-
 
 inline static void wavelets_reconstruct_RGB(const float *const restrict HF, const float *const restrict LF,
                                             const float *const restrict texture, const float *const restrict mask,
@@ -1163,7 +1163,7 @@ static inline void filmic_split_v1(const float *const restrict in, float *const 
   {
     const float *const restrict pix_in = in + k;
     float *const restrict pix_out = out + k;
-    float DT_ALIGNED_ARRAY temp[4];
+    dt_aligned_pixel_t temp;
 
     // Log tone-mapping
     for(int c = 0; c < 3; c++)
@@ -1205,7 +1205,7 @@ static inline void filmic_split_v2_v3(const float *const restrict in, float *con
   {
     const float *const restrict pix_in = in + k;
     float *const restrict pix_out = out + k;
-    float DT_ALIGNED_ARRAY temp[4];
+    dt_aligned_pixel_t temp;
 
     // Log tone-mapping
     for(int c = 0; c < 3; c++)
@@ -1247,7 +1247,7 @@ static inline void filmic_chroma_v1(const float *const restrict in, float *const
     const float *const restrict pix_in = in + k;
     float *const restrict pix_out = out + k;
 
-    float DT_ALIGNED_ARRAY ratios[4] = { 0.0f };
+    dt_aligned_pixel_t ratios = { 0.0f };
     float norm = fmaxf(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
 
     // Save the ratios
@@ -1308,7 +1308,7 @@ static inline void filmic_chroma_v2_v3(const float *const restrict in, float *co
     float norm = fmaxf(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
 
     // Save the ratios
-    float DT_ALIGNED_ARRAY ratios[4] = { 0.0f };
+    dt_aligned_pixel_t ratios = { 0.0f };
 
     for_each_channel(c,aligned(pix_in))
       ratios[c] = pix_in[c] / norm;

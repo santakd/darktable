@@ -1,6 +1,6 @@
 /*
  *    This file is part of darktable,
- *    Copyright (C) 2016-2020 darktable developers.
+ *    Copyright (C) 2021 darktable developers.
  *
  *    darktable is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -18,12 +18,24 @@
 
 #pragma once
 
-#include "common/darktable.h"
+// When included by a C++ file, restrict qualifiers are not allowed
+#ifdef __cplusplus
+#define DT_RESTRICT
+#else
+#define DT_RESTRICT restrict
+#endif
 
-float dt_colorspaces_deltaE_1976(dt_aligned_pixel_t Lab0, dt_aligned_pixel_t Lab1);
-float dt_colorspaces_deltaE_2000(dt_aligned_pixel_t Lab0, dt_aligned_pixel_t Lab1);
+/* Helper to force heap vectors to be aligned on 64 bits blocks to enable AVX2 */
+#define DT_ALIGNED_ARRAY __attribute__((aligned(64)))
+#define DT_ALIGNED_PIXEL __attribute__((aligned(16)))
+
+// utility type to ease declaration of aligned small arrays to hold a pixel (and document their purpose)
+typedef DT_ALIGNED_PIXEL float dt_aligned_pixel_t[4];
+
+// a 3x3 matrix, padded to permit SSE instructions to be used for multiplication and addition
+typedef float DT_ALIGNED_ARRAY dt_colormatrix_t[4][4];
+
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
-// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces
-// modified;
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
