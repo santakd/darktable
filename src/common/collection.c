@@ -705,6 +705,7 @@ const char *dt_collection_name(dt_collection_properties_t prop)
     case DT_COLLECTION_PROP_LOCAL_COPY:       return _("local copy");
     case DT_COLLECTION_PROP_MODULE:           return _("module");
     case DT_COLLECTION_PROP_ORDER:            return _("module order");
+    case DT_COLLECTION_PROP_RATING:           return _("rating");
     case DT_COLLECTION_PROP_LAST:             return NULL;
     default:
     {
@@ -1144,7 +1145,7 @@ void dt_collection_split_operator_number(const gchar *input, char **number1, cha
   *number1 = *number2 = *operator= NULL;
 
   // we test the range expression first
-  regex = g_regex_new("^\\s*\\[\\s*([0-9]+\\.?[0-9]*)\\s*;\\s*([0-9]+\\.?[0-9]*)\\s*\\]\\s*$", 0, 0, NULL);
+  regex = g_regex_new("^\\s*\\[\\s*([-+]?[0-9]+\\.?[0-9]*)\\s*;\\s*([-+]?[0-9]+\\.?[0-9]*)\\s*\\]\\s*$", 0, 0, NULL);
   g_regex_match_full(regex, input, -1, 0, 0, &match_info, NULL);
   int match_count = g_match_info_get_match_count(match_info);
 
@@ -1162,7 +1163,7 @@ void dt_collection_split_operator_number(const gchar *input, char **number1, cha
   g_regex_unref(regex);
 
   // and we test the classic comparison operators
-  regex = g_regex_new("^\\s*(=|<|>|<=|>=|<>)?\\s*([0-9]+\\.?[0-9]*)\\s*$", 0, 0, NULL);
+  regex = g_regex_new("^\\s*(=|<|>|<=|>=|<>)?\\s*([-+]?[0-9]+\\.?[0-9]*)\\s*$", 0, 0, NULL);
   g_regex_match_full(regex, input, -1, 0, 0, &match_info, NULL);
   match_count = g_match_info_get_match_count(match_info);
 
@@ -1203,7 +1204,7 @@ static char *_dt_collection_compute_datetime(const char *operator, const char *i
   if(strcmp(operator, "<") == 0 || strcmp(operator, ">=") == 0)
   {
     // we set all values to their minimum
-    tm1.tm_mon = 1;
+    tm1.tm_mon = 0;
     tm1.tm_mday = 1;
     tm1.tm_hour = 0;
     tm1.tm_min = 0;
@@ -1539,6 +1540,16 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
         const gboolean no_location = strcmp(escaped_text, _("tagged")) == 0;
         const gboolean all_tagged = strcmp(escaped_text, _("tagged*")) == 0;
         char *escaped_text2 = g_strstr_len(escaped_text, -1, "|");
+        char *name_clause = g_strdup_printf("t.name LIKE \'%s\' || \'%s\'", 
+            dt_map_location_data_tag_root(), escaped_text2 ? escaped_text2 : "%");
+
+        if (escaped_text2 && (escaped_text2[strlen(escaped_text2)-1] == '*'))
+        {
+          escaped_text2[strlen(escaped_text2)-1] = '\0';
+          name_clause = g_strdup_printf("(t.name LIKE \'%s\' || \'%s\' OR t.name LIKE \'%s\' || \'%s|%%\')", 
+          dt_map_location_data_tag_root(), escaped_text2 , dt_map_location_data_tag_root(), escaped_text2);
+        }
+        
         if(not_tagged || all_tagged)
           query = g_strdup_printf("(id %s IN (SELECT id AS imgid FROM main.images "
                                   "WHERE (longitude IS NOT NULL AND latitude IS NOT NULL))) ",
@@ -1549,10 +1560,9 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
                                          "AND id %s IN (SELECT imgid FROM main.tagged_images AS ti"
                                          "  JOIN data.tags AS t"
                                          "  ON t.id = ti.tagid"
-                                         "     AND t.name LIKE \'%s\' || \'%s\')) ",
+                                         "     AND %s)) ",
                                   no_location ? "not" : "",
-                                  dt_map_location_data_tag_root(),
-                                  escaped_text2 ? escaped_text2 : "%");
+                                  name_clause);
       }
       break;
 
@@ -1878,6 +1888,69 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
           query = g_strdup_printf("(id IN (SELECT imgid FROM main.module_order WHERE version = %d))", i);
         else
           query = g_strdup_printf("(id NOT IN (SELECT imgid FROM main.module_order))");
+      }
+      break;
+
+    case DT_COLLECTION_PROP_RATING: // image rating
+      {
+        gchar *operator, *number1, *number2;
+        dt_collection_split_operator_number(escaped_text, &number1, &number2, &operator);
+
+        if(operator && strcmp(operator, "[]") == 0)
+        {
+          if(number1 && number2)
+          {
+            if(atoi(number1) == -1)
+            { // rejected + star rating
+              query = g_strdup_printf("(flags & 7 >= %s AND flags & 7 <= %s)", number1, number2);
+            }
+            else
+            { // non-rejected + star rating
+              query = g_strdup_printf("((flags & 8 == 0) AND (flags & 7 >= %s AND flags & 7 <= %s))", number1, number2);
+            }
+          }
+        }
+        else if(operator && number1)
+        {
+          if(g_strcmp0(operator, "<=") == 0 || g_strcmp0(operator, "<") == 0)
+          { // all below rating + rejected
+            query = g_strdup_printf("(flags & 8 == 8 OR flags & 7 %s %s)", operator, number1);
+          }
+          else if(g_strcmp0(operator, ">=") == 0 || g_strcmp0(operator, ">") == 0)
+          {
+            if(atoi(number1) >= 0)
+            { // non rejected above rating
+              query = g_strdup_printf("(flags & 8 == 0 AND flags & 7 %s %s)", operator, number1);
+            }
+            // otherwise no filter (rejected + all ratings)
+          }
+          else
+          { // <> exclusion operator
+            if(atoi(number1) == -1)
+            { // all except rejected
+              query = g_strdup_printf("(flags & 8 == 0)");
+            }
+            else
+            { // all except star rating (including rejected)
+              query = g_strdup_printf("(flags & 8 == 8 OR flags & 7 %s %s)", operator, number1);
+            }
+          }
+        }
+        else if(number1)
+        {
+          if(atoi(number1) == -1)
+          { // rejected only
+            query = g_strdup_printf("(flags & 8 == 8)");
+          }
+          else
+          { // non-rejected + star rating
+            query = g_strdup_printf("(flags & 8 == 0 AND flags & 7 == %s)", number1);
+          }
+        }
+
+        g_free(operator);
+        g_free(number1);
+        g_free(number2);
       }
       break;
 

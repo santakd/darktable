@@ -204,7 +204,7 @@ int dt_develop_blendif_init_masking_profile(struct dt_dev_pixelpipe_iop_t *piece
                                             dt_develop_blend_colorspace_t cst)
 {
   // Bradford adaptation matrix from http://www.brucelindbloom.com/index.html?Eqn_ChromAdapt.html
-  const float M[3][4] DT_ALIGNED_ARRAY = {
+  const dt_colormatrix_t M = {
       {  0.9555766f, -0.0230393f,  0.0631636f, 0.0f },
       { -0.0282895f,  1.0099416f,  0.0210077f, 0.0f },
       {  0.0122982f, -0.0204830f,  1.3299098f, 0.0f },
@@ -222,8 +222,9 @@ int dt_develop_blendif_init_masking_profile(struct dt_dev_pixelpipe_iop_t *piece
     {
       float sum = 0.0f;
       for(size_t i = 0; i < 3; i++)
-        sum += M[y][i] * profile->matrix_in[x + i * 3];
-      blending_profile->matrix_out[y * 3 + x] = sum;
+        sum += M[y][i] * profile->matrix_in[i][x];
+      blending_profile->matrix_out[y][x] = sum;
+      blending_profile->matrix_out_transposed[x][y] = sum;
     }
   }
 
@@ -431,7 +432,7 @@ void dt_develop_blend_process(struct dt_iop_module_t *self, struct dt_dev_pixelp
   // check if blend is disabled
   if(!(mask_mode & DEVELOP_MASK_ENABLED)) return;
 
-  const int ch = piece->colors;           // the number of channels in the buffer
+  const size_t ch = piece->colors;           // the number of channels in the buffer
   const int xoffs = roi_out->x - roi_in->x;
   const int yoffs = roi_out->y - roi_in->y;
   const int iwidth = roi_in->width;
@@ -588,8 +589,8 @@ void dt_develop_blend_process(struct dt_iop_module_t *self, struct dt_dev_pixelp
         const float guide_weight = cst == iop_cs_rgb ? 100.0f : 1.0f;
         float *restrict guide = (float *restrict)ivoid;
         if(!rois_equal)
-          guide = _develop_blend_process_copy_region(guide, iwidth * ch, xoffs * ch, yoffs * ch,
-                                                     owidth * ch, oheight * ch);
+          guide = _develop_blend_process_copy_region(guide, ch * iwidth, ch * xoffs, ch * yoffs,
+                                                     ch * owidth, ch * oheight);
         if(guide)
           _develop_blend_process_feather(guide, mask, owidth, oheight, ch, guide_weight,
                                          d->feathering_radius, roi_out->scale / piece->iscale);
@@ -686,13 +687,13 @@ static void _refine_with_detail_mask_cl(struct dt_iop_module_t *self, struct dt_
   const int owidth  = roi_in->width;
   const int oheight = roi_in->height;
 
-  lum = dt_alloc_align_float(iwidth * iheight);
+  lum = dt_alloc_align_float((size_t)iwidth * iheight);
   if(lum == NULL) goto error;
   tmp = dt_opencl_alloc_device(devid, iwidth, iheight, sizeof(float));
   if(tmp == NULL) goto error;
-  out = dt_opencl_alloc_device_buffer(devid, iwidth * iheight * sizeof(float));
+  out = dt_opencl_alloc_device_buffer(devid, sizeof(float) * iwidth * iheight);
   if(out == NULL) goto error;
-  blur = dt_opencl_alloc_device_buffer(devid, iwidth * iheight * sizeof(float));
+  blur = dt_opencl_alloc_device_buffer(devid, sizeof(float) * iwidth * iheight);
   if(blur == NULL) goto error;
 
   {
@@ -725,31 +726,8 @@ static void _refine_with_detail_mask_cl(struct dt_iop_module_t *self, struct dt_
   }  
 
   {
-    // For a blurring sigma of 2.0f a 13x13 kernel would be optimally required but the 9x9 is by far good enough here 
-    float kernel[9][9];
-    const float temp = -8.0f; // -2.0f * 2.0f * 2.0f; for a sigma of 2
-    float sum = 0.0f;
-    for(int i = -4; i <= 4; i++)
-    {
-      for(int j = -4; j <= 4; j++)
-      {
-        kernel[i + 4][j + 4] = expf( ((i*i) + (j*j)) / temp);
-        sum += kernel[i + 4][j + 4];
-      }
-    }
-    for(int i = 0; i < 9; i++)
-    {
-#if defined(__GNUC__)
-  #pragma GCC ivdep
-#endif
-      for(int j = 0; j < 9; j++)
-        kernel[i][j] /= sum;
-    }
-
-    float blurmat[13] = { kernel[4][4], kernel[3][4], kernel[3][3],               // 00: c00 c10 c11
-                          kernel[2][4], kernel[2][3], kernel[2][2],               // 03: c20 c21 c22
-                          kernel[1][4], kernel[1][3], kernel[1][2], kernel[1][1], // 06: c30 c31 c32 c33
-                          kernel[0][4], kernel[0][3], kernel[0][2]};              // 10: c40 c41 c42
+    float blurmat[13];
+    dt_masks_blur_9x9_coeff(blurmat, 2.0f);
     cl_mem dev_blurmat = NULL;
     dev_blurmat = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 13, blurmat);
     if(dev_blurmat != NULL)
@@ -770,7 +748,6 @@ static void _refine_with_detail_mask_cl(struct dt_iop_module_t *self, struct dt_
       dt_opencl_release_mem_object(dev_blurmat);
       goto error;
     }
-
   }
 
   {

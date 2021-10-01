@@ -562,7 +562,7 @@ static gboolean _event_leave_notify(GtkWidget *widget, GdkEventCrossing *event, 
   }
 
   // if we leave thumbtable in favour of an inferior (a thumbnail) it's not a real leave !
-  if(event->detail == GDK_NOTIFY_INFERIOR) return FALSE;
+  if(event->detail == GDK_NOTIFY_INFERIOR || event->detail == GDK_NOTIFY_VIRTUAL) return FALSE;
 
   table->mouse_inside = FALSE;
   dt_control_set_mouse_over_id(-1);
@@ -767,13 +767,6 @@ static void _dt_mouse_over_image_callback(gpointer instance, gpointer user_data)
   if(!gtk_widget_get_visible(table->widget)) return;
 
   const int imgid = dt_control_get_mouse_over_id();
-
-  if(imgid > 0)
-  {
-    // let's be absolutely sure that the right widget has the focus
-    // otherwise accels don't work...
-    gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
-  }
 
   // we crawl over all images to find the right one
   for(GList *l = table->list; l; l = g_list_next(l))
@@ -1631,9 +1624,6 @@ void dt_culling_full_redraw(dt_culling_t *table, gboolean force)
       dt_control_set_mouse_over_id(thumb->imgid);
     }
   }
-
-  // be sure the focus is in the right widget (needed for accels)
-  gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
 
   dt_print(DT_DEBUG_LIGHTTABLE, "done in %0.04f sec\n", dt_get_wtime() - start);
 

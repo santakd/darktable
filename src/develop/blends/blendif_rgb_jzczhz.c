@@ -147,7 +147,7 @@ static inline void _blendif_jzczhz(const float *const restrict pixels, float *co
 
     // use the matrix_out of the hacked profile for blending to use the
     // conversion from RGB to XYZ D65 (instead of XYZ D50)
-    dt_ioppr_rgb_matrix_to_xyz(pixels + j, XYZ_D65, profile->matrix_out, profile->lut_in,
+    dt_ioppr_rgb_matrix_to_xyz(pixels + j, XYZ_D65, profile->matrix_out_transposed, profile->lut_in,
                                profile->unbounded_coeffs_in, profile->lutsize, profile->nonlinearlut);
 
     dt_XYZ_2_JzAzBz(XYZ_D65, JzAzBz);
@@ -746,7 +746,7 @@ static inline float _rgb_luminance(const float *const restrict rgb,
 #ifdef _OPENMP
 #pragma omp declare simd aligned(rgb, JzCzhz: 16) uniform(profile)
 #endif
-static inline void _rgb_to_JzCzhz(const float *const restrict rgb, float *const restrict JzCzhz,
+static inline void _rgb_to_JzCzhz(const dt_aligned_pixel_t rgb, dt_aligned_pixel_t JzCzhz,
                                   const dt_iop_order_iccprofile_info_t *const restrict profile)
 {
   dt_aligned_pixel_t JzAzBz = { 0.0f, 0.0f, 0.0f };
@@ -756,7 +756,7 @@ static inline void _rgb_to_JzCzhz(const float *const restrict rgb, float *const 
     dt_aligned_pixel_t XYZ_D65 = { 0.0f, 0.0f, 0.0f };
     // use the matrix_out of the hacked profile for blending to use the
     // conversion from RGB to XYZ D65 (instead of XYZ D50)
-    dt_ioppr_rgb_matrix_to_xyz(rgb, XYZ_D65, profile->matrix_out, profile->lut_in, profile->unbounded_coeffs_in,
+    dt_ioppr_rgb_matrix_to_xyz(rgb, XYZ_D65, profile->matrix_out_transposed, profile->lut_in, profile->unbounded_coeffs_in,
                                profile->lutsize, profile->nonlinearlut);
     dt_XYZ_2_JzAzBz(XYZ_D65, JzAzBz);
   }
@@ -1009,10 +1009,10 @@ void dt_develop_blendif_rgb_jzczhz_blend(struct dt_dev_pixelpipe_iop_t *piece, c
     const float p = exp2f(d->blend_parameter);
     _blend_row_func *const blend = _choose_blend_func(d->blend_mode);
 
-    float *tmp_buffer = dt_alloc_align_float(owidth * oheight * DT_BLENDIF_RGB_CH);
+    float *tmp_buffer = dt_alloc_align_float((size_t)owidth * oheight * DT_BLENDIF_RGB_CH);
     if (tmp_buffer != NULL)
     {
-      dt_iop_image_copy(tmp_buffer, b, owidth * oheight * DT_BLENDIF_RGB_CH);
+      dt_iop_image_copy(tmp_buffer, b, (size_t)owidth * oheight * DT_BLENDIF_RGB_CH);
       if((d->blend_mode & DEVELOP_BLEND_REVERSE) == DEVELOP_BLEND_REVERSE)
       {
 #ifdef _OPENMP

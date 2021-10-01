@@ -244,7 +244,14 @@ const char *dt_image_film_roll_name(const char *path)
   int count = 0;
   while(folder > path)
   {
+
+#ifdef _WIN32
+    // in Windows, both \ and / can be folder separator
+    if(*folder == G_DIR_SEPARATOR || *folder == '/')
+#else
     if(*folder == G_DIR_SEPARATOR)
+#endif
+
       if(++count >= numparts)
       {
         ++folder;
@@ -291,10 +298,37 @@ void dt_image_film_roll(const dt_image_t *img, char *pathname, size_t pathname_l
   pathname[pathname_len - 1] = '\0';
 }
 
+dt_imageio_write_xmp_t dt_image_get_xmp_mode()
+{
+  dt_imageio_write_xmp_t res = DT_WRITE_XMP_NEVER;
+  const char *config = dt_conf_get_string_const("write_sidecar_files");
+  if(config)
+  {
+    if(!strcmp(config, "after edit"))
+      res = DT_WRITE_XMP_LAZY;
+    else if(!strcmp(config, "on import"))
+      res = DT_WRITE_XMP_ALWAYS;
+    else if(!strcmp(config, "TRUE"))
+    {
+      // migration path from boolean settings in <= 3.6, lazy mode was introduced in 3.8
+      // as scripts or tools might use FALSE we can only update TRUE in a safe way.
+      // This leaves others like "false" or "FALSE" as DT_WRITE_XMP_NEVER without conf string update
+      dt_conf_set_string("write_sidecar_files", "on import");
+      res = DT_WRITE_XMP_ALWAYS;
+    }
+  }
+  else
+  {
+    res = DT_WRITE_XMP_ALWAYS;
+    dt_conf_set_string("write_sidecar_files", "on import");
+  }  
+  return res;
+}
+
 gboolean dt_image_safe_remove(const int32_t imgid)
 {
   // always safe to remove if we do not have .xmp
-  if(!dt_conf_get_bool("write_sidecar_files")) return TRUE;
+  if(dt_image_get_xmp_mode() == DT_WRITE_XMP_NEVER) return TRUE;
 
   // check whether the original file is accessible
   char pathname[PATH_MAX] = { 0 };
@@ -333,7 +367,7 @@ void dt_image_full_path(const int32_t imgid, char *pathname, size_t pathname_len
     char lc_pathname[PATH_MAX] = { 0 };
     _image_local_copy_full_path(imgid, lc_pathname, sizeof(lc_pathname));
 
-    if (g_file_test(lc_pathname, G_FILE_TEST_EXISTS))
+    if(g_file_test(lc_pathname, G_FILE_TEST_EXISTS))
       g_strlcpy(pathname, (char *)lc_pathname, pathname_len);
     else
       *from_cache = FALSE;
@@ -876,7 +910,7 @@ void dt_image_set_raw_aspect_ratio(const int32_t imgid)
 
 void dt_image_set_aspect_ratio_to(const int32_t imgid, const float aspect_ratio, const gboolean raise)
 {
-  if (aspect_ratio > .0f)
+  if(aspect_ratio > .0f)
   {
     /* fetch image from cache */
     dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'w');
@@ -895,7 +929,7 @@ void dt_image_set_aspect_ratio_to(const int32_t imgid, const float aspect_ratio,
 
 void dt_image_set_aspect_ratio_if_different(const int32_t imgid, const float aspect_ratio, const gboolean raise)
 {
-  if (aspect_ratio > .0f)
+  if(aspect_ratio > .0f)
   {
     /* fetch image from cache */
     dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'r');
@@ -906,7 +940,7 @@ void dt_image_set_aspect_ratio_if_different(const int32_t imgid, const float asp
       dt_image_cache_read_release(darktable.image_cache, image);
       dt_image_t *wimage = dt_image_cache_get(darktable.image_cache, imgid, 'w');
       wimage->aspect_ratio = aspect_ratio;
-      dt_image_cache_write_release(darktable.image_cache, wimage, DT_IMAGE_CACHE_SAFE);
+      dt_image_cache_write_release(darktable.image_cache, wimage, DT_IMAGE_CACHE_RELAXED);
     }
     else
       dt_image_cache_read_release(darktable.image_cache, image);
@@ -1214,7 +1248,7 @@ static int _valid_glob_match(const char *const name, size_t offset)
 {
   // verify that the name matched by glob() is a valid sidecar name by checking whether we have an underscore
   // followed by a sequence of digits followed by a period at the given offset in the name
-  if (strlen(name) < offset || name[offset] != '_')
+  if(strlen(name) < offset || name[offset] != '_')
     return FALSE;
   size_t i;
   for(i = offset+1; name[i] && name[i] != '.'; i++)
@@ -1237,7 +1271,7 @@ GList* dt_image_find_duplicates(const char* filename)
   // start by locating the extension, which we'll be referencing multiple times
   const size_t fn_len = strlen(filename);
   const char* ext = strrchr(filename,'.');  // find last dot
-  if (!ext) ext = filename;
+  if(!ext) ext = filename;
   const size_t ext_offset = ext - filename;
 
   gchar pattern[PATH_MAX] = { 0 };
@@ -1258,7 +1292,7 @@ GList* dt_image_find_duplicates(const char* filename)
   // now collect all file_N*N.ext.xmp matches
   static const char glob_pattern[] = "_[0-9]*[0-9]";
   const size_t gp_len = strlen(glob_pattern);
-  if (fn_len + gp_len + xmp_len < sizeof(pattern)) // enough space to build pattern?
+  if(fn_len + gp_len + xmp_len < sizeof(pattern)) // enough space to build pattern?
   {
     // add GLOB.ext.xmp to the root of the basename
     g_strlcpy(pattern + ext_offset, glob_pattern, sizeof(pattern) - fn_len);
@@ -1378,6 +1412,7 @@ static int _image_read_duplicates(const uint32_t id, const char *filename, const
 static uint32_t _image_import_internal(const int32_t film_id, const char *filename, gboolean override_ignore_jpegs,
                                        gboolean lua_locking, gboolean raise_signals)
 {
+  const dt_imageio_write_xmp_t xmp_mode = dt_image_get_xmp_mode(); 
   char *normalized_filename = dt_util_normalize_path(filename);
   if(!normalized_filename || !dt_util_test_image_file(normalized_filename))
   {
@@ -1604,9 +1639,10 @@ static uint32_t _image_import_internal(const int32_t film_id, const char *filena
   if((res != 0) && (nb_xmp == 0))
   {
     // Search for Lightroom sidecar file, import tags if found
-    dt_lightroom_import(id, NULL, TRUE);
+    const gboolean lr_xmp = dt_lightroom_import(id, NULL, TRUE);
     // Make sure that lightroom xmp data (label in particular) are saved in dt xmp
-    dt_image_write_sidecar_file(id);
+    if(lr_xmp)
+      dt_image_write_sidecar_file(id);
   }
 
   // add a tag with the file extension
@@ -1621,7 +1657,8 @@ static uint32_t _image_import_internal(const int32_t film_id, const char *filena
   dt_mipmap_cache_remove(darktable.mipmap_cache, id);
 
   //synch database entries to xmp
-  dt_image_synch_all_xmp(normalized_filename);
+  if(xmp_mode == DT_WRITE_XMP_ALWAYS)
+    dt_image_synch_all_xmp(normalized_filename);
 
   g_free(imgfname);
   g_free(basename);
@@ -1652,7 +1689,7 @@ static uint32_t _image_import_internal(const int32_t film_id, const char *filena
   // the following line would look logical with new_tags_set being the return value
   // from dt_tag_new above, but this could lead to too rapid signals, being able to lock up the
   // keywords side pane when trying to use it, which can lock up the whole dt GUI ..
-  // if (new_tags_set) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals,DT_SIGNAL_TAG_CHANGED);
+  // if(new_tags_set) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals,DT_SIGNAL_TAG_CHANGED);
   return id;
 }
 
@@ -1752,7 +1789,7 @@ void dt_image_init(dt_image_t *img)
 
 void dt_image_refresh_makermodel(dt_image_t *img)
 {
-  if (!img->camera_maker[0] || !img->camera_model[0] || !img->camera_alias[0])
+  if(!img->camera_maker[0] || !img->camera_model[0] || !img->camera_alias[0])
   {
     // We need to use the exif values, so let's get rawspeed to munge them
     dt_rawspeed_lookup_makermodel(img->exif_maker, img->exif_model,
@@ -2312,7 +2349,7 @@ int dt_image_local_copy_reset(const int32_t imgid)
   const gboolean local_copy_exists = (imgr->flags & DT_IMAGE_LOCAL_COPY) == DT_IMAGE_LOCAL_COPY ? TRUE : FALSE;
   dt_image_cache_read_release(darktable.image_cache, imgr);
 
-  if (!local_copy_exists)
+  if(!local_copy_exists)
     return 0;
 
   // check that the original file is accessible
@@ -2387,7 +2424,7 @@ void dt_image_write_sidecar_file(const int32_t imgid)
 {
   // TODO: compute hash and don't write if not needed!
   // write .xmp file
-  if(imgid > 0 && dt_conf_get_bool("write_sidecar_files"))
+  if((imgid > 0) && (dt_image_get_xmp_mode() != DT_WRITE_XMP_NEVER))
   {
     char filename[PATH_MAX] = { 0 };
 
@@ -2395,14 +2432,14 @@ void dt_image_write_sidecar_file(const int32_t imgid)
     gboolean from_cache = FALSE;
     dt_image_full_path(imgid, filename, sizeof(filename), &from_cache);
 
-    if (!g_file_test(filename, G_FILE_TEST_EXISTS))
+    if(!g_file_test(filename, G_FILE_TEST_EXISTS))
     {
       // OTHERWISE: check if the local copy exists
       from_cache = TRUE;
       dt_image_full_path(imgid, filename, sizeof(filename), &from_cache);
 
       //  nothing to do, the original is not accessible and there is no local copy
-      if (!from_cache) return;
+      if(!from_cache) return;
     }
 
     dt_image_path_append_version(imgid, filename, sizeof(filename));
@@ -2427,7 +2464,7 @@ void dt_image_write_sidecar_file(const int32_t imgid)
 void dt_image_synch_xmps(const GList *img)
 {
   if(!img) return;
-  if(dt_conf_get_bool("write_sidecar_files"))
+  if(dt_image_get_xmp_mode() != DT_WRITE_XMP_NEVER)
   {
     for(const GList *imgs = img; imgs; imgs = g_list_next(imgs))
     {
@@ -2451,7 +2488,7 @@ void dt_image_synch_xmp(const int selected)
 
 void dt_image_synch_all_xmp(const gchar *pathname)
 {
-  if(dt_conf_get_bool("write_sidecar_files"))
+  if(dt_image_get_xmp_mode() != DT_WRITE_XMP_NEVER)
   {
     sqlite3_stmt *stmt;
     gchar *imgfname = g_path_get_basename(pathname);
@@ -2480,8 +2517,7 @@ void dt_image_synch_all_xmp(const gchar *pathname)
 void dt_image_local_copy_synch(void)
 {
   // nothing to do if not creating .xmp
-  if(!dt_conf_get_bool("write_sidecar_files")) return;
-
+  if(dt_image_get_xmp_mode() == DT_WRITE_XMP_NEVER) return;
   sqlite3_stmt *stmt;
 
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), "SELECT id FROM main.images WHERE flags&?1=?1", -1,

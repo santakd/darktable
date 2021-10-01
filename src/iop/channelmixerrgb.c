@@ -152,7 +152,7 @@ typedef struct dt_iop_channelmixer_rgb_gui_data_t
   gboolean run_validation;      // order a profile validation at next pipeline recompute
   gboolean profile_ready;       // notify that a profile is ready to be applied
   gboolean checker_ready;       // notify that a checker bounding box is ready to be used
-  float mix[3][4];
+  dt_colormatrix_t mix;
 
   GtkWidget *start_profiling;
   gboolean is_profiling_started;
@@ -166,7 +166,7 @@ typedef struct dt_iop_channelmixer_rgb_gui_data_t
 
 typedef struct dt_iop_channelmixer_rbg_data_t
 {
-  float DT_ALIGNED_ARRAY MIX[3][4];
+  dt_colormatrix_t MIX;
   float DT_ALIGNED_PIXEL saturation[CHANNEL_SIZE];
   float DT_ALIGNED_PIXEL lightness[CHANNEL_SIZE];
   float DT_ALIGNED_PIXEL grey[CHANNEL_SIZE];
@@ -646,8 +646,8 @@ static inline void luma_chroma(const dt_aligned_pixel_t input, const dt_aligned_
 #pragma omp declare simd aligned(in, out, XYZ_to_RGB, RGB_to_XYZ, MIX : 64) aligned(illuminant, saturation, lightness, grey:16)
 #endif
 static inline void loop_switch(const float *const restrict in, float *const restrict out,
-                               const size_t width, const size_t height, const size_t ch,
-                               const float XYZ_to_RGB[3][4], const float RGB_to_XYZ[3][4], const float MIX[3][4],
+                               const size_t width, const size_t height, const size_t ch, const dt_colormatrix_t XYZ_to_RGB,
+                               const dt_colormatrix_t RGB_to_XYZ, const dt_colormatrix_t MIX,
                                const dt_aligned_pixel_t illuminant, const dt_aligned_pixel_t saturation,
                                const dt_aligned_pixel_t lightness, const dt_aligned_pixel_t grey,
                                const float p, const float gamut, const int clip, const int apply_grey,
@@ -863,7 +863,7 @@ static inline void loop_switch(const float *const restrict in, float *const rest
 
 static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_t illuminant,
                                   const size_t width, const size_t height, const size_t ch,
-                                  const float RGB_to_XYZ[3][4], dt_aligned_pixel_t xyz)
+                                  const dt_colormatrix_t RGB_to_XYZ, dt_aligned_pixel_t xyz)
 {
   /**
    * Detect the chromaticity of the illuminant based on the grey edges hypothesis.
@@ -908,7 +908,7 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
 
       // Shift the chromaticity plane so the D50 point (target) becomes the origin
       const float D50[2] = { 0.34567f, 0.35850f };
-      const float norm = hypotf(D50[0], D50[1]);
+      const float norm = dt_fast_hypotf(D50[0], D50[1]);
 
       temp[index    ] = (XYZ[0] - D50[0]) / norm;
       temp[index + 1] = (XYZ[1] - D50[1]) / norm;
@@ -1022,33 +1022,13 @@ static inline void auto_detect_WB(const float *const restrict in, dt_illuminant_
   }
 
   const float D50[2] = { 0.34567f, 0.35850 };
-  const float norm_D50 = hypotf(D50[0], D50[1]);
+  const float norm_D50 = dt_fast_hypotf(D50[0], D50[1]);
 
   for(size_t c = 0; c < 2; c++)
     xyz[c] = norm_D50 * (xyY[c] / elements) + D50[c];
 
   dt_free_align(temp);
 }
-
-static inline void repack_3x3_to_3xSSE(const float input[9], float output[3][4])
-{
-  // Repack a 3×3 array/matrice into a 3×1 SSE2 vector to enable SSE4/AVX/AVX2 dot products
-  output[0][0] = input[0];
-  output[0][1] = input[1];
-  output[0][2] = input[2];
-  output[0][3] = 0.0f;
-
-  output[1][0] = input[3];
-  output[1][1] = input[4];
-  output[1][2] = input[5];
-  output[1][3] = 0.0f;
-
-  output[2][0] = input[6];
-  output[2][1] = input[7];
-  output[2][2] = input[8];
-  output[2][3] = 0.0f;
-}
-
 
 static void declare_cat_on_pipe(struct dt_iop_module_t *self, gboolean preset)
 {
@@ -1134,14 +1114,14 @@ static void check_if_close_to_daylight(const float x, const float y, float *temp
   xy_to_uv(xy_test, uv_test);
 
   // Compute the error between the reference illuminant and the test illuminant derivated from the CCT with daylight model
-  const float delta_daylight = hypotf((uv_test[0] - uv_ref[0]), (uv_test[1] - uv_ref[1]));
+  const float delta_daylight = dt_fast_hypotf((uv_test[0] - uv_ref[0]), (uv_test[1] - uv_ref[1]));
 
   // Compute the test chromaticity from the blackbody model
   illuminant_to_xy(DT_ILLUMINANT_BB, NULL, NULL, &xy_test[0], &xy_test[1], t, DT_ILLUMINANT_FLUO_LAST, DT_ILLUMINANT_LED_LAST);
   xy_to_uv(xy_test, uv_test);
 
   // Compute the error between the reference illuminant and the test illuminant derivated from the CCT with black body model
-  const float delta_bb = hypotf((uv_test[0] - uv_ref[0]), (uv_test[1] - uv_ref[1]));
+  const float delta_bb = dt_fast_hypotf((uv_test[0] - uv_ref[0]), (uv_test[1] - uv_ref[1]));
 
   // Check the error between original and test chromaticity
   if(delta_bb < 0.005f || delta_daylight < 0.005f)
@@ -1193,8 +1173,8 @@ static inline void compute_patches_delta_E(const float *const restrict patches,
     // note : it will only be luck if I didn't mess-up the computation somewhere
     const float DL = Lab_ref[0] - Lab_test[0];
     const float L_avg = (Lab_ref[0] + Lab_test[0]) / 2.f;
-    const float C_ref = hypotf(Lab_ref[1], Lab_ref[2]);
-    const float C_test = hypotf(Lab_test[1], Lab_test[2]);
+    const float C_ref = dt_fast_hypotf(Lab_ref[1], Lab_ref[2]);
+    const float C_test = dt_fast_hypotf(Lab_test[1], Lab_test[2]);
     const float C_avg = (C_ref + C_test) / 2.f;
     float C_avg_7 = C_avg * C_avg; // C_avg²
     C_avg_7 *= C_avg_7;            // C_avg⁴
@@ -1203,8 +1183,8 @@ static inline void compute_patches_delta_E(const float *const restrict patches,
     const float C_avg_7_ratio_sqrt = sqrtf(C_avg_7 / (C_avg_7 + 6103515625.f)); // 25⁷ = 6103515625
     const float a_ref_prime = Lab_ref[1] * (1.f + 0.5f * (1.f - C_avg_7_ratio_sqrt));
     const float a_test_prime = Lab_test[1] * (1.f + 0.5f * (1.f - C_avg_7_ratio_sqrt));
-    const float C_ref_prime = hypotf(a_ref_prime, Lab_ref[2]);
-    const float C_test_prime = hypotf(a_test_prime, Lab_test[2]);
+    const float C_ref_prime = dt_fast_hypotf(a_ref_prime, Lab_ref[2]);
+    const float C_test_prime = dt_fast_hypotf(a_test_prime, Lab_test[2]);
     const float DC_prime = C_ref_prime - C_test_prime;
     const float C_avg_prime = (C_ref_prime + C_test_prime) / 2.f;
     float h_ref_prime = atan2f(Lab_ref[2], a_ref_prime);
@@ -1301,7 +1281,8 @@ typedef struct {
 } extraction_result_t;
 
 static const extraction_result_t _extract_patches(const float *const restrict in, const dt_iop_roi_t *const roi_in,
-                                                  dt_iop_channelmixer_rgb_gui_data_t *g, const float RGB_to_XYZ[3][4],
+                                                  dt_iop_channelmixer_rgb_gui_data_t *g,
+                                                  const dt_colormatrix_t RGB_to_XYZ,
                                                   float *const restrict patches)
 {
   const size_t width = roi_in->width;
@@ -1415,7 +1396,8 @@ static const extraction_result_t _extract_patches(const float *const restrict in
 
 void extract_color_checker(const float *const restrict in, float *const restrict out,
                            const dt_iop_roi_t *const roi_in, dt_iop_channelmixer_rgb_gui_data_t *g,
-                           const float RGB_to_XYZ[3][4], const float XYZ_to_RGB[3][4], const dt_adaptation_t kind)
+                           const dt_colormatrix_t RGB_to_XYZ, const dt_colormatrix_t XYZ_to_RGB,
+                           const dt_adaptation_t kind)
 {
   float *const restrict patches = dt_alloc_sse_ps(g->checker->patches * 4);
 
@@ -1617,11 +1599,7 @@ void extract_color_checker(const float *const restrict in, float *const restrict
   pseudo_solve_gaussian(A, Y, g->checker->patches * 3, 9, TRUE);
 
   // repack the matrix
-  for(size_t i = 0; i < 3; i++)
-    for(size_t j = 0; j < 3; j++)
-      g->mix[i][j] = Y[3 * i + j];
-
-  g->mix[0][3] = g->mix[1][3] = g->mix[2][3] = 0.f;
+  repack_double3x3_to_3xSSE(Y, g->mix);
 
   dt_free_align(Y);
   dt_free_align(A);
@@ -1699,7 +1677,7 @@ void extract_color_checker(const float *const restrict in, float *const restrict
 
 void validate_color_checker(const float *const restrict in,
                             const dt_iop_roi_t *const roi_in, dt_iop_channelmixer_rgb_gui_data_t *g,
-                            const float RGB_to_XYZ[3][4], const float XYZ_to_RGB[3][4])
+                            const dt_colormatrix_t RGB_to_XYZ, const dt_colormatrix_t XYZ_to_RGB)
 {
   float *const restrict patches = dt_alloc_sse_ps(4 * g->checker->patches);
   extraction_result_t extraction_result = _extract_patches(in, roi_in, g, RGB_to_XYZ, patches);
@@ -1785,15 +1763,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   // we must set it again in case of any trouble.
   _check_for_wb_issue_and_set_trouble_message(self);
 
-  float DT_ALIGNED_ARRAY RGB_to_XYZ[3][4];
-  float DT_ALIGNED_ARRAY XYZ_to_RGB[3][4];
+  dt_colormatrix_t RGB_to_XYZ;
+  dt_colormatrix_t XYZ_to_RGB;
 
   // repack the matrices as flat AVX2-compliant matrice
   if(work_profile)
   {
     // work profile can't be fetched in commit_params since it is not yet initialised
-    repack_3x3_to_3xSSE(work_profile->matrix_in, RGB_to_XYZ);
-    repack_3x3_to_3xSSE(work_profile->matrix_out, XYZ_to_RGB);
+    memcpy(RGB_to_XYZ, work_profile->matrix_in, sizeof(RGB_to_XYZ));
+    memcpy(XYZ_to_RGB, work_profile->matrix_out, sizeof(XYZ_to_RGB));
   }
 
   assert(piece->colors == 4);
@@ -1977,22 +1955,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   cl_mem input_matrix_cl = NULL;
   cl_mem output_matrix_cl = NULL;
-  cl_mem MIX_cl = NULL;
 
-  float DT_ALIGNED_ARRAY RGB_to_XYZ[3][4];
-  float DT_ALIGNED_ARRAY XYZ_to_RGB[3][4];
-
-  // repack the matrices as flat AVX2-compliant matrice
-  if(work_profile)
-  {
-    // work profile can't be fetched in commit_params since it is not yet initialised
-    repack_3x3_to_3xSSE(work_profile->matrix_in, RGB_to_XYZ);
-    repack_3x3_to_3xSSE(work_profile->matrix_out, XYZ_to_RGB);
-  }
-
-  input_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), RGB_to_XYZ);
-  output_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), XYZ_to_RGB);
-  MIX_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), d->MIX);
+  input_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), (float*)work_profile->matrix_in);
+  output_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), (float*)work_profile->matrix_out);
+  cl_mem MIX_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), d->MIX);
 
   // select the right kernel for the current LMS space
   int kernel = gd->kernel_channelmixer_rgb_rgb;
@@ -2448,7 +2414,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
 
     dt_aligned_pixel_t RGB;
-    dt_ioppr_lab_to_rgb_matrix(g->checker->values[k].Lab, RGB, work_profile->matrix_out, work_profile->lut_out,
+    dt_ioppr_lab_to_rgb_matrix(g->checker->values[k].Lab, RGB, work_profile->matrix_out_transposed, work_profile->lut_out,
                                work_profile->unbounded_coeffs_out, work_profile->lutsize,
                                work_profile->nonlinearlut);
 
@@ -2986,7 +2952,7 @@ static void _convert_GUI_colors(dt_iop_channelmixer_rgb_params_t *p,
     dt_aligned_pixel_t XYZ;
     if(work_profile)
     {
-      dt_ioppr_rgb_matrix_to_xyz(LMS, XYZ, work_profile->matrix_in, work_profile->lut_in,
+      dt_ioppr_rgb_matrix_to_xyz(LMS, XYZ, work_profile->matrix_in_transposed, work_profile->lut_in,
                                   work_profile->unbounded_coeffs_in, work_profile->lutsize,
                                   work_profile->nonlinearlut);
       dt_XYZ_to_Rec709_D65(XYZ, RGB);
@@ -3499,7 +3465,7 @@ void reload_defaults(dt_iop_module_t *module)
     dt_bauhaus_slider_set_default(g->temperature, d->temperature);
     dt_bauhaus_combobox_set_default(g->illuminant, d->illuminant);
     dt_bauhaus_combobox_set_default(g->adaptation, d->adaptation);
-    if(g->delta_E_label_text) 
+    if(g->delta_E_label_text)
     {
       g_free(g->delta_E_label_text);
       g->delta_E_label_text = NULL;
@@ -3637,13 +3603,9 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
   const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
   if(work_profile == NULL) return;
 
-  // repack the matrices as flat AVX2-compliant matrice
-  float DT_ALIGNED_ARRAY RGB_to_XYZ[3][4];
-  repack_3x3_to_3xSSE(work_profile->matrix_in, RGB_to_XYZ);
-
   // Convert to XYZ
-  dt_aligned_pixel_t XYZ = { 0 };
-  dot_product(RGB, RGB_to_XYZ, XYZ);
+  dt_aligned_pixel_t XYZ;
+  dot_product(RGB, work_profile->matrix_in, XYZ);
 
   // Convert to xyY
   const float sum = fmaxf(XYZ[0] + XYZ[1] + XYZ[2], NORM_MIN);
@@ -3793,21 +3755,21 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_digits(first, 3);                                     \
   dt_bauhaus_slider_set_hard_min(first, -2.f);                                \
   dt_bauhaus_slider_set_hard_max(first, 2.f);                                 \
-  dt_bauhaus_widget_set_label(first, section, _("input R"));                \
+  dt_bauhaus_widget_set_label(first, section, N_("input R"));                 \
                                                                               \
   second = dt_bauhaus_slider_from_params(self, #var "[1]");                   \
   dt_bauhaus_slider_set_step(second, 0.005);                                  \
   dt_bauhaus_slider_set_digits(second, 3);                                    \
   dt_bauhaus_slider_set_hard_min(second, -2.f);                               \
   dt_bauhaus_slider_set_hard_max(second, 2.f);                                \
-  dt_bauhaus_widget_set_label(second, section, _("input G"));             \
+  dt_bauhaus_widget_set_label(second, section, N_("input G"));                \
                                                                               \
   third = dt_bauhaus_slider_from_params(self, swap ? #var "[0]" : #var "[2]");\
   dt_bauhaus_slider_set_step(third, 0.005);                                   \
   dt_bauhaus_slider_set_digits(third, 3);                                     \
   dt_bauhaus_slider_set_hard_min(third, -2.f);                                \
   dt_bauhaus_slider_set_hard_max(third, 2.f);                                 \
-  dt_bauhaus_widget_set_label(third, section, _("input B"));               \
+  dt_bauhaus_widget_set_label(third, section, N_("input B"));                 \
                                                                               \
   g->scale_##var##_R = swap ? third : first;                                  \
   g->scale_##var##_G = second;                                                \
@@ -3842,34 +3804,32 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->collapsible = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
-  g->checkers_list = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->checkers_list, NULL, _("chart"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Xrite ColorChecker 24 pre-2014"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Xrite ColorChecker 24 post-2014"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Datacolor SpyderCheckr 24 pre-2018"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Datacolor SpyderCheckr 24 post-2018"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Datacolor SpyderCheckr 48 pre-2018"));
-  dt_bauhaus_combobox_add(g->checkers_list, _("Datacolor SpyderCheckr 48 post-2018"));
-  g_signal_connect(G_OBJECT(g->checkers_list), "value-changed", G_CALLBACK(checker_changed_callback), self);
-  gtk_widget_set_tooltip_text(g->checkers_list, _("choose the vendor and the type of your chart"));
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(g->checkers_list, self, NULL, N_("chart"),
+                                _("choose the vendor and the type of your chart"),
+                                0, checker_changed_callback, self,
+                                N_("Xrite ColorChecker 24 pre-2014"),
+                                N_("Xrite ColorChecker 24 post-2014"),
+                                N_("Datacolor SpyderCheckr 24 pre-2018"),
+                                N_("Datacolor SpyderCheckr 24 post-2018"),
+                                N_("Datacolor SpyderCheckr 48 pre-2018"),
+                                N_("Datacolor SpyderCheckr 48 post-2018"));
   gtk_box_pack_start(GTK_BOX(g->collapsible), GTK_WIDGET(g->checkers_list), TRUE, TRUE, 0);
 
-  g->optimize = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->optimize, NULL, _("optimize for"));
-  dt_bauhaus_combobox_add(g->optimize, _("none"));
-  dt_bauhaus_combobox_add(g->optimize, _("neutral colors"));
-  dt_bauhaus_combobox_add(g->optimize, _("saturated colors"));
-  dt_bauhaus_combobox_add(g->optimize, _("skin and soil colors"));
-  dt_bauhaus_combobox_add(g->optimize, _("foliage colors"));
-  dt_bauhaus_combobox_add(g->optimize, _("sky and water colors"));
-  dt_bauhaus_combobox_add(g->optimize, _("average delta E"));
-  dt_bauhaus_combobox_add(g->optimize, _("maximum delta E"));
-  g_signal_connect(G_OBJECT(g->optimize), "value-changed", G_CALLBACK(optimize_changed_callback), self);
-  gtk_widget_set_tooltip_text(g->optimize, _("choose the colors that will be optimized with higher priority.\n"
-                                             "neutral colors gives the lowest average delta E but a high maximum delta E\n"
-                                             "saturated colors gives the lowest maximum delta E but a high average delta E\n"
-                                             "none is a trade-off between both\n"
-                                             "the others are special behaviours to protect some hues"));
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(g->optimize, self, NULL, N_("optimize for"),
+                                _("choose the colors that will be optimized with higher priority.\n"
+                                  "neutral colors gives the lowest average delta E but a high maximum delta E\n"
+                                  "saturated colors gives the lowest maximum delta E but a high average delta E\n"
+                                  "none is a trade-off between both\n"
+                                  "the others are special behaviours to protect some hues"),
+                                0, optimize_changed_callback, self,
+                                N_("none"),
+                                N_("neutral colors"),
+                                N_("saturated colors"),
+                                N_("skin and soil colors"),
+                                N_("foliage colors"),
+                                N_("sky and water colors"),
+                                N_("average delta E"),
+                                N_("maximum delta E"));
   gtk_box_pack_start(GTK_BOX(g->collapsible), GTK_WIDGET(g->optimize), TRUE, TRUE, 0);
 
   g->safety = dt_bauhaus_slider_new_with_range_and_feedback(self, 0., 1., 0.1, 0.5, 3, TRUE);

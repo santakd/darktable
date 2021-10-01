@@ -944,7 +944,7 @@ static enum _dt_delete_status delete_file_from_disk(const char *filename, gboole
           send_to_trash,
           filename_display == NULL ? filename : filename_display,
           gerror == NULL ? NULL : gerror->message);
-
+      g_object_unref(gfileinfo);
       if (send_to_trash && res == _DT_DELETE_DIALOG_CHOICE_DELETE)
       {
         // Loop again, this time delete instead of trashing
@@ -1676,21 +1676,17 @@ void dt_control_move_images()
     return;
   }
 
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_select as destination"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+        _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, 
+        _("_select as destination"), _("_cancel"));
 
-  dt_conf_get_folder_to_file_chooser("ui_last/copymove_path", filechooser);
-  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  dt_conf_get_folder_to_file_chooser("ui_last/copymove_path", GTK_FILE_CHOOSER(filechooser));
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
-    dt_conf_set_folder_from_file_chooser("ui_last/copymove_path", filechooser);
+    dt_conf_set_folder_from_file_chooser("ui_last/copymove_path", GTK_FILE_CHOOSER(filechooser));
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
 
   if(!dir || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
 
@@ -1742,20 +1738,17 @@ void dt_control_copy_images()
     return;
   }
 
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_select as destination"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
-  dt_conf_get_folder_to_file_chooser("ui_last/copymove_path", filechooser);
-  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+        _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, 
+        _("_select as destination"), _("_cancel"));
+
+  dt_conf_get_folder_to_file_chooser("ui_last/copymove_path", GTK_FILE_CHOOSER(filechooser));
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
-    dt_conf_set_folder_from_file_chooser("ui_last/copymove_path", filechooser);
+    dt_conf_set_folder_from_file_chooser("ui_last/copymove_path", GTK_FILE_CHOOSER(filechooser));
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
 
   if(!dir || !g_file_test(dir, G_FILE_TEST_IS_DIR)) goto abort;
 
@@ -2084,9 +2077,9 @@ static int _control_import_image_copy(const char *filename,
 
   if(have_exif_time)
     dt_import_session_set_exif_time(session, exif_time);
+  dt_import_session_set_filename(session, basename);
   const char *output_path = dt_import_session_path(session, FALSE);
   const gboolean use_filename = dt_conf_get_bool("session/use_filename");
-  dt_import_session_set_filename(session, basename);
   const char *fname = dt_import_session_filename(session, use_filename);
 
   char *output = g_build_filename(output_path, fname, NULL);
@@ -2137,7 +2130,7 @@ static int _control_import_image_insitu(const char *filename, GList **imgs, doub
                                         double *update_interval)
 {
   dt_conf_set_int("ui_last/import_last_image", -1);
-  char *dirname = g_path_get_dirname(filename);
+  char *dirname = dt_util_path_get_dirname(filename);
   dt_film_t film;
   const int filmid = dt_film_new(&film, dirname);
   const int32_t imgid = dt_image_import(filmid, filename, FALSE, FALSE);
@@ -2189,14 +2182,17 @@ static GList *_apply_lua_filter(GList *images)
     g_list_free_full(images, g_free);
     // recreate list of images
     images = NULL;
-   for(int i = 1; i < image_count; i++)
+    for(int i = 1; i < image_count; i++)
     {
-      /* uses 'key' (at index -2) and 'value' (at index -1) */
+      //get entry I from table at index -1.  Push the result on the stack
       lua_geti(L, -1, i);
-      void *filename = strdup(luaL_checkstring(L, -1));
+      if(lua_isstring(L, -1)) //images to ignore are set to nil
+      {
+        void *filename = strdup(luaL_checkstring(L, -1));
+        images = g_list_prepend(images, filename);
+      }
       lua_pop(L, 1);
-      images = g_list_prepend(images, filename);
-    }
+   }
   }
 
   lua_pop(L, 1); // remove the table again from the stack

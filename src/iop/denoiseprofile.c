@@ -96,7 +96,7 @@ typedef enum dt_iop_denoiseprofile_channel_t
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
-DT_MODULE_INTROSPECTION(10, dt_iop_denoiseprofile_params_t)
+DT_MODULE_INTROSPECTION(11, dt_iop_denoiseprofile_params_t)
 
 typedef struct dt_iop_denoiseprofile_params_v1_t
 {
@@ -195,7 +195,7 @@ typedef struct dt_iop_denoiseprofile_params_v9_t
   gboolean use_new_vst;
 } dt_iop_denoiseprofile_params_v9_t;
 
-typedef struct dt_iop_denoiseprofile_params_t
+typedef struct dt_iop_denoiseprofile_params_v10_t
 {
   float radius;     /* patch size
                        $MIN: 0.0 $MAX: 12.0 $DEFAULT: 1.0 $DESCRIPTION: "patch size" */
@@ -216,6 +216,37 @@ typedef struct dt_iop_denoiseprofile_params_t
   float a[3], b[3]; // fit for poissonian-gaussian noise per color channel.
   dt_iop_denoiseprofile_mode_t mode; /* switch between nlmeans and wavelets
                                         $DEFAULT: MODE_NLMEANS */
+  float x[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS];
+  float y[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS]; /* values to change wavelet force by frequency
+                                                                     $DEFAULT: 0.5 */
+  gboolean wb_adaptive_anscombe; // $DEFAULT: TRUE $DESCRIPTION: "whitebalance-adaptive transform" whether to adapt anscombe transform to wb coeffs
+  gboolean fix_anscombe_and_nlmeans_norm; // $DEFAULT: TRUE $DESCRIPTION: "fix various bugs in algorithm" backward compatibility options
+  gboolean use_new_vst; // $DEFAULT: TRUE $DESCRIPTION: "upgrade profiled transform" backward compatibility options
+  dt_iop_denoiseprofile_wavelet_mode_t wavelet_color_mode; /* switch between RGB and Y0U0V0 modes.
+                                                              $DEFAULT: MODE_Y0U0V0 $DESCRIPTION: "color mode"*/
+} dt_iop_denoiseprofile_params_v10_t;
+
+typedef struct dt_iop_denoiseprofile_params_t
+{
+  float radius;     /* patch size
+                       $MIN: 0.0 $MAX: 12.0 $DEFAULT: 1.0 $DESCRIPTION: "patch size" */
+  float nbhood;     /* search radius
+                       $MIN: 1.0 $MAX: 30.0 $DEFAULT: 7.0 $DESCRIPTION: "search radius" */
+  float strength;   /* noise level after equalization
+                       $MIN: 0.001 $MAX: 1000.0 $DEFAULT: 1.0 */
+  float shadows;    /* control the impact on shadows
+                       $MIN: 0.0 $MAX: 1.8 $DEFAULT: 1.0 $DESCRIPTION: "preserve shadows" */
+  float bias;       /* allows to reduce backtransform bias
+                       $MIN: -1000.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "bias correction" */
+  float scattering; /* spread the patch search zone without increasing number of patches
+                       $MIN: 0.0 $MAX: 20.0 $DEFAULT: 0.0 $DESCRIPTION: "scattering" */
+  float central_pixel_weight; /* increase central pixel's weight in patch comparison
+                       $MIN: 0.0 $MAX: 10.0 $DEFAULT: 0.1 $DESCRIPTION: "central pixel weight" */
+  float overshooting; /* adjusts the way parameters are autoset
+                         $MIN: 0.001 $MAX: 1000.0 $DEFAULT: 1.0 $DESCRIPTION: "adjust autoset parameters" */
+  float a[3], b[3]; // fit for poissonian-gaussian noise per color channel.
+  dt_iop_denoiseprofile_mode_t mode; /* switch between nlmeans and wavelets
+                                        $DEFAULT: MODE_WAVELETS */
   float x[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS];
   float y[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS]; /* values to change wavelet force by frequency
                                                                      $DEFAULT: 0.5 */
@@ -616,6 +647,26 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     v10->wavelet_color_mode = MODE_RGB;
     return 0;
   }
+  else if(new_version == 11)
+  {
+    // v11 and v10 are the same, just need to update strength when needed.
+    dt_iop_denoiseprofile_params_t *v11 = new_params;
+    if(old_version < 10)
+    {
+      if(legacy_params(self, old_params, old_version, v11, 10)) return 1;
+    }
+    else
+      memcpy(v11, old_params, sizeof(*v11)); // was v10 already
+
+    if((v11->mode == MODE_WAVELETS || v11->mode == MODE_WAVELETS_AUTO) && v11->wavelet_color_mode == MODE_Y0U0V0)
+    {
+      // in Y0U0V0, in v11, we always increase strength in the algorithm, so that
+      // the amount of smoothing is closer to what we get with the other modes.
+      const float compensate_strength = 2.5f;
+      v11->strength /= compensate_strength;
+    }
+    return 0;
+  }
   return 1;
 }
 
@@ -631,7 +682,7 @@ void init_presets(dt_iop_module_so_t *self)
   // then the wavelet ones
   p.mode = MODE_WAVELETS;
   p.wavelet_color_mode = MODE_Y0U0V0;
-  p.strength = 3.0f;
+  p.strength = 1.2f;
   p.use_new_vst = TRUE;
   // disable variance stabilization transform to avoid any bias
   // (wavelets perform well even without the VST):
@@ -653,7 +704,7 @@ void init_presets(dt_iop_module_so_t *self)
     p.x[DT_DENOISE_PROFILE_Y0][b] = b / (DT_IOP_DENOISE_PROFILE_BANDS - 1.0f);
     p.y[DT_DENOISE_PROFILE_Y0][b] = 0.0f;
   }
-  dt_gui_presets_add_generic(_("wavelets: chroma only"), self->op, self->version(), &p,
+  dt_gui_presets_add_generic(_("wavelets: chroma only"), self->op, 11, &p,
                              sizeof(p), 1, DEVELOP_BLEND_CS_RGB_SCENE);
 }
 
@@ -944,7 +995,7 @@ static inline void backtransform_v2(float *const buf, const int wd, const int ht
 
 static inline void precondition_Y0U0V0(const float *const in, float *const buf, const int wd, const int ht,
                                        const float a, const dt_aligned_pixel_t p, const float b,
-                                       const float toY0U0V0[3][4])
+                                       const dt_colormatrix_t toY0U0V0)
 {
   const dt_aligned_pixel_t expon = { -p[0] / 2 + 1, -p[1] / 2 + 1, -p[2] / 2 + 1, 1.0f };
   const dt_aligned_pixel_t scale = { 2.0f / ((-p[0] + 2) * sqrtf(a)),
@@ -978,7 +1029,7 @@ static inline void precondition_Y0U0V0(const float *const in, float *const buf, 
 
 static inline void backtransform_Y0U0V0(float *const buf, const int wd, const int ht, const float a,
                                         const dt_aligned_pixel_t p, const float b, const float bias,
-                                        const dt_aligned_pixel_t wb, const float toRGB[3][4])
+                                        const dt_aligned_pixel_t wb, const dt_colormatrix_t toRGB)
 {
   const dt_aligned_pixel_t bias_wb = { bias * wb[0], bias * wb[1], bias * wb[2], 0.0f };
   const dt_aligned_pixel_t expon = {  1.0f / (1.0f - p[0] / 2.0f),
@@ -1055,7 +1106,7 @@ static void compute_wb_factors(dt_aligned_pixel_t wb,const dt_iop_denoiseprofile
 
 // =====================================================================================
 
-static gboolean invert_matrix(const float in[3][4], float out[3][4])
+static gboolean invert_matrix(const dt_colormatrix_t in, dt_colormatrix_t out)
 {
   // use same notation as https://en.wikipedia.org/wiki/Invertible_matrix#Inversion_of_3_%C3%97_3_matrices
   const float biga = in[1][1] * in[2][2] - in[1][2] * in[2][1];
@@ -1091,7 +1142,8 @@ static gboolean invert_matrix(const float in[3][4], float out[3][4])
 
 // create the white balance adaptative conversion matrices
 // supposes toY0U0V0 already contains the "normal" conversion matrix
-static void set_up_conversion_matrices(float toY0U0V0[3][4], float toRGB[3][4], dt_aligned_pixel_t wb)
+static void set_up_conversion_matrices(dt_colormatrix_t toY0U0V0, dt_colormatrix_t toRGB,
+                                       const dt_aligned_pixel_t wb)
 {
   // for an explanation of the spirit of the choice of the coefficients of the
   // Y0U0V0 conversion matrix, see part 12.3.3 page 190 of
@@ -1274,21 +1326,25 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
 
   // conversion to Y0U0V0 space as defined in Secrets of image denoising cuisine
-  float DT_ALIGNED_PIXEL toY0U0V0[3][4] = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
-                                            { 0.5f,      0.0f,      -0.5f },
-                                            {  0.25f,     -0.5f,     0.25f } };
-  float DT_ALIGNED_PIXEL toRGB[3][4] = { { 0.0f, 0.0f, 0.0f }, // "unused" fourth element enables vectorization
-                                         { 0.0f, 0.0f, 0.0f },
-                                         { 0.0f, 0.0f, 0.0f } };
+  dt_colormatrix_t toY0U0V0 = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
+                                { 0.5f,      0.0f,      -0.5f },
+                                {  0.25f,     -0.5f,     0.25f } };
+  dt_colormatrix_t toRGB = { { 0.0f, 0.0f, 0.0f }, // "unused" fourth element enables vectorization
+                             { 0.0f, 0.0f, 0.0f },
+                             { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
+
+  // more stength in Y0U0V0 in order to get a similar smoothing as in other modes
+  // otherwise, result was much less denoised in Y0U0V0 mode.
+  const float compensate_strength = (d->wavelet_color_mode == MODE_RGB) ? 1.0f : 2.5f;
   // update the coeffs with strength and scale
   for(size_t k = 0; k < 3; k++)
     for_each_channel(c)
     {
-      toY0U0V0[k][c] /= (d->strength * in_scale);
-      toRGB[k][c] *= (d->strength * in_scale);
+      toY0U0V0[k][c] /= (d->strength * compensate_strength * in_scale);
+      toRGB[k][c] *= (d->strength * compensate_strength * in_scale);
     }
-  for_each_channel(i) wb[i] *= d->strength * in_scale;
+  for_each_channel(i) wb[i] *= d->strength * compensate_strength * in_scale;
 
   // only use green channel + wb for now: (the "unused" fourth element enables vectorization)
   const dt_aligned_pixel_t aa = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 0.0f };
@@ -2182,13 +2238,18 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
                                  MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f), 1.0f};
 
   // conversion to Y0U0V0 space as defined in Secrets of image denoising cuisine
-  float DT_ALIGNED_PIXEL toY0U0V0_tmp[3][4] = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
-                                                { 0.5f,      0.0f,      -0.5f },
-                                                { 0.25f,     -0.5f,     0.25f } };
-  float DT_ALIGNED_PIXEL toRGB_tmp[3][4] = { { 0.0f, 0.0f, 0.0f },  // "unused" fourth element enables vectorization
-                                             { 0.0f, 0.0f, 0.0f },
-                                             { 0.0f, 0.0f, 0.0f } };
+  dt_colormatrix_t toY0U0V0_tmp = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
+                                    { 0.5f,      0.0f,      -0.5f },
+                                    { 0.25f,     -0.5f,     0.25f } };
+  dt_colormatrix_t toRGB_tmp = { { 0.0f, 0.0f, 0.0f },  // "unused" fourth element enables vectorization
+                                 { 0.0f, 0.0f, 0.0f },
+                                 { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0_tmp, toRGB_tmp, wb);
+
+  // more stength in Y0U0V0 in order to get a similar smoothing as in other modes
+  // otherwise, result was much less denoised in Y0U0V0 mode.
+  const float compensate_strength = (d->wavelet_color_mode == MODE_RGB) ? 1.0f : 2.5f;
+
   // update the coeffs with strength and scale
   float toY0U0V0[9]; //TODO: change OpenCL kernels to use 3x4 matrices
   float toRGB[9] ;
@@ -2196,12 +2257,12 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
     for(size_t c = 0; c < 3; c++)
     //(we can't use for_each_channel here because it can iterate over four elements)
     {
-      toRGB[3*k+c] = toRGB_tmp[k][c] * d->strength * scale;
-      toY0U0V0[3*k+c] = toY0U0V0_tmp[k][c] / (d->strength * scale);
+      toRGB[3*k+c] = toRGB_tmp[k][c] * d->strength * compensate_strength * scale;
+      toY0U0V0[3*k+c] = toY0U0V0_tmp[k][c] / (d->strength * compensate_strength * scale);
     }
 
   // update the coeffs with strength and scale
-  for_each_channel(i) wb[i] *= d->strength * scale;
+  for_each_channel(i) wb[i] *= d->strength * compensate_strength * scale;
 
   dt_aligned_pixel_t aa = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 1.0f };
   dt_aligned_pixel_t bb = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 1.0f };

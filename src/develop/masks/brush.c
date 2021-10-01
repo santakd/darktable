@@ -2579,30 +2579,31 @@ static void _brush_events_post_expose(cairo_t *cr, float zoom_scale, dt_masks_fo
   }
 }
 
-static void _brush_bounding_box_raw(const float *const points, const float *const border, const int nb_corner, const int num_points, const int num_borders,
-                                float *x_min, float *x_max, float *y_min, float *y_max)
+static void _brush_bounding_box_raw(const float *const points, const float *const border, const int nb_corner,
+                                    const int num_points, float *x_min, float *x_max, float *y_min, float *y_max)
 {
   // now we want to find the area, so we search min/max points
   float xmin = FLT_MAX, xmax = FLT_MIN, ymin = FLT_MAX, ymax = FLT_MIN;
-  for(int i = nb_corner * 3; i < num_borders; i++)
-  {
-    // we look at the borders
-    const float xx = border[i * 2];
-    const float yy = border[i * 2 + 1];
-    xmin = fminf(xx, xmin);
-    xmax = fmaxf(xx, xmax);
-    ymin = fminf(yy, ymin);
-    ymax = fmaxf(yy, ymax);
-  }
+#ifdef _OPENMP
+#pragma omp parallel for reduction(min : xmin, ymin) reduction(max : xmax, ymax) \
+  schedule(static) if(num_points > 1000) 
+#endif
   for(int i = nb_corner * 3; i < num_points; i++)
   {
+    // we look at the borders
+    const float x = border[i * 2];
+    const float y = border[i * 2 + 1];
+    xmin = MIN(x, xmin);
+    xmax = MAX(x, xmax);
+    ymin = MIN(y, ymin);
+    ymax = MAX(y, ymax);
     // we look at the brush too
     const float xx = points[i * 2];
     const float yy = points[i * 2 + 1];
-    xmin = fminf(xx, xmin);
-    xmax = fmaxf(xx, xmax);
-    ymin = fminf(yy, ymin);
-    ymax = fmaxf(yy, ymax);
+    xmin = MIN(xx, xmin);
+    xmax = MAX(xx, xmax);
+    ymin = MIN(yy, ymin);
+    ymax = MAX(yy, ymax);
   }
   *x_min = xmin;
   *x_max = xmax;
@@ -2610,11 +2611,11 @@ static void _brush_bounding_box_raw(const float *const points, const float *cons
   *y_max = ymax;
 }
 
-static void _brush_bounding_box(const float *const points, const float *const border, const int nb_corner, const int num_points, const int num_borders,
-                                int *width, int *height, int *posx, int *posy)
+static void _brush_bounding_box(const float *const points, const float *const border, const int nb_corner,
+                                const int num_points, int *width, int *height, int *posx, int *posy)
 {
   float xmin = FLT_MAX, xmax = FLT_MIN, ymin = FLT_MAX, ymax = FLT_MIN;
-  _brush_bounding_box_raw(points, border, nb_corner, num_points, num_borders, &xmin, &xmax, &ymin, &ymax);
+  _brush_bounding_box_raw(points, border, nb_corner, num_points, &xmin, &xmax, &ymin, &ymax);
   *height = ymax - ymin + 4;
   *width = xmax - xmin + 4;
   *posx = xmin - 2;
@@ -2637,7 +2638,7 @@ static int _get_area(const dt_iop_module_t *const module, const dt_dev_pixelpipe
   }
 
   const guint nb_corner = g_list_length(form->points);
-  _brush_bounding_box(points, border, nb_corner, points_count, border_count, width, height, posx, posy);
+  _brush_bounding_box(points, border, nb_corner, points_count, width, height, posx, posy);
 
   dt_free_align(points);
   dt_free_align(border);
@@ -2657,8 +2658,8 @@ static int _brush_get_area(const dt_iop_module_t *const module, const dt_dev_pix
 }
 
 /** we write a falloff segment */
-static void _brush_falloff(float **buffer, int *p0, int *p1, int posx, int posy, int bw, float hardness,
-                           float density)
+static void _brush_falloff(float *const restrict buffer, int p0[2], int p1[2], int posx, int posy, int bw,
+                           float hardness, float density)
 {
   // segment length
   const int l = sqrt((p1[0] - p0[0]) * (p1[0] - p0[0]) + (p1[1] - p0[1]) * (p1[1] - p0[1])) + 1;
@@ -2674,13 +2675,13 @@ static void _brush_falloff(float **buffer, int *p0, int *p1, int posx, int posy,
     const int x = (int)((float)i * lx / (float)l) + p0[0] - posx;
     const int y = (int)((float)i * ly / (float)l) + p0[1] - posy;
     const float op = density * ((i <= solid) ? 1.0f : 1.0 - (float)(i - solid) / (float)soft);
-    (*buffer)[y * bw + x] = MAX((*buffer)[y * bw + x], op);
+    buffer[y * bw + x] = MAX(buffer[y * bw + x], op);
     if(x > 0)
-      (*buffer)[y * bw + x - 1]
-          = MAX((*buffer)[y * bw + x - 1], op); // this one is to avoid gap due to int rounding
+      buffer[y * bw + x - 1]
+          = MAX(buffer[y * bw + x - 1], op); // this one is to avoid gap due to int rounding
     if(y > 0)
-      (*buffer)[(y - 1) * bw + x]
-          = MAX((*buffer)[(y - 1) * bw + x], op); // this one is to avoid gap due to int rounding
+      buffer[(y - 1) * bw + x]
+          = MAX(buffer[(y - 1) * bw + x], op); // this one is to avoid gap due to int rounding
   }
 }
 
@@ -2691,7 +2692,7 @@ static int _brush_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
   if(!module) return 0;
   double start = 0.0;
   double start2 = 0.0;
-  if(darktable.unmuted & DT_DEBUG_PERF) start = dt_get_wtime();
+  if(darktable.unmuted & DT_DEBUG_PERF) start = start2 = dt_get_wtime();
 
   // we get buffers for all points
   float *points = NULL, *border = NULL, *payload = NULL;
@@ -2707,12 +2708,12 @@ static int _brush_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
 
   if(darktable.unmuted & DT_DEBUG_PERF)
   {
-    dt_print(DT_DEBUG_MASKS, "[masks %s] brush points took %0.04f sec\n", form->name, dt_get_wtime() - start);
-    start = start2 = dt_get_wtime();
+    dt_print(DT_DEBUG_MASKS, "[masks %s] brush points took %0.04f sec\n", form->name, dt_get_wtime() - start2);
+    start2 = dt_get_wtime();
   }
 
   const guint nb_corner = g_list_length(form->points);
-  _brush_bounding_box(points, border, nb_corner, points_count, border_count, width, height, posx, posy);
+  _brush_bounding_box(points, border, nb_corner, points_count, width, height, posx, posy);
 
   if(darktable.unmuted & DT_DEBUG_PERF)
     dt_print(DT_DEBUG_MASKS, "[masks %s] brush_fill min max took %0.04f sec\n", form->name,
@@ -2720,7 +2721,8 @@ static int _brush_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
 
   // we allocate the buffer
   const size_t bufsize = (size_t)(*width) * (*height);
-  *buffer = dt_alloc_align_float(bufsize);
+  // ensure that the buffer is zeroed, as the below code only fills in pixels in the falloff region
+  *buffer = dt_calloc_align_float(bufsize);
   if(*buffer == NULL)
   {
     dt_free_align(points);
@@ -2728,7 +2730,6 @@ static int _brush_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     dt_free_align(payload);
     return 0;
   }
-  memset(*buffer, 0, sizeof(float) * bufsize);
 
   // now we fill the falloff
   int p0[2], p1[2];
@@ -2740,7 +2741,7 @@ static int _brush_get_mask(const dt_iop_module_t *const module, const dt_dev_pix
     p1[0] = border[i * 2];
     p1[1] = border[i * 2 + 1];
 
-    _brush_falloff(buffer, p0, p1, *posx, *posy, *width, payload[i * 2], payload[i * 2 + 1]);
+    _brush_falloff(*buffer, p0, p1, *posx, *posy, *width, payload[i * 2], payload[i * 2 + 1]);
   }
 
   dt_free_align(points);
@@ -2797,13 +2798,15 @@ static inline void _brush_falloff_roi(float *buffer, const int *p0, const int *p
   }
 }
 
+// build a stamp which can be combined with other shapes in the same group
+// prerequisite: 'buffer' is all zeros
 static int _brush_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
                                dt_masks_form_t *const form, const dt_iop_roi_t *roi, float *buffer)
 {
   if(!module) return 0;
   double start = 0.0;
   double start2 = 0.0;
-  if(darktable.unmuted & DT_DEBUG_PERF) start = dt_get_wtime();
+  if(darktable.unmuted & DT_DEBUG_PERF) start = start2 = dt_get_wtime();
 
   const int px = roi->x;
   const int py = roi->y;
@@ -2827,12 +2830,9 @@ static int _brush_get_mask_roi(const dt_iop_module_t *const module, const dt_dev
 
   if(darktable.unmuted & DT_DEBUG_PERF)
   {
-    dt_print(DT_DEBUG_MASKS, "[masks %s] brush points took %0.04f sec\n", form->name, dt_get_wtime() - start);
-    start = start2 = dt_get_wtime();
+    dt_print(DT_DEBUG_MASKS, "[masks %s] brush points took %0.04f sec\n", form->name, dt_get_wtime() - start2);
+    start2 = dt_get_wtime();
   }
-
-  // empty the output buffer
-  dt_iop_image_fill(buffer, 0.0f, width, height, 1);
 
   const guint nb_corner = g_list_length(form->points);
 
@@ -2855,11 +2855,14 @@ static int _brush_get_mask_roi(const dt_iop_module_t *const module, const dt_dev
 
 
   float xmin = 0.0f, xmax = 0.0f, ymin = 0.0f, ymax = 0.0f;
-  _brush_bounding_box_raw(points, border, nb_corner, points_count, border_count, &xmin, &xmax, &ymin, &ymax);
+  _brush_bounding_box_raw(points, border, nb_corner, points_count, &xmin, &xmax, &ymin, &ymax);
 
   if(darktable.unmuted & DT_DEBUG_PERF)
+  {
     dt_print(DT_DEBUG_MASKS, "[masks %s] brush_fill min max took %0.04f sec\n", form->name,
              dt_get_wtime() - start2);
+    start2 = dt_get_wtime();
+  }
 
   // check if the path completely lies outside of roi -> we're done/mask remains empty
   if(xmax < 0 || ymax < 0 || xmin >= width || ymin >= height)
@@ -2875,7 +2878,7 @@ static int _brush_get_mask_roi(const dt_iop_module_t *const module, const dt_dev
 #if !defined(__SUNOS__) && !defined(__NetBSD__)
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(nb_corner, border_count, width, height) \
-  shared(buffer, points, border, payload)
+  shared(buffer, points, border, payload) schedule(static)
 #else
 #pragma omp parallel for shared(buffer)
 #endif
@@ -2897,8 +2900,12 @@ static int _brush_get_mask_roi(const dt_iop_module_t *const module, const dt_dev
   dt_free_align(payload);
 
   if(darktable.unmuted & DT_DEBUG_PERF)
+  {
+    dt_print(DT_DEBUG_MASKS, "[masks %s] brush set falloff took %0.04f sec\n", form->name,
+             dt_get_wtime() - start2);
     dt_print(DT_DEBUG_MASKS, "[masks %s] brush fill buffer took %0.04f sec\n", form->name,
              dt_get_wtime() - start);
+  }
 
   return 1;
 }

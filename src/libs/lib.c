@@ -475,7 +475,7 @@ static void dt_lib_presets_popup_menu_show(dt_lib_module_info_t *minfo)
       active_preset = cnt;
       selected_writeprotect = writeprotect;
       mi = gtk_check_menu_item_new_with_label(name);
-    gtk_style_context_add_class(gtk_widget_get_style_context(mi), "check-menu-item");
+      gtk_style_context_add_class(gtk_widget_get_style_context(mi), "check-menu-item");
       gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), TRUE);
       gtk_style_context_add_class(gtk_widget_get_style_context(mi), "active-menu-item");
     }
@@ -755,29 +755,6 @@ static void dt_lib_gui_reset_callback(GtkButton *button, gpointer user_data)
   module->gui_reset(module);
 }
 
-#if !GTK_CHECK_VERSION(3, 22, 0)
-static void _preset_popup_posistion(GtkMenu *menu, gint *x, gint *y, gboolean *push_in, gpointer data)
-{
-  gint w;
-  gint ww;
-  GtkRequisition requisition = { 0 };
-
-  w = gdk_window_get_width(gtk_widget_get_window(GTK_WIDGET(data)));
-  ww = gdk_window_get_width(gtk_widget_get_window(dt_ui_main_window(darktable.gui->ui)));
-
-  gdk_window_get_origin(gtk_widget_get_window(GTK_WIDGET(data)), x, y);
-
-  gtk_widget_get_preferred_size(GTK_WIDGET(menu), &requisition, NULL);
-
-  /* align left panel popupmenu to right edge */
-  if(*x < ww / 2) (*x) += w - requisition.width;
-
-  GtkAllocation allocation_data;
-  gtk_widget_get_allocation(GTK_WIDGET(data), &allocation_data);
-  (*y) += allocation_data.height;
-}
-#endif
-
 static void presets_popup_callback(GtkButton *button, dt_lib_module_t *module)
 {
   dt_lib_module_info_t *mi = (dt_lib_module_info_t *)calloc(1, sizeof(dt_lib_module_info_t));
@@ -802,7 +779,7 @@ static void presets_popup_callback(GtkButton *button, dt_lib_module_t *module)
 
 void dt_lib_gui_set_expanded(dt_lib_module_t *module, gboolean expanded)
 {
-  if(!module->expander) return;
+  if(!module->expander || !module->arrow) return;
 
   dtgtk_expander_set_expanded(DTGTK_EXPANDER(module->expander), expanded);
 
@@ -1191,24 +1168,17 @@ gchar *dt_lib_get_localized_name(const gchar *plugin_name)
   return (gchar *)g_hash_table_lookup(module_names, plugin_name);
 }
 
-void dt_lib_colorpicker_set_area(dt_lib_t *lib, float size)
-{
-  if(!lib->proxy.colorpicker.module || !lib->proxy.colorpicker.set_sample_area) return;
-  lib->proxy.colorpicker.set_sample_area(lib->proxy.colorpicker.module, size);
-  gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
-}
-
-void dt_lib_colorpicker_set_box_area(dt_lib_t *lib, const float *const box)
+void dt_lib_colorpicker_set_box_area(dt_lib_t *lib, const dt_boundingbox_t box)
 {
   if(!lib->proxy.colorpicker.module || !lib->proxy.colorpicker.set_sample_box_area) return;
   lib->proxy.colorpicker.set_sample_box_area(lib->proxy.colorpicker.module, box);
   gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
 }
 
-void dt_lib_colorpicker_set_point(dt_lib_t *lib, float x, float y)
+void dt_lib_colorpicker_set_point(dt_lib_t *lib, const float pos[2])
 {
   if(!lib->proxy.colorpicker.module || !lib->proxy.colorpicker.set_sample_point) return;
-  lib->proxy.colorpicker.set_sample_point(lib->proxy.colorpicker.module, x, y);
+  lib->proxy.colorpicker.set_sample_point(lib->proxy.colorpicker.module, pos);
   gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
 }
 
@@ -1269,7 +1239,7 @@ static float _action_process(gpointer target, dt_action_element_t element, dt_ac
 {
   dt_lib_module_t *module = target;
 
-  if(move_size)
+  if(!isnan(move_size))
   {
     switch(element)
     {

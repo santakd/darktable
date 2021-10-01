@@ -931,6 +931,21 @@ static void _dev_add_history_item_ext(dt_develop_t *dev, dt_iop_module_t *module
   }
 }
 
+const dt_dev_history_item_t *dt_dev_get_history_item(dt_develop_t *dev, const char *op)
+{
+  for(GList *l = g_list_last(dev->history); l; l = g_list_previous(l))
+  {
+    dt_dev_history_item_t *item = (dt_dev_history_item_t *)l->data;
+    if(!g_strcmp0(item->op_name, op))
+    {
+      return item;
+      break;
+    }
+  }
+
+  return NULL;
+}
+
 void dt_dev_add_history_item_ext(dt_develop_t *dev, dt_iop_module_t *module, gboolean enable, const int no_image)
 {
   _dev_add_history_item_ext(dev, module, enable, FALSE, no_image, FALSE);
@@ -2037,9 +2052,11 @@ void dt_dev_read_history_ext(dt_develop_t *dev, const int imgid, gboolean no_ima
       flags = flags | (auto_apply_modules ? DT_HISTORY_HASH_AUTO : DT_HISTORY_HASH_BASIC);
     }
     dt_history_hash_write_from_history(imgid, flags);
-    // As we have a proper history right now and this is first_run we write the xmp now
+    // As we have a proper history right now and this is first_run we possibly write the xmp now
     dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'w');
-    dt_image_cache_write_release(darktable.image_cache, image, DT_IMAGE_CACHE_SAFE);
+    // depending on the xmp_writing mode we either us safe or relaxed
+    const gboolean always = (dt_image_get_xmp_mode() == DT_WRITE_XMP_ALWAYS);
+    dt_image_cache_write_release(darktable.image_cache, image, always ? DT_IMAGE_CACHE_SAFE : DT_IMAGE_CACHE_RELAXED);
   }
   else if(legacy_params)
   {

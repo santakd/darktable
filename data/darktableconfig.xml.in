@@ -47,6 +47,13 @@
     <shortdescription>keyboard shortcut slider precision</shortdescription>
   </dtconfig>
   <dtconfig>
+    <name>accel/enable_fallbacks</name>
+    <type>bool</type>
+    <default>false</default>
+    <shortdescription>enable shortcut fallbacks</shortdescription>
+    <longdescription>enables default meanings for additional buttons, modifiers or moves when used in combination with a base shortcut</longdescription>
+  </dtconfig>
+  <dtconfig>
     <name>bauhaus/scale</name>
     <type>float</type>
     <default>1.4</default>
@@ -281,10 +288,16 @@
   </dtconfig>
   <dtconfig prefs="storage" section="xmp">
     <name>write_sidecar_files</name>
-    <type>bool</type>
-    <default>true</default>
+    <type>
+      <enum>
+        <option>never</option>
+        <option>after edit</option>
+        <option>on import</option>
+      </enum>
+    </type>
+    <default>on import</default>
     <shortdescription>write sidecar file for each image</shortdescription>
-    <longdescription>these redundant files can later be re-imported into a different database, preserving your changes to the image.</longdescription>
+    <longdescription>the sidecar files hold information about all your development steps to allow flawless re-importing of image files.\n\ndepending on the selected mode sidecar files will be written:\n - never\n - on import: immediately after importing the image\n - after edit: after any user change on the image</longdescription>
   </dtconfig>
   <dtconfig prefs="storage" section="xmp">
     <name>compress_xmp_tags</name>
@@ -442,6 +455,13 @@
     <shortdescription>ask before removing empty folders</shortdescription>
     <longdescription>always ask the user before removing any empty folder. this can happen after moving or deleting images.</longdescription>
   </dtconfig>
+  <dtconfig dialog="recentcollect">
+    <name>plugins/lighttable/recentcollect/max_items</name>
+    <type min="1" max="50">int</type>
+    <default>10</default>
+    <shortdescription>number of collections to be stored</shortdescription>
+    <longdescription>the number of recent collections to store and show in this list</longdescription>
+  </dtconfig>
   <dtconfig dialog="collect">
     <name>show_folder_levels</name>
     <type min="1" max="5">int</type>
@@ -553,10 +573,53 @@
     <longdescription>sort the following collections in descending order: 'film roll' by folder, 'folder', 'times' (e.g. 'date taken')</longdescription>
   </dtconfig>
   <dtconfig>
-    <name>ui_last/colorpicker_mean</name>
-    <type>int</type>
-    <default>0</default>
-    <shortdescription>0: mean, 1: min, 2: max</shortdescription>
+    <name>ui_last/colorpicker_model</name>
+    <type>
+      <enum>
+	<option>RGB</option>
+	<option>Lab</option>
+	<option>LCh</option>
+	<option>HSL</option>
+	<option>Hex</option>
+	<option>none</option>
+      </enum>
+    </type>
+    <default>RGB</default>
+    <shortdescription>color model with which to represent primary colorpicker</shortdescription>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
+    <name>ui_last/colorpicker_mode</name>
+    <type>
+      <enum>
+	<option>mean</option>
+	<option>min</option>
+	<option>max</option>
+      </enum>
+    </type>
+    <default>mean</default>
+    <shortdescription>statistic used to describe colorpicker box</shortdescription>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
+    <name>ui_last/colorpicker_display_samples</name>
+    <type>boolean</type>
+    <default>false</default>
+    <shortdescription>display live sample areas on image</shortdescription>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
+    <name>ui_last/colorpicker_restrict_histogram</name>
+    <type>boolean</type>
+    <default>false</default>
+    <shortdescription>restrict histogram to selection</shortdescription>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
+    <name>ui_last/colorpicker_large</name>
+    <type>boolean</type>
+    <default>false</default>
+    <shortdescription>display large colorpicker patch</shortdescription>
     <longdescription/>
   </dtconfig>
   <dtconfig>
@@ -1991,7 +2054,7 @@
     <type>bool</type>
     <default>false</default>
     <shortdescription>rating an image one star twice will not zero out the rating</shortdescription>
-    <longdescription>defines whether rating an image one star twice will zero out star rating.</longdescription>
+    <longdescription>defines whether rating an image one star twice will zero out star rating</longdescription>
   </dtconfig>
  <dtconfig prefs="lighttable" section="general">
     <name>lighttable/ui/scrollbars</name>
@@ -2627,6 +2690,7 @@
       <enum>
         <option>histogram</option>
         <option>waveform</option>
+        <option>rgb parade</option>
         <option>vectorscope</option>
       </enum>
     </type>
@@ -2643,6 +2707,18 @@
       </enum>
     </type>
     <default>logarithmic</default>
+    <shortdescription/>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
+    <name>plugins/darkroom/histogram/orient</name>
+    <type>
+      <enum>
+        <option>horizontal</option>
+        <option>vertical</option>
+      </enum>
+    </type>
+    <default>horizontal</default>
     <shortdescription/>
     <longdescription/>
   </dtconfig>
@@ -2830,6 +2906,13 @@
     <longdescription/>
   </dtconfig>
   <dtconfig>
+    <name>plugins/darkroom/ashift/near_delta_draw</name>
+    <type>float</type>
+    <default>5.0</default>
+    <shortdescription/>
+    <longdescription/>
+  </dtconfig>
+  <dtconfig>
     <name>plugins/print/print/black_point_compensation</name>
     <type>bool</type>
     <default>true</default>
@@ -2907,7 +2990,7 @@
     </type>
     <default>legacy</default>
     <shortdescription>auto-apply chromatic adaptation defaults</shortdescription>
-    <longdescription>legacy performs a basic chromatic adaptation using only the white balance module\nmodern uses a combination of white balance module and color calibration module, with improved color science for chromatic adaptation.</longdescription>
+    <longdescription>legacy performs a basic chromatic adaptation using only the white balance module\nmodern uses a combination of white balance module and color calibration module, with improved color science for chromatic adaptation</longdescription>
   </dtconfig>
   <dtconfig prefs="processing" section="general" restart="true">
     <name>plugins/darkroom/basecurve/auto_apply_percamera_presets</name>
@@ -3055,6 +3138,20 @@
     <longdescription>this is just for remembering whether to show margins or not and remember it</longdescription>
   </dtconfig>
   <dtconfig>
+    <name>plugins/darkroom/ashift/expand_values</name>
+    <type>bool</type>
+    <default>false</default>
+    <shortdescription>whether to show values</shortdescription>
+    <longdescription>this is just for remembering whether to show values or not</longdescription>
+  </dtconfig>
+  <dtconfig>
+    <name>plugins/darkroom/ashift/autocrop_value</name>
+    <type>int</type>
+    <default>1</default>
+    <shortdescription>auto-crop mode</shortdescription>
+    <longdescription>0=off ; 1= largest area ; 2= original image</longdescription>
+  </dtconfig>
+  <dtconfig>
     <name>plugins/darkroom/colorzones/bg_sat_factor</name>
     <type min="0.1" max="1.0">float</type>
     <default>0.5</default>
@@ -3098,6 +3195,13 @@
     <default>true</default>
     <shortdescription>show mask indicator in module headers</shortdescription>
     <longdescription>if enabled, an icon will be shown in the header of any processing modules that have a mask applied</longdescription>
+  </dtconfig>
+  <dtconfig prefs="darkroom" section="modules">
+    <name>darkroom/ui/rename_new_instance</name>
+    <type>bool</type>
+    <default>false</default>
+    <shortdescription>prompt for name on addition of new instance</shortdescription>
+    <longdescription>if enabled, a rename prompt will be present for each new module instance (either new instance or duplicate)</longdescription>
   </dtconfig>
 
   @DARKTABLECONFIG_IOP_ENTRIES@
@@ -3192,5 +3296,12 @@
     <default>500</default>
     <shortdescription>height of the collect list</shortdescription>
     <longdescription>maximum height the collect list in lighttable will grow to before scrolling</longdescription>
+  </dtconfig>
+  <dtconfig>
+    <name>plugins/midi/devices</name>
+    <type>string</type>
+    <default></default>
+    <shortdescription>order or exclude midi devices</shortdescription>
+    <longdescription>comma-separated list of device name fragments that if matched load midi device at id given by location in list or if preceded by - prevent matching devices from loading</longdescription>
   </dtconfig>
 </dtconfiglist>

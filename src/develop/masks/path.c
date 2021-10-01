@@ -2222,24 +2222,24 @@ static void _path_bounding_box_raw(const float *const points, const float *borde
     const float yy = border[i * 2 + 1];
     if(isnan(xx))
     {
-      if(isnan(yy)) break; // that means we have to skip the end of the border path
+     if(isnan(yy)) break; // that means we have to skip the end of the border path
       i = yy - 1;
       continue;
     }
-    xmin = fminf(xx, xmin);
-    xmax = fmaxf(xx, xmax);
-    ymin = fminf(yy, ymin);
-    ymax = fmaxf(yy, ymax);
+    xmin = MIN(xx, xmin);
+    xmax = MAX(xx, xmax);
+    ymin = MIN(yy, ymin);
+    ymax = MAX(yy, ymax);
   }
   for(int i = nb_corner * 3; i < num_points; i++)
   {
     // we look at the path too
     const float xx = points[i * 2];
     const float yy = points[i * 2 + 1];
-    xmin = fminf(xx, xmin);
-    xmax = fmaxf(xx, xmax);
-    ymin = fminf(yy, ymin);
-    ymax = fmaxf(yy, ymax);
+    xmin = MIN(xx, xmin);
+    xmax = MAX(xx, xmax);
+    ymin = MIN(yy, ymin);
+    ymax = MAX(yy, ymax);
   }
 
   *x_min = xmin;
@@ -2297,10 +2297,10 @@ static int _path_get_area(const dt_iop_module_t *const module, const dt_dev_pixe
 }
 
 /** we write a falloff segment */
-static void _path_falloff(float **buffer, int *p0, int *p1, int posx, int posy, int bw)
+/*static*/ void _path_falloff(float *const restrict buffer, int *p0, int *p1, int posx, int posy, int bw)
 {
   // segment length
-  int l = sqrt((p1[0] - p0[0]) * (p1[0] - p0[0]) + (p1[1] - p0[1]) * (p1[1] - p0[1])) + 1;
+  int l = sqrtf(sqf(p1[0] - p0[0]) + sqf(p1[1] - p0[1])) + 1;
 
   const float lx = p1[0] - p0[0];
   const float ly = p1[1] - p0[1];
@@ -2311,13 +2311,12 @@ static void _path_falloff(float **buffer, int *p0, int *p1, int posx, int posy, 
     const int x = (int)((float)i * lx / (float)l) + p0[0] - posx;
     const int y = (int)((float)i * ly / (float)l) + p0[1] - posy;
     const float op = 1.0 - (float)i / (float)l;
-    (*buffer)[y * bw + x] = fmaxf((*buffer)[y * bw + x], op);
+    size_t idx = y * bw + x;
+    buffer[idx] = fmaxf(buffer[idx], op);
     if(x > 0)
-      (*buffer)[y * bw + x - 1]
-          = fmaxf((*buffer)[y * bw + x - 1], op); // this one is to avoid gap due to int rounding
+      buffer[idx - 1] = fmaxf(buffer[idx - 1], op); // this one is to avoid gap due to int rounding
     if(y > 0)
-      (*buffer)[(y - 1) * bw + x]
-          = fmaxf((*buffer)[(y - 1) * bw + x], op); // this one is to avoid gap due to int rounding
+      buffer[idx - bw] = fmaxf(buffer[idx - bw], op); // this one is to avoid gap due to int rounding
   }
 }
 
@@ -2364,14 +2363,14 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
 
   // we allocate the buffer
   const size_t bufsize = (size_t)(*width) * (*height);
-  *buffer = dt_alloc_align_float(bufsize);
+  // ensure that the buffer is zeroed, as the following code only actually sets the path+falloff pixels
+  float *const restrict bufptr = *buffer = dt_calloc_align_float(bufsize);
   if(*buffer == NULL)
   {
     dt_free_align(points);
     dt_free_align(border);
     return 0;
   }
-  memset(*buffer, 0, sizeof(float) * bufsize);
 
   // we write all the point around the path into the buffer
   const int nbp = border_count;
@@ -2404,7 +2403,7 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
             const int nx = (j - yy) * (lastx - xx) / (float)(lasty - yy) + xx;
             const size_t idx = (size_t)(j - (*posy)) * (*width) + nx - (*posx);
             assert(idx < bufsize);
-            (*buffer)[idx] = 1.0f;
+            bufptr[idx] = 1.0f;
           }
           lasty2 = yy + 2;
           lasty = yy + 1;
@@ -2416,7 +2415,7 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
             const int nx = (j - lasty) * (xx - lastx) / (float)(yy - lasty) + lastx;
             const size_t idx = (size_t)(j - (*posy)) * (*width) + nx - (*posx);
             assert(idx < bufsize);
-            (*buffer)[idx] = 1.0f;
+            bufptr[idx] = 1.0f;
           }
           lasty2 = yy - 2;
           lasty = yy - 1;
@@ -2427,7 +2426,7 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
       {
         const size_t idx = (size_t)(lasty - (*posy)) * (*width) + lastx + 1 - (*posx);
         assert(idx < bufsize);
-        (*buffer)[idx] = 1.0f;
+        bufptr[idx] = 1.0f;
         just_change_dir = 1;
       }
       // we add the point
@@ -2437,27 +2436,27 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
         // as the previous one, especially on sharp edges
         const size_t idx = (size_t)(yy - (*posy)) * (*width) + xx - (*posx);
         assert(idx < bufsize);
-        float v = (*buffer)[idx];
+        float v = bufptr[idx];
         if(v > 0.0)
         {
           if(xx - (*posx) > 0)
           {
             const size_t idx_ = (size_t)(yy - (*posy)) * (*width) + xx - 1 - (*posx);
             assert(idx_ < bufsize);
-            (*buffer)[idx_] = 1.0f;
+            bufptr[idx_] = 1.0f;
           }
           else if(xx - (*posx) < (*width) - 1)
           {
             const size_t idx_ = (size_t)(yy - (*posy)) * (*width) + xx + 1 - (*posx);
             assert(idx_ < bufsize);
-            (*buffer)[idx_] = 1.0f;
+            bufptr[idx_] = 1.0f;
           }
         }
         else
         {
           const size_t idx_ = (size_t)(yy - (*posy)) * (*width) + xx - (*posx);
           assert(idx_ < bufsize);
-          (*buffer)[idx_] = 1.0f;
+          bufptr[idx_] = 1.0f;
           just_change_dir = 0;
         }
       }
@@ -2465,7 +2464,7 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
       {
         const size_t idx_ = (size_t)(yy - (*posy)) * (*width) + xx - (*posx);
         assert(idx_ < bufsize);
-        (*buffer)[idx_] = 1.0f;
+        bufptr[idx_] = 1.0f;
       }
       // we change last values
       lasty2 = lasty;
@@ -2481,14 +2480,19 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
     start2 = dt_get_wtime();
   }
 
+#ifdef _OPENMP
+#pragma omp parallel for \
+  dt_omp_firstprivate(hb, wb, bufptr) \
+  schedule(static)
+#endif
   for(int yy = 0; yy < hb; yy++)
   {
     int state = 0;
     for(int xx = 0; xx < wb; xx++)
     {
-      float v = (*buffer)[yy * wb + xx];
+      float v = bufptr[yy * wb + xx];
       if(v == 1.0f) state = !state;
-      if(state) (*buffer)[yy * wb + xx] = 1.0f;
+      if(state) bufptr[yy * wb + xx] = 1.0f;
     }
   }
 
@@ -2526,7 +2530,7 @@ static int _path_get_mask(const dt_iop_module_t *const module, const dt_dev_pixe
     // and we draw the falloff
     if(last0[0] != p0[0] || last0[1] != p0[1] || last1[0] != p1[0] || last1[1] != p1[1])
     {
-      _path_falloff(buffer, p0, p1, *posx, *posy, *width);
+      _path_falloff(bufptr, p0, p1, *posx, *posy, *width);
       last0[0] = p0[0], last0[1] = p0[1];
       last1[0] = p1[0], last1[1] = p1[1];
     }
@@ -2716,6 +2720,8 @@ static void _path_falloff_roi(float *buffer, int *p0, int *p1, int bw, int bh)
   }
 }
 
+// build a stamp which can be combined with other shapes in the same group
+// prerequisite: 'buffer' is all zeros
 static int _path_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_pixelpipe_iop_t *const piece,
                               dt_masks_form_t *const form,
                               const dt_iop_roi_t *roi, float *buffer)
@@ -2756,9 +2762,6 @@ static int _path_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_
     dt_print(DT_DEBUG_MASKS, "[masks %s] path points took %0.04f sec\n", form->name, dt_get_wtime() - start);
     start = start2 = dt_get_wtime();
   }
-
-  // empty the output buffer
-  dt_iop_image_fill(buffer, 0.0f, width, height, 1);
 
   const guint nb_corner = g_list_length(form->points);
 
@@ -2859,6 +2862,13 @@ static int _path_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_
     start2 = dt_get_wtime();
   }
 
+  if(darktable.unmuted & DT_DEBUG_PERF)
+  {
+    dt_print(DT_DEBUG_MASKS, "[masks %s] path_fill clear mask took %0.04f sec\n", form->name,
+             dt_get_wtime() - start2);
+    start2 = dt_get_wtime();
+  }
+
   // deal with path if it does not lie outside of roi
   if(path_in_roi)
   {
@@ -2952,7 +2962,7 @@ static int _path_get_mask_roi(const dt_iop_module_t *const module, const dt_dev_
 #if !defined(__SUNOS__) && !defined(__NetBSD__)
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(xxmin, xxmax, yymin, yymax, width) \
-  shared(buffer)
+  shared(buffer) schedule(static) num_threads(MIN(8,darktable.num_openmp_threads))
 #else
 #pragma omp parallel for shared(buffer)
 #endif

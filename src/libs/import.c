@@ -422,14 +422,7 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename)
   GdkPixbuf *pixbuf = NULL;
   gboolean have_preview = FALSE, no_preview_fallback = FALSE;
 
-  if(filename && g_file_test(filename, G_FILE_TEST_IS_REGULAR))
-  {
-    // don't create dng thumbnails to avoid crashes in libtiff when these are hdr:
-    char *c = (char *)filename + strlen(filename);
-    while(c > filename && *c != '.') c--;
-    if(!strcasecmp(c, ".dng")) no_preview_fallback = TRUE;
-  }
-  else
+  if(!filename || !g_file_test(filename, G_FILE_TEST_IS_REGULAR))
   {
     no_preview_fallback = TRUE;
   }
@@ -467,7 +460,6 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename)
 
   // Step 2: if we were not able to get a thumbnail at step 1,
   // read the whole file to get a small size thumbnail
-  // this will not try to read DNG files at all
   if(!have_preview && !no_preview_fallback)
   {
     pixbuf = gdk_pixbuf_new_from_file_at_size(filename, 128, 128, NULL);
@@ -478,7 +470,6 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename)
   // we need to find out the rotation as well
   if(have_preview && !no_preview_fallback)
   {
-
     // get image orientation
     dt_image_t img = { 0 };
     (void)dt_exif_read(&img, filename);
@@ -507,7 +498,6 @@ static GdkPixbuf *_import_get_thumbnail(const gchar *filename)
   }
 
   // if no thumbanail found or read failed for whatever reason
-  // or in case of DNG files
   // just display the default darktable logo
   if(!have_preview || no_preview_fallback)
   {
@@ -688,6 +678,14 @@ static guint _import_set_file_list(const gchar *folder, const int folder_lgth,
   GError *error = NULL;
   GFile *gfolder = g_file_parse_name(folder);
 
+  // if folder is root, consider one folder separator less
+  int offset = (g_path_skip_root(folder)[0] ? folder_lgth + 1 : folder_lgth);
+
+#ifdef WIN32
+  // .. but for Windows UNC there will be a folder separator anyway
+  if(dt_util_path_is_UNC(folder)) offset = folder_lgth + 1;
+#endif
+
   GFileEnumerator *dir_files =
     g_file_enumerate_children(gfolder,
                               G_FILE_ATTRIBUTE_STANDARD_NAME ","
@@ -729,8 +727,8 @@ static guint _import_set_file_list(const gchar *folder, const int folder_lgth,
         gtk_list_store_append(d->from.store, &iter);
         gtk_list_store_set(d->from.store, &iter,
                            DT_IMPORT_UI_EXISTS, already_imported ? "✔" : " ",
-                           DT_IMPORT_UI_FILENAME, &uifullname[folder_lgth + 1],
-                           DT_IMPORT_FILENAME, &fullname[folder_lgth + 1],
+                           DT_IMPORT_UI_FILENAME, &uifullname[offset],
+                           DT_IMPORT_FILENAME, &fullname[offset],
                            DT_IMPORT_UI_DATETIME, dt_txt,
                            DT_IMPORT_DATETIME, datetime,
                            DT_IMPORT_THUMB, d->from.eye, -1);
@@ -1150,6 +1148,18 @@ static gboolean _folders_button_press(GtkWidget *view, GdkEventButton *event, dt
     }
     gtk_tree_path_free(path);
   }
+
+  if(event->type == GDK_DOUBLE_BUTTON_PRESS)
+  {
+    GtkTreePath *path = NULL;
+    gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view), event->x, event->y, &path, NULL, NULL, NULL); 
+    if(gtk_tree_view_row_expanded(d->from.folderview, path))
+      gtk_tree_view_collapse_row (d->from.folderview, path);
+    else
+      gtk_tree_view_expand_row (d->from.folderview, path, FALSE);
+    gtk_tree_path_free(path);
+  }
+
   g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, 100, _clear_parasitic_selection, self, NULL);
 	return res;
 }
@@ -1387,11 +1397,21 @@ static void _update_places_list(dt_lib_module_t* self)
   }
 
   // add folders added by user
-  GList *places = _get_custom_places(self);
+  GList *places = _get_custom_places();
 
   for (GList *places_iter = places; places_iter; places_iter = places_iter->next)
   {
     gchar *basename = g_path_get_basename(places_iter->data);
+
+#ifdef WIN32
+    // special case: root folder shall keep the drive letter in the basename
+    if(basename[0] == G_DIR_SEPARATOR && !basename[1])
+    {
+      g_free(basename);
+      basename = g_strdup(places_iter->data);
+    }
+#endif
+
     gtk_list_store_insert_with_values(d->placesModel, &iter, -1, DT_PLACES_NAME, basename,
                                       DT_PLACES_PATH, (char *)places_iter->data, DT_PLACES_TYPE, DT_TYPE_CUSTOM, -1);
     g_free(basename);
@@ -1446,6 +1466,16 @@ static void _add_custom_place(const gchar *folder, dt_lib_module_t* self)
     g_free(place);
 
     gchar *basename = g_path_get_basename(folder);
+
+#ifdef WIN32
+    // special case: root folder shall keep the drive letter in the basename
+    if(G_IS_DIR_SEPARATOR(basename[0]) && !basename[1])
+    {
+      g_free(basename);
+      basename = g_strdup(folder);
+    }
+#endif
+
     gtk_list_store_insert_with_values(d->placesModel, &iter, -1, DT_PLACES_NAME, basename,
                                       DT_PLACES_PATH, (char *)folder, DT_PLACES_TYPE, DT_TYPE_CUSTOM, -1);
     g_free(basename);
@@ -1487,7 +1517,7 @@ static GList* _get_custom_places()
   GList *places = NULL;
   gchar *saved = dt_conf_get_string("ui_last/import_custom_places");
   const int nb_saved = saved[0] ? dt_util_str_occurence(saved, ",") + 1 : 0;
-  char *folders = saved;
+  gchar *folders = g_strdup(saved);
 
   for(int i = 0; i < nb_saved; i++)
   {
@@ -1501,7 +1531,7 @@ static GList* _get_custom_places()
         folders = next + 1;
     }
   }
-//  g_free(saved);  // we can't free the string here, because the returned list points into it
+  g_free(saved);
   return places;
 }
 
@@ -1509,31 +1539,25 @@ static void _lib_import_select_folder(GtkWidget *widget, dt_lib_module_t *self)
 {
   dt_lib_import_t *d = (dt_lib_import_t *)self->data;
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("open folder"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_open"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
 
-  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
-  dt_conf_get_folder_to_file_chooser("ui_last/import_last_place", filechooser);
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+      _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_open"), _("_cancel"));
 
-  // run the dialog
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  // run the native dialog
+  dt_conf_get_folder_to_file_chooser("ui_last/import_last_place", GTK_FILE_CHOOSER(filechooser));
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
-    gtk_widget_hide(filechooser);
-    GSList *list = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(filechooser));
-    _add_custom_place((char *)list->data, self);
-
-    dt_conf_set_string("ui_last/import_last_directory", "");
-    dt_conf_set_bool("ui_last/import_recursive", FALSE);
-    dt_gui_preferences_bool_update(d->recursive);
-    g_slist_free_full(list, g_free);
-    _update_folders_list(self);
-    _update_files_list(self);
+    char *dirname = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
+    _add_custom_place(dirname, self);
+    g_free(dirname);
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
+
+  dt_conf_set_string("ui_last/import_last_directory", "");
+  dt_conf_set_bool("ui_last/import_recursive", FALSE);
+  dt_gui_preferences_bool_update(d->recursive);
+  _update_folders_list(self);
+  _update_files_list(self);
 }
 
 static gboolean _handle_enter(GtkWidget *widget, GdkEventKey *event, dt_lib_module_t* self)
@@ -1641,20 +1665,16 @@ static void _browse_basedir_clicked(GtkWidget *widget, GtkEntry *basedir)
   {
     topwindow = dt_ui_main_window(darktable.gui->ui);
   }
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("select directory"), GTK_WINDOW(topwindow), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_open"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
 
-  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+      _("select directory"), GTK_WINDOW(topwindow), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_open"), _("_cancel"));
+
   gchar *old = g_strdup(gtk_entry_get_text(basedir));
   char *c = g_strstr_len(old, -1, "$");
   if(c) *c = '\0';
   gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(filechooser), old);
   g_free(old);
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     gchar *dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
 
@@ -1668,7 +1688,7 @@ static void _browse_basedir_clicked(GtkWidget *widget, GtkEntry *basedir)
     g_free(dir);
     g_free(escaped);
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
 }
 
 static void _set_expander_content(GtkWidget *rbox, dt_lib_module_t* self)

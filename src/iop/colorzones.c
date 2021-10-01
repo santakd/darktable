@@ -843,9 +843,9 @@ static void _draw_color_picker(dt_iop_module_t *self, cairo_t *cr, dt_iop_colorz
           // this functions need a 4c image
           for(int k = 0; k < 3; k++)
           {
-            pick_mean[k] = sample->picked_color_rgb_mean[k];
-            pick_min[k] = sample->picked_color_rgb_min[k];
-            pick_max[k] = sample->picked_color_rgb_max[k];
+            pick_mean[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MEAN][k];
+            pick_min[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MIN][k];
+            pick_max[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MAX][k];
           }
           pick_mean[3] = pick_min[3] = pick_max[3] = 1.f;
 
@@ -2155,12 +2155,6 @@ static void _channel_tabs_switch_callback(GtkNotebook *notebook, GtkWidget *page
   gtk_widget_queue_draw(self->widget);
 }
 
-static void _color_picker_callback(GtkToggleButton *togglebutton, dt_iop_module_t *module)
-{
-  if(gtk_toggle_button_get_active(togglebutton))
-    dt_iop_color_picker_set_cst(module, iop_cs_LCh);
-}
-
 
 void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 {
@@ -2171,6 +2165,8 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   {
     _reset_parameters(p, p->channel, p->splines_version);
     if(g->display_mask) _reset_display_selection(self);
+    gtk_widget_queue_draw(GTK_WIDGET(g->area));
+    gtk_widget_queue_draw(GTK_WIDGET(g->bottom_area));
   }
 }
 
@@ -2311,6 +2307,17 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
   dt_control_queue_redraw_widget(self->widget);
 }
 
+const dt_action_element_def_t _action_elements_zones[]
+  = { { N_("red"    ), dt_action_effect_value },
+      { N_("orange" ), dt_action_effect_value },
+      { N_("yellow" ), dt_action_effect_value },
+      { N_("green"  ), dt_action_effect_value },
+      { N_("aqua"   ), dt_action_effect_value },
+      { N_("blue"   ), dt_action_effect_value },
+      { N_("purple" ), dt_action_effect_value },
+      { N_("magenta"), dt_action_effect_value },
+      { NULL } };
+
 static float _action_process_zones(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
 {
   dt_iop_module_t *self = g_object_get_data(G_OBJECT(target), "iop-instance");
@@ -2331,7 +2338,7 @@ static float _action_process_zones(gpointer target, dt_action_element_t element,
                      ? curve[node].y
                      : dt_draw_curve_calc_value(c->minmax_curve[ch], x);
 
-  if(move_size)
+  if(!isnan(move_size))
   {
     if(!close_enough)
       node = _add_node(curve, &p->curve_num_nodes[ch], x, return_value);
@@ -2357,23 +2364,16 @@ static float _action_process_zones(gpointer target, dt_action_element_t element,
       fprintf(stderr, "[_action_process_zones] unknown shortcut effect (%d) for color zones\n", effect);
       break;
     }
+
+    gchar *text = g_strdup_printf("%s %+.2f", _action_elements_zones[element].name, return_value * 2. - 1.);
+    dt_action_widget_toast(DT_ACTION(self), target, text);
+    g_free(text);
   }
 
   return return_value + DT_VALUE_PATTERN_PLUS_MINUS;
 }
 
-const dt_action_element_def_t _action_elements_zones[]
-  = { { N_("red"    ), dt_action_effect_value },
-      { N_("orange" ), dt_action_effect_value },
-      { N_("yellow" ), dt_action_effect_value },
-      { N_("green"  ), dt_action_effect_value },
-      { N_("aqua"   ), dt_action_effect_value },
-      { N_("blue"   ), dt_action_effect_value },
-      { N_("purple" ), dt_action_effect_value },
-      { N_("magenta"), dt_action_effect_value },
-      { NULL } };
-
-const dt_action_def_t dt_action_def_zones
+const dt_action_def_t _action_def_zones
   = { N_("color zones"),
       _action_process_zones,
       _action_elements_zones };
@@ -2447,8 +2447,8 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(hbox), gtk_label_new("   "), FALSE, FALSE, 0);
 
   // color pickers
-  c->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA, hbox);
-  gtk_widget_set_tooltip_text(c->colorpicker, _("pick GUI color from image\nctrl+click to select an area"));
+  c->colorpicker = dt_color_picker_new_with_cst(self, DT_COLOR_PICKER_POINT_AREA, hbox, iop_cs_LCh);
+  gtk_widget_set_tooltip_text(c->colorpicker, _("pick GUI color from image\nctrl+click or right-click to select an area"));
   gtk_widget_set_name(c->colorpicker, "keep-active");
   c->colorpicker_set_values = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, hbox);
   dtgtk_togglebutton_set_paint(DTGTK_TOGGLEBUTTON(c->colorpicker_set_values),
@@ -2459,9 +2459,6 @@ void gui_init(struct dt_iop_module_t *self)
                                                            "drag to create a flat curve\n"
                                                            "ctrl+drag to create a positive curve\n"
                                                            "shift+drag to create a negative curve"));
-
-  g_signal_connect(G_OBJECT(c->colorpicker), "toggled", G_CALLBACK(_color_picker_callback), self);
-  g_signal_connect(G_OBJECT(c->colorpicker_set_values), "toggled", G_CALLBACK(_color_picker_callback), self);
 
   // the nice graph
   const float aspect = dt_conf_get_int("plugins/darkroom/colorzones/aspect_percent") / 100.0;
@@ -2514,7 +2511,7 @@ void gui_init(struct dt_iop_module_t *self)
                                            | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK
                                            | darktable.gui->scroll_mask);
   g_object_set_data(G_OBJECT(c->area), "iop-instance", self);
-  dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(c->area), &dt_action_def_zones);
+  dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(c->area), &_action_def_zones);
   gtk_widget_set_can_focus(GTK_WIDGET(c->area), TRUE);
   g_signal_connect(G_OBJECT(c->area), "draw", G_CALLBACK(_area_draw_callback), self);
   g_signal_connect(G_OBJECT(c->area), "button-press-event", G_CALLBACK(_area_button_press_callback), self);

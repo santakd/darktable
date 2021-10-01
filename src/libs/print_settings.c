@@ -1776,7 +1776,7 @@ void gui_post_expose(struct dt_lib_module_t *self, cairo_t *cr, int32_t width, i
 
   // 1mm
 
-  const float step = gtk_spin_button_get_value(GTK_SPIN_BUTTON(ps->grid_size)) * units[ps->unit];
+  const float step = gtk_spin_button_get_value(GTK_SPIN_BUTTON(ps->grid_size)) / units[ps->unit];
 
   // only display grid if spacing more than 5 pixels
   if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ps->grid))
@@ -2107,17 +2107,8 @@ void gui_init(dt_lib_module_t *self)
 
   gtk_entry_set_alignment(GTK_ENTRY(d->grid_size), 1);
 
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_top));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_left));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_right));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_bottom));
 
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_x));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_y));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_width));
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->b_height));
 
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->grid_size));
 
   ////////////////////////// PRINTER SETTINGS
 
@@ -2334,9 +2325,6 @@ void gui_init(dt_lib_module_t *self)
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
-    d->snap_grid = gtk_check_button_new_with_label(_("snap to grid"));
-    gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(d->snap_grid), TRUE, TRUE, 0);
-
     d->grid = gtk_check_button_new_with_label(_("display grid"));
     // d->grid_size = gtk_spin_button_new_with_range(0, 100, 0.1);
     gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->grid), TRUE, TRUE, 0);
@@ -2346,6 +2334,10 @@ void gui_init(dt_lib_module_t *self)
                               dt_conf_get_float("plugins/print/print/grid_size") * units[d->unit]);
 
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(hbox), TRUE, TRUE, 0);
+
+    d->snap_grid = gtk_check_button_new_with_label(_("snap to grid"));
+    gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(d->snap_grid), TRUE, TRUE, 0);
+
     gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(vbox), TRUE, TRUE, 0);
 
     g_signal_connect(G_OBJECT(d->grid_size), "value-changed", G_CALLBACK(_grid_size_changed), self);
@@ -3069,18 +3061,6 @@ void *get_params(dt_lib_module_t *self, int *size)
 void gui_cleanup(dt_lib_module_t *self)
 {
   dt_lib_print_settings_t *ps = (dt_lib_print_settings_t *)self->data;
-
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_top));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_left));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_right));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_bottom));
-
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_x));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_y));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_width));
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->b_right));
-
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(ps->grid_size));
 
   g_list_free_full(ps->profiles, g_free);
   g_list_free_full(ps->paper_list, free);

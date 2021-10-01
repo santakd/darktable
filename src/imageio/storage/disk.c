@@ -117,20 +117,16 @@ static void button_clicked(GtkWidget *widget, dt_imageio_module_storage_t *self)
 {
   disk_t *d = (disk_t *)self->gui_data;
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_select as output destination"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+        _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        _("_select as output destination"), _("_cancel"));
 
-  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
   gchar *old = g_strdup(gtk_entry_get_text(d->entry));
   char *c = g_strstr_len(old, -1, "$");
   if(c) *c = '\0';
   gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(filechooser), old);
   g_free(old);
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     gchar *dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
     char *composed = g_build_filename(dir, "$(FILE_NAME)", NULL);
@@ -146,7 +142,7 @@ static void button_clicked(GtkWidget *widget, dt_imageio_module_storage_t *self)
     g_free(composed);
     g_free(escaped);
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
 }
 
 static void entry_changed_callback(GtkEntry *entry, gpointer user_data)
@@ -186,7 +182,6 @@ void gui_init(dt_imageio_module_storage_t *self)
       dt_gtkentry_get_default_path_compl_list());
 
   d->entry = GTK_ENTRY(widget);
-  dt_gui_key_accel_block_on_focus_connect(GTK_WIDGET(d->entry));
   gtk_entry_set_width_chars(GTK_ENTRY(widget), 0);
   gtk_widget_set_tooltip_text(widget, tooltip_text);
   g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(entry_changed_callback), self);
@@ -211,8 +206,6 @@ void gui_init(dt_imageio_module_storage_t *self)
 
 void gui_cleanup(dt_imageio_module_storage_t *self)
 {
-  disk_t *d = (disk_t *)self->gui_data;
-  dt_gui_key_accel_block_on_focus_disconnect(GTK_WIDGET(d->entry));
   free(self->gui_data);
 }
 
@@ -241,8 +234,10 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
   g_strlcpy(pattern, d->filename, sizeof(pattern));
   gboolean from_cache = FALSE;
   dt_image_full_path(imgid, input_dir, sizeof(input_dir), &from_cache);
-  // set max_width and max_height values to expand them afterwards in darktable variables
+  // set variable values to expand them afterwards in darktable variables
   dt_variables_set_max_width_height(d->vp, fdata->max_width, fdata->max_height);
+  dt_variables_set_upscale(d->vp, upscale);
+
   gboolean fail = FALSE;
   // we're potentially called in parallel. have sequence number synchronized:
   dt_pthread_mutex_lock(&darktable.plugin_threadsafe);

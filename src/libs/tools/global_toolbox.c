@@ -52,8 +52,9 @@ static void _lib_filter_grouping_button_clicked(GtkWidget *widget, gpointer user
 static void _lib_preferences_button_clicked(GtkWidget *widget, gpointer user_data);
 /* callback for help button */
 static void _lib_help_button_clicked(GtkWidget *widget, gpointer user_data);
-/* callback for key mapping button */
+/* callbacks for key mapping button */
 static void _lib_keymap_button_clicked(GtkWidget *widget, gpointer user_data);
+static gboolean _lib_keymap_button_press_release(GtkWidget *button, GdkEventButton *event, gpointer user_data);
 
 const char *name(dt_lib_module_t *self)
 {
@@ -184,7 +185,7 @@ static void _overlays_timeout_changed(GtkWidget *w, gpointer user_data)
   }
 }
 
-static void _overlays_show_popup(dt_lib_module_t *self)
+static void _overlays_show_popup(GtkWidget *button, dt_lib_module_t *self)
 {
   dt_lib_tool_preferences_t *d = (dt_lib_tool_preferences_t *)self->data;
 
@@ -337,8 +338,26 @@ static void _overlays_show_popup(dt_lib_module_t *self)
     gtk_widget_hide(d->culling_box);
   }
 
+  if(show)
+  {
+    GdkDevice *pointer = gdk_seat_get_pointer(gdk_display_get_default_seat(gdk_display_get_default()));
 
-  if(show) gtk_widget_show(d->over_popup);
+    int x, y;
+    GdkWindow *pointer_window = gdk_device_get_window_at_position(pointer, &x, &y);
+    gpointer   pointer_widget = NULL;
+    if(pointer_window)
+      gdk_window_get_user_data(pointer_window, &pointer_widget);
+
+    GdkRectangle rect = { gtk_widget_get_allocated_width(button) / 2,
+                          gtk_widget_get_allocated_height(button), 1, 1 };
+
+    if(pointer_widget && button != pointer_widget)
+      gtk_widget_translate_coordinates(pointer_widget, button, x, y, &rect.x, &rect.y);
+
+    gtk_popover_set_pointing_to(GTK_POPOVER(d->over_popup), &rect);
+
+    gtk_widget_show(d->over_popup);
+  }
   else
     dt_control_log(_("overlays not available here..."));
 
@@ -381,6 +400,7 @@ void gui_init(dt_lib_module_t *self)
 
   /* create the grouping button */
   d->grouping_button = dtgtk_togglebutton_new(dtgtk_cairo_paint_grouping, CPF_STYLE_FLAT, NULL);
+  dt_action_define(&darktable.control->actions_global, NULL, "grouping", d->grouping_button, &dt_action_def_toggle);
   gtk_box_pack_start(GTK_BOX(self->widget), d->grouping_button, FALSE, FALSE, 0);
   if(darktable.gui->grouping)
     gtk_widget_set_tooltip_text(d->grouping_button, _("expand grouped images"));
@@ -396,11 +416,8 @@ void gui_init(dt_lib_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), d->overlays_button, FALSE, FALSE, 0);
   d->over_popup = gtk_popover_new(d->overlays_button);
   gtk_widget_set_size_request(d->over_popup, 350, -1);
-#if GTK_CHECK_VERSION(3, 16, 0)
   g_object_set(G_OBJECT(d->over_popup), "transitions-enabled", FALSE, NULL);
-#endif
-  g_signal_connect_swapped(G_OBJECT(d->overlays_button), "button-press-event", G_CALLBACK(_overlays_show_popup),
-                           self);
+  g_signal_connect(G_OBJECT(d->overlays_button), "clicked", G_CALLBACK(_overlays_show_popup), self);
   // we register size of overlay icon to keep in sync thumbtable overlays
   g_signal_connect(G_OBJECT(d->overlays_button), "size-allocate", G_CALLBACK(_main_icons_register_size), NULL);
 
@@ -438,7 +455,7 @@ void gui_init(dt_lib_module_t *self)
   gtk_box_pack_start(GTK_BOX(d->thumbnails_box), d->over_r5, TRUE, TRUE, 0);
   GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   d->over_r6 = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(d->over_r0),
-                                                           _("overlays block on mouse hover during (s) "));
+                                                           _("overlays block on mouse hover during (s)"));
   g_signal_connect(G_OBJECT(d->over_r6), "toggled", G_CALLBACK(_overlays_toggle_button), self);
   gtk_box_pack_start(GTK_BOX(hbox), d->over_r6, TRUE, TRUE, 0);
   d->over_timeout = gtk_spin_button_new_with_range(-1, 99, 1);
@@ -471,7 +488,7 @@ void gui_init(dt_lib_module_t *self)
   gtk_box_pack_start(GTK_BOX(d->culling_box), d->over_culling_r4, TRUE, TRUE, 0);
   hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   d->over_culling_r6 = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(d->over_culling_r0),
-                                                                   _("overlays block on mouse hover during (s) "));
+                                                                   _("overlays block on mouse hover during (s)"));
   g_signal_connect(G_OBJECT(d->over_culling_r6), "toggled", G_CALLBACK(_overlays_toggle_culling_button), self);
   gtk_box_pack_start(GTK_BOX(hbox), d->over_culling_r6, TRUE, TRUE, 0);
   d->over_culling_timeout = gtk_spin_button_new_with_range(-1, 99, 1);
@@ -493,14 +510,17 @@ void gui_init(dt_lib_module_t *self)
   g_signal_connect(G_OBJECT(d->help_button), "clicked", G_CALLBACK(_lib_help_button_clicked), d);
   dt_gui_add_help_link(d->help_button, dt_get_help_url("global_toolbox_help"));
 
-  /* create the preference button */
-  d->keymap_button = dtgtk_togglebutton_new(dtgtk_cairo_paint_bracket, CPF_STYLE_FLAT, NULL);
+  /* create the shortcuts button */
+  d->keymap_button = dtgtk_togglebutton_new(dtgtk_cairo_paint_shortcut, CPF_STYLE_FLAT, NULL);
+  dt_action_define(&darktable.control->actions_global, NULL, "shortcuts", d->keymap_button, &dt_action_def_toggle);
   gtk_box_pack_start(GTK_BOX(self->widget), d->keymap_button, FALSE, FALSE, 0);
   gtk_widget_set_tooltip_text(d->keymap_button, _("define shortcuts\n"
                                                   "hover over a widget and press keys with mouse click and scroll or move combinations\n"
                                                   "repeat same combination again to delete mapping\n"
                                                   "click on a widget, module or screen area to open the dialog for further configuration"));
   g_signal_connect(G_OBJECT(d->keymap_button), "clicked", G_CALLBACK(_lib_keymap_button_clicked), d);
+  g_signal_connect(G_OBJECT(d->keymap_button), "button-press-event", G_CALLBACK(_lib_keymap_button_press_release), d);
+  g_signal_connect(G_OBJECT(d->keymap_button), "button-release-event", G_CALLBACK(_lib_keymap_button_press_release), d);
   dt_gui_add_help_link(d->keymap_button, dt_get_help_url("global_toolbox_keymap"));
 
   // the rest of these is added in reverse order as they are always put at the end of the container.
@@ -774,7 +794,8 @@ static void _set_mapping_mode_cursor(GtkWidget *widget)
 
   if(widget && !strcmp(gtk_widget_get_name(widget), "module-header"))
     cursor = GDK_BASED_ARROW_DOWN;
-  else if(darktable.control->mapping_widget && darktable.develop)
+  else if(g_hash_table_lookup(darktable.control->widgets, darktable.control->mapping_widget)
+          && darktable.develop)
   {
     switch(dt_dev_modulegroups_basics_module_toggle(darktable.develop, widget, FALSE))
     {
@@ -789,18 +810,44 @@ static void _set_mapping_mode_cursor(GtkWidget *widget)
   dt_control_forbid_change_cursor();
 }
 
+static void _show_shortcuts_prefs(GtkWidget *w)
+{
+  GtkWidget *shortcuts_dialog = gtk_dialog_new_with_buttons(_("shortcuts"), GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                                            GTK_DIALOG_DESTROY_WITH_PARENT, NULL, NULL);
+  if(!_shortcuts_dialog_posize.w)
+    gtk_window_set_default_size(GTK_WINDOW(shortcuts_dialog),
+                                DT_PIXEL_APPLY_DPI(dt_conf_get_int("ui_last/shortcuts_dialog_width")),
+                                DT_PIXEL_APPLY_DPI(dt_conf_get_int("ui_last/shortcuts_dialog_height")));
+  else
+  {
+    gtk_window_move(GTK_WINDOW(shortcuts_dialog), _shortcuts_dialog_posize.x, _shortcuts_dialog_posize.y);
+    gtk_window_resize(GTK_WINDOW(shortcuts_dialog), _shortcuts_dialog_posize.w, _shortcuts_dialog_posize.h);
+  }
+  g_signal_connect(G_OBJECT(shortcuts_dialog), "configure-event", G_CALLBACK(_resize_shortcuts_dialog), NULL);
+
+  //grab the content area of the dialog
+  GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(shortcuts_dialog));
+  gtk_box_pack_start(GTK_BOX(content), dt_shortcuts_prefs(w), TRUE, TRUE, 0);
+
+  gtk_widget_show_all(shortcuts_dialog);
+  gtk_dialog_run(GTK_DIALOG(shortcuts_dialog));
+  gtk_widget_destroy(shortcuts_dialog);
+}
+
 static void _main_do_event_keymap(GdkEvent *event, gpointer data)
 {
   GtkWidget *event_widget = gtk_get_event_widget(event);
 
   switch(event->type)
   {
+  case GDK_LEAVE_NOTIFY:
   case GDK_ENTER_NOTIFY:
-    if(event->crossing.mode == GDK_CROSSING_UNGRAB) break;
+    if(darktable.control->mapping_widget
+       && event->crossing.mode == GDK_CROSSING_UNGRAB)
+      break;
   case GDK_GRAB_BROKEN:
   case GDK_FOCUS_CHANGE:
-    darktable.control->mapping_widget = g_hash_table_lookup(darktable.control->widgets, event_widget)
-                                      ? event_widget : NULL;
+    darktable.control->mapping_widget = event_widget;
     _set_mapping_mode_cursor(event_widget);
     break;
   case GDK_BUTTON_PRESS:
@@ -809,6 +856,9 @@ static void _main_do_event_keymap(GdkEvent *event, gpointer data)
 
     GtkWidget *main_window = dt_ui_main_window(darktable.gui->ui);
     if(gtk_widget_get_toplevel(event_widget) != main_window)
+      break;
+
+    if(!gtk_window_is_active(GTK_WINDOW(main_window)))
       break;
 
     dt_lib_tool_preferences_t *d = (dt_lib_tool_preferences_t *)data;
@@ -836,26 +886,7 @@ static void _main_do_event_keymap(GdkEvent *event, gpointer data)
         break;
 
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->keymap_button), FALSE);
-      GtkWidget *shortcuts_dialog = gtk_dialog_new_with_buttons(_("shortcuts"), GTK_WINDOW(main_window),
-                                                                GTK_DIALOG_DESTROY_WITH_PARENT, NULL, NULL);
-      if(!_shortcuts_dialog_posize.w)
-        gtk_window_set_default_size(GTK_WINDOW(shortcuts_dialog),
-                                    DT_PIXEL_APPLY_DPI(dt_conf_get_int("ui_last/shortcuts_dialog_width")),
-                                    DT_PIXEL_APPLY_DPI(dt_conf_get_int("ui_last/shortcuts_dialog_height")));
-      else
-      {
-        gtk_window_move(GTK_WINDOW(shortcuts_dialog), _shortcuts_dialog_posize.x, _shortcuts_dialog_posize.y);
-        gtk_window_resize(GTK_WINDOW(shortcuts_dialog), _shortcuts_dialog_posize.w, _shortcuts_dialog_posize.h);
-      }
-      g_signal_connect(G_OBJECT(shortcuts_dialog), "configure-event", G_CALLBACK(_resize_shortcuts_dialog), NULL);
-
-      //grab the content area of the dialog
-      GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(shortcuts_dialog));
-      gtk_box_pack_start(GTK_BOX(content), dt_shortcuts_prefs(event_widget), TRUE, TRUE, 0);
-
-      gtk_widget_show_all(shortcuts_dialog);
-      gtk_dialog_run(GTK_DIALOG(shortcuts_dialog));
-      gtk_widget_destroy(shortcuts_dialog);
+      _show_shortcuts_prefs(event_widget);
     }
 
     return;
@@ -877,8 +908,6 @@ static void _lib_keymap_button_clicked(GtkWidget *widget, gpointer user_data)
 {
   if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)))
   {
-    dt_control_change_cursor(GDK_X_CURSOR);
-    dt_control_forbid_change_cursor();
     gdk_event_handler_set(_main_do_event_keymap, user_data, NULL);
   }
   else
@@ -890,9 +919,30 @@ static void _lib_keymap_button_clicked(GtkWidget *widget, gpointer user_data)
   }
 }
 
+static gboolean _lib_keymap_button_press_release(GtkWidget *button, GdkEventButton *event, gpointer user_data)
+{
+  static guint start_time = 0;
+
+  int delay = 0;
+  g_object_get(gtk_settings_get_default(), "gtk-long-press-time", &delay, NULL);
+
+  if((event->type == GDK_BUTTON_PRESS && event->button == 3) ||
+     (event->type == GDK_BUTTON_RELEASE && event->time - start_time > delay))
+  {
+    _show_shortcuts_prefs(NULL);
+    return TRUE;
+  }
+  else
+  {
+    start_time = event->time;
+    return FALSE;
+  }
+}
+
 void init_key_accels(dt_lib_module_t *self)
 {
   dt_accel_register_global(NC_("accel", "grouping"), 0, 0);
+  dt_accel_register_global(NC_("accel", "thumbnail overlays options"), 0, 0);
   dt_accel_register_global(NC_("accel", "preferences"), 0, 0);
   dt_accel_register_global(NC_("accel", "shortcuts"), 0, 0);
 
@@ -909,9 +959,8 @@ void connect_key_accels(dt_lib_module_t *self)
 {
   dt_lib_tool_preferences_t *d = (dt_lib_tool_preferences_t *)self->data;
 
-  dt_accel_connect_button_lib_as_global(self, "grouping", d->grouping_button);
+  dt_accel_connect_button_lib_as_global(self, "thumbnail overlays options", d->overlays_button);
   dt_accel_connect_button_lib_as_global(self, "preferences", d->preferences_button);
-  dt_accel_connect_button_lib_as_global(self, "shortcuts", d->keymap_button);
 
   dt_accel_connect_lib_as_global( self, "thumbnail overlays/no overlays",
       g_cclosure_new(G_CALLBACK(_overlays_accels_callback), GINT_TO_POINTER(DT_THUMBNAIL_OVERLAYS_NONE), NULL));

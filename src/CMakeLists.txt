@@ -53,12 +53,12 @@ FILE(GLOB SOURCE_FILES
   "common/imageio_tiff.c"
   "common/imageio_im.c"
   "common/imageio_gm.c"
-  "common/imageio_rawspeed.cc"
   "common/import_session.c"
   "common/interpolation.c"
   "common/locallaplacian.c"
   "common/locallaplaciancl.c"
   "common/l10n.c"
+  "common/matrices.c"
   "common/metadata.c"
   "common/metadata_export.c"
   "common/mipmap_cache.c"
@@ -240,7 +240,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
 if(APPLE AND (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -920,13 +919,16 @@ if(LIB_DEPS)
 endif()
 
 target_link_libraries(lib_darktable PUBLIC ${STATIC_LIBS})
-target_link_libraries(lib_darktable PRIVATE rawspeed)
 target_link_libraries(lib_darktable PRIVATE whereami)
 target_link_libraries(lib_darktable PUBLIC ${LIBS})
 
 unset(LIBS)
 unset(STATIC_LIBS)
 unset(LIB_DEPS)
+
+add_library(lib_darktable_imageio_rawspeed STATIC common/imageio_rawspeed.cc)
+target_link_libraries(lib_darktable_imageio_rawspeed PRIVATE rawspeed)
+target_link_libraries(lib_darktable PRIVATE lib_darktable_imageio_rawspeed)
 
 #
 # Install lib_darktable

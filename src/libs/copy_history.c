@@ -98,18 +98,16 @@ static void write_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
 
 static void load_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
 {
-  const GList *imgs = dt_view_get_images_to_act_on(TRUE, TRUE, FALSE);
+  GList *imgs = g_list_copy((GList *)dt_view_get_images_to_act_on(TRUE, TRUE, FALSE));
   if(!imgs)
     return;
-  const int act_on_any = imgs != NULL;  // list length > 0?
   const int act_on_one = g_list_is_singleton(imgs); // list length == 1?
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("open sidecar file"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_OPEN, _("_cancel"),
-      GTK_RESPONSE_CANCEL, _("_open"), GTK_RESPONSE_ACCEPT, (char *)NULL);
-#ifdef GDK_WINDOWING_QUARTZ
-  dt_osx_disallow_fullscreen(filechooser);
-#endif
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+          _("open sidecar file"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_OPEN,
+          _("_open"), _("_cancel"));
+  gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
+
   if(act_on_one)
   {
     //single image to load xmp to, assume we want to load from same dir
@@ -125,14 +123,14 @@ static void load_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
     {
       // handle situation where there's some problem with cache/film_id
       // i guess that's impossible, but better safe than sorry ;)
-      dt_conf_get_folder_to_file_chooser("ui_last/import_path", filechooser);
+      dt_conf_get_folder_to_file_chooser("ui_last/import_path", GTK_FILE_CHOOSER(filechooser));
     }
     dt_image_cache_read_release(darktable.image_cache, img);
   }
   else
   {
     // multiple images, use "last import" preference
-    dt_conf_get_folder_to_file_chooser("ui_last/import_path", filechooser);
+    dt_conf_get_folder_to_file_chooser("ui_last/import_path", GTK_FILE_CHOOSER(filechooser));
   }
 
   GtkFileFilter *filter;
@@ -147,7 +145,7 @@ static void load_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
   gtk_file_filter_set_name(filter, _("all files"));
   gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(filechooser), filter);
 
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     gchar *dtfilename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
     if(dt_history_load_and_apply_on_list(dtfilename, imgs) != 0)
@@ -169,14 +167,15 @@ static void load_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
                                     g_list_copy((GList *)imgs), 0);
       dt_control_queue_redraw_center();
     }
-    if(act_on_any)
+    if(!act_on_one)
     {
       //remember last import path if applying history to multiple images
-      dt_conf_set_folder_from_file_chooser("ui_last/import_path", filechooser);
+      dt_conf_set_folder_from_file_chooser("ui_last/import_path", GTK_FILE_CHOOSER(filechooser));
     }
     g_free(dtfilename);
   }
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
+  g_list_free(imgs);
   gtk_widget_queue_draw(dt_ui_center(darktable.gui->ui));
 }
 
@@ -195,8 +194,8 @@ static void compress_button_clicked(GtkWidget *widget, gpointer user_data)
   {
     GtkWidget *dialog = gtk_message_dialog_new(
     GTK_WINDOW(win), GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_QUESTION, GTK_BUTTONS_CLOSE,
-    ngettext("no history compression of 1 image.\nsee tag: darktable|problem|history-compress.",
-             "no history compression of %d images.\nsee tag: darktable|problem|history-compress.", missing ), missing);
+    ngettext("no history compression of 1 image.\nsee tag: darktable|problem|history-compress",
+             "no history compression of %d images.\nsee tag: darktable|problem|history-compress", missing ), missing);
 #ifdef GDK_WINDOWING_QUARTZ
     dt_osx_disallow_fullscreen(dialog);
 #endif
@@ -388,14 +387,13 @@ void gui_init(dt_lib_module_t *self)
                                        "history_stack.html#history_stack_usage");
   gtk_grid_attach(grid, d->discard_button, 3, line++, 3, 1);
 
-  d->pastemode = dt_bauhaus_combobox_new_action(DT_ACTION(self));
-  dt_bauhaus_widget_set_label(d->pastemode, NULL, N_("mode"));
-  dt_bauhaus_combobox_add(d->pastemode, _("append"));
-  dt_bauhaus_combobox_add(d->pastemode, _("overwrite"));
-  gtk_widget_set_tooltip_text(d->pastemode, _("how to handle existing history"));
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(d->pastemode, self, NULL, N_("mode"),
+                               _("how to handle existing history"),
+                               dt_conf_get_int("plugins/lighttable/copy_history/pastemode"),
+                               pastemode_combobox_changed, self,
+                               N_("append"), N_("overwrite"));
   dt_gui_add_help_link(d->pastemode, dt_get_help_url("history"));
   gtk_grid_attach(grid, d->pastemode, 0, line++, 6, 1);
-  dt_bauhaus_combobox_set(d->pastemode, dt_conf_get_int("plugins/lighttable/copy_history/pastemode"));
 
   d->load_button = dt_ui_button_new(_("load sidecar file..."),
                                     _("open an XMP sidecar file\nand apply it to selected images"),
@@ -423,7 +421,6 @@ void gui_init(dt_lib_module_t *self)
   g_signal_connect(G_OBJECT(d->paste_parts), "clicked", G_CALLBACK(paste_parts_button_clicked), (gpointer)self);
   g_signal_connect(G_OBJECT(d->paste), "clicked", G_CALLBACK(paste_button_clicked), (gpointer)self);
   g_signal_connect(G_OBJECT(d->load_button), "clicked", G_CALLBACK(load_button_clicked), (gpointer)self);
-  g_signal_connect(G_OBJECT(d->pastemode), "value-changed", G_CALLBACK(pastemode_combobox_changed), (gpointer)self);
   g_signal_connect(G_OBJECT(d->write_button), "clicked", G_CALLBACK(write_button_clicked), (gpointer)self);
 }
 

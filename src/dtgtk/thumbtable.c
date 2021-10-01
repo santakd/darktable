@@ -983,7 +983,7 @@ static gboolean _event_leave_notify(GtkWidget *widget, GdkEventCrossing *event, 
   }
 
   // if we leave thumbtable in favour of an inferior (a thumbnail) it's not a real leave !
-  if(event->detail == GDK_NOTIFY_INFERIOR) return FALSE;
+  if(event->detail == GDK_NOTIFY_INFERIOR || event->detail == GDK_NOTIFY_VIRTUAL) return FALSE;
 
   table->mouse_inside = FALSE;
   dt_control_set_mouse_over_id(-1);
@@ -1696,7 +1696,7 @@ static void _event_dnd_begin(GtkWidget *widget, GdkDragContext *context, gpointe
   }
 }
 
-static void _event_dnd_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y,
+void dt_thumbtable_event_dnd_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y,
                                 GtkSelectionData *selection_data, guint target_type, guint time,
                                 gpointer user_data)
 {
@@ -1801,7 +1801,7 @@ dt_thumbtable_t *dt_thumbtable_new()
   g_signal_connect_after(table->widget, "drag-begin", G_CALLBACK(_event_dnd_begin), table);
   g_signal_connect_after(table->widget, "drag-end", G_CALLBACK(_event_dnd_end), table);
   g_signal_connect(table->widget, "drag-data-get", G_CALLBACK(_event_dnd_get), table);
-  g_signal_connect(table->widget, "drag-data-received", G_CALLBACK(_event_dnd_received), table);
+  g_signal_connect(table->widget, "drag-data-received", G_CALLBACK(dt_thumbtable_event_dnd_received), table);
 
   g_signal_connect(G_OBJECT(table->widget), "scroll-event", G_CALLBACK(_event_scroll), table);
   g_signal_connect(G_OBJECT(table->widget), "draw", G_CALLBACK(_event_draw), table);
@@ -2050,9 +2050,6 @@ void dt_thumbtable_full_redraw(dt_thumbtable_t *table, gboolean force)
         dt_thumbnail_update_selection(th);
       }
     }
-
-    // be sure the focus is in the right widget (needed for accels)
-    gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
 
     dt_print(DT_DEBUG_LIGHTTABLE, "done in %0.04f sec %d thumbs reloaded\n", dt_get_wtime() - start, nbnew);
     g_free(query);

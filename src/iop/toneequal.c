@@ -96,6 +96,7 @@
 #include "dtgtk/drawingarea.h"
 #include "dtgtk/expander.h"
 #include "gui/accelerators.h"
+#include "gui/color_picker_proxy.h"
 #include "gui/draw.h"
 #include "gui/gtk.h"
 #include "gui/presets.h"
@@ -172,7 +173,7 @@ typedef struct dt_iop_toneequalizer_params_t
   float ultra_deep_blacks; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "deep shadows"
   float deep_blacks; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "shadows"
   float blacks; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "light shadows"
-  float shadows; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "midtones"
+  float shadows; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "mid-tones"
   float midtones; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "dark highlights"
   float highlights; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "highlights"
   float whites; // $MIN: -2.0 $MAX: 2.0 $DEFAULT: 0.0  $DESCRIPTION: "whites"
@@ -572,6 +573,7 @@ static void invalidate_luminance_cache(dt_iop_module_t *const self)
   g->thumb_preview_hash = 0;
   g->ui_preview_hash = 0;
   dt_iop_gui_leave_critical_section(self);
+  dt_iop_refresh_preview(self);
 }
 
 
@@ -607,6 +609,12 @@ static int sanity_check(dt_iop_module_t *self)
   return 1;
 }
 
+// gaussian-ish kernel - sum is == 1.0f so we don't care much about actual coeffs
+static const dt_colormatrix_t gauss_kernel =
+  { { 0.076555024f, 0.124401914f, 0.076555024f },
+    { 0.124401914f, 0.196172249f, 0.124401914f },
+    { 0.076555024f, 0.124401914f, 0.076555024f } };
+
 __DT_CLONE_TARGETS__
 static float get_luminance_from_buffer(const float *const buffer,
                                        const size_t width, const size_t height,
@@ -617,27 +625,39 @@ static float get_luminance_from_buffer(const float *const buffer,
 
   if(y >= height || x >= width) return NAN;
 
-  const size_t y_abs[3] = { CLAMP(y - 1, 0, height - 1),    // previous line
+  const size_t y_abs[4] DT_ALIGNED_PIXEL =
+                          { MAX(y, 1) - 1,                  // previous line
                             y,                              // center line
-                            CLAMP(y + 1, 0, height - 1) };  // next line
-
-  const size_t x_abs[3] = { CLAMP(x - 1, 0, width - 1),     // previous column
-                            x,                              // center column
-                            CLAMP(x + 1, 0, width - 1) };   // next column
-
-  // gaussian-ish kernel - sum is == 1.0f so we don't care much about actual coeffs
-  const float gauss_kernel[3][3] DT_ALIGNED_ARRAY =
-                                   { { 0.076555024f, 0.124401914f, 0.076555024f },
-                                     { 0.124401914f, 0.196172249f, 0.124401914f },
-                                     { 0.076555024f, 0.124401914f, 0.076555024f } };
+                            MIN(y + 1, height - 1),         // next line
+                            y };			    // padding for vectorization
 
   float luminance = 0.0f;
+  if (x > 0 && x < width - 2)
+  {
+    // no clamping needed on x, which allows us to vectorize
+    // apply the convolution
+    for(int i = 0; i < 3; ++i)
+    {
+      const size_t y_i = y_abs[i];
+      for_each_channel(j)
+        luminance += buffer[width * y_i + x-1 + j] * gauss_kernel[i][j];
+    }
+    return luminance;
+  }
+  
+  const size_t x_abs[4] DT_ALIGNED_PIXEL =
+                          { MAX(x, 1) - 1,                  // previous column
+                            x,                              // center column
+                            MIN(x + 1, width - 1),          // next column
+                            x };                            // padding for vectorization
 
   // convolution
   for(int i = 0; i < 3; ++i)
-    for(int j = 0; j < 3; ++j)
-      luminance += buffer[width * y_abs[i] + x_abs[j]] * gauss_kernel[i][j];
-
+  {
+    const size_t y_i = y_abs[i];
+    for_each_channel(j)
+      luminance += buffer[width * y_i + x_abs[j]] * gauss_kernel[i][j];
+  }
   return luminance;
 }
 
@@ -1329,67 +1349,79 @@ static inline void build_interpolation_matrix(float A[CHANNELS * PIXEL_CHAN],
 
 
 __DT_CLONE_TARGETS__
-static inline void compute_log_histogram(const float *const restrict luminance,
+static inline void compute_log_histogram_and_stats(const float *const restrict luminance,
                                           int histogram[UI_SAMPLES],
                                           const size_t num_elem,
-                                          int *max_histogram)
+                                          int *max_histogram,
+                                          float *first_decile, float *last_decile)
 {
   // (Re)init the histogram
   memset(histogram, 0, sizeof(int) * UI_SAMPLES);
+
+  // we first calculate an extended histogram for better accuracy
+  #define TEMP_SAMPLES 2 * UI_SAMPLES
+  int temp_hist[TEMP_SAMPLES];
+  memset(temp_hist, 0, sizeof(int) * TEMP_SAMPLES);
 
   // Split exposure in bins
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(simd:static) \
   dt_omp_firstprivate(luminance, num_elem) \
-  reduction(+:histogram[:UI_SAMPLES])
+  reduction(+:temp_hist[:TEMP_SAMPLES])
 #endif
   for(size_t k = 0; k < num_elem; k++)
   {
-    // the histogram shows bins between [-14; +2] EV remapped between [0 ; UI_SAMPLES[
-    const int index = CLAMP((int)(((log2f(luminance[k]) + 8.0f) / 8.0f) * (float)UI_SAMPLES), 0, UI_SAMPLES - 1);
-    histogram[index] += 1;
+    // extended histogram bins between [-10; +6] EV remapped between [0 ; 2 * UI_SAMPLES]
+    const int index = CLAMP((int)(((log2f(luminance[k]) + 10.0f) / 16.0f) * (float)TEMP_SAMPLES), 0, TEMP_SAMPLES - 1);
+    temp_hist[index] += 1;
   }
 
-  *max_histogram = 0;
-
-  for(int k = 0; k < UI_SAMPLES; k++)
-  {
-    // store the max numbers of elements in bins for later normalization
-    if(histogram[k] > *max_histogram)
-      *max_histogram = histogram[k];
-  }
-}
-
-
-static inline void histogram_deciles(const int histogram[UI_SAMPLES], size_t hist_bins, size_t num_elem,
-                              const float hist_span, const float hist_offset,
-                              float *first_decile, float *last_decile)
-{
-  // Browse an histogram of `hist_bins` bins containing a population of `num_elems` elements
-  // spanning from `hist_offset` to `hist_offset + hist_span`,
-  // looking for the position of the first and last deciles,
-  // and return their values scaled in the corresponding span
-
-  const int first = (int)((float)num_elem * 0.1f);
-  const int last = (int)((float)num_elem * 0.9f);
+  const int first = (int)((float)num_elem * 0.05f);
+  const int last = (int)((float)num_elem * (1.0f - 0.95f));
   int population = 0;
   int first_pos = 0;
   int last_pos = 0;
 
-  // scout the histogram bins looking for deciles
-  for(size_t k = 0; k < hist_bins; ++k)
+  // scout the extended histogram bins looking for deciles
+  // these would not be accurate with the regular histogram
+  for(int k = 0; k < TEMP_SAMPLES; ++k)
   {
     const size_t prev_population = population;
-    population += histogram[k];
-    if(prev_population < first && first <= population) first_pos = k;
-    if(prev_population < last && last <= population) last_pos = k;
+    population += temp_hist[k];
+    if(prev_population < first && first <= population)
+    {
+      first_pos = k;
+      break;
+    }
+  }
+  population = 0;
+  for(int k = TEMP_SAMPLES - 1; k >= 0; --k)
+  {
+    const size_t prev_population = population;
+    population += temp_hist[k];
+    if(prev_population < last && last <= population)
+    {
+      last_pos = k;
+      break;
+    }
   }
 
-  // Convert bins positions to exposures
-  *first_decile = (hist_span * (((float)first_pos) / ((float)(hist_bins - 1)))) + hist_offset;
-  *last_decile = (hist_span * (((float)last_pos) / ((float)(hist_bins - 1)))) + hist_offset;
-}
+  // Convert decile positions to exposures
+  *first_decile = 16.0 * (float)first_pos / (float)(TEMP_SAMPLES - 1) - 10.0;
+  *last_decile = 16.0 * (float)last_pos / (float)(TEMP_SAMPLES - 1) - 10.0;
 
+  // remap the extended histogram into the normal one
+  // bins between [-8; 0] EV remapped between [0 ; UI_SAMPLES]
+  for(size_t k = 0; k < TEMP_SAMPLES; ++k)
+  {
+    float EV = 16.0 * (float)k / (float)(TEMP_SAMPLES - 1) - 10.0;
+    const int i = CLAMP((int)(((EV + 8.0f) / 8.0f) * (float)UI_SAMPLES), 0, UI_SAMPLES - 1);
+    histogram[i] += temp_hist[k];
+
+    // store the max numbers of elements in bins for later normalization
+    *max_histogram = histogram[i] > *max_histogram ? histogram[i] : *max_histogram;
+  }
+}
 
 static inline void update_histogram(struct dt_iop_module_t *const self)
 {
@@ -1400,9 +1432,8 @@ static inline void update_histogram(struct dt_iop_module_t *const self)
   if(!g->histogram_valid && g->luminance_valid)
   {
     const size_t num_elem = g->thumb_preview_buf_height * g->thumb_preview_buf_width;
-    compute_log_histogram(g->thumb_preview_buf, g->histogram, num_elem, &g->max_histogram);
-    histogram_deciles(g->histogram, UI_SAMPLES, num_elem, 8.0f, -8.0f,
-                      &g->histogram_first_decile, &g->histogram_last_decile);
+    compute_log_histogram_and_stats(g->thumb_preview_buf, g->histogram, num_elem, &g->max_histogram,
+                                      &g->histogram_first_decile, &g->histogram_last_decile);
     g->histogram_average = (g->histogram_first_decile + g->histogram_last_decile) / 2.0f;
     g->histogram_valid = TRUE;
   }
@@ -1706,35 +1737,26 @@ static void smoothing_callback(GtkWidget *slider, gpointer user_data)
 static void auto_adjust_exposure_boost(GtkWidget *quad, gpointer user_data)
 {
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
+  dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
+
   if(darktable.gui->reset) return;
 
   dt_iop_request_focus(self);
 
   if(!self->enabled)
   {
-    // If module disabled, enable and do nothing
-    dt_dev_add_history_item(darktable.develop, self, TRUE);
-    return;
-  }
-
-  dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
-  dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
-
-  if(p->exposure_boost != 0.0f)
-  {
-    // Reset the exposure boost and do nothing
-    p->exposure_boost = 0.0f;
+    // activate module and do nothing
     ++darktable.gui->reset;
     dt_bauhaus_slider_set_soft(g->exposure_boost, p->exposure_boost);
     --darktable.gui->reset;
 
     invalidate_luminance_cache(self);
     dt_dev_add_history_item(darktable.develop, self, TRUE);
-    dt_bauhaus_widget_set_quad_active(quad, FALSE);
     return;
   }
 
-  if(!g->luminance_valid || self->dev->pipe->processing)
+  if(!g->luminance_valid || self->dev->pipe->processing || !g->histogram_valid)
   {
     dt_control_log(_("wait for the preview to finish recomputing"));
     return;
@@ -1744,14 +1766,28 @@ static void auto_adjust_exposure_boost(GtkWidget *quad, gpointer user_data)
   // to spread it over as many nodes as possible for better exposure control.
   // Controls nodes are between -8 and 0 EV,
   // so we aim at centering the exposure distribution on -4 EV
-  const float target = log2f(CONTRAST_FULCRUM);
 
   dt_iop_gui_enter_critical_section(self);
   g->histogram_valid = 0;
   dt_iop_gui_leave_critical_section(self);
 
   update_histogram(self);
-  p->exposure_boost += target - g->histogram_average;
+
+  // calculate exposure correction
+  const float fd_new = exp2f(g->histogram_first_decile);
+  const float ld_new = exp2f(g->histogram_last_decile);
+  const float e = exp2f(p->exposure_boost);
+  const float c = exp2f(p->contrast_boost);
+  // revert current transformation
+  const float fd_old = ((fd_new - CONTRAST_FULCRUM) / c + CONTRAST_FULCRUM) / e;
+  const float ld_old = ((ld_new - CONTRAST_FULCRUM) / c + CONTRAST_FULCRUM) / e;
+
+  // calculate correction
+  const float s1 = CONTRAST_FULCRUM - exp2f(-7.0);
+  const float s2 = exp2f(-1.0) - CONTRAST_FULCRUM;
+  const float mix = fd_old * s2 +  ld_old * s1;
+
+  p->exposure_boost = log2f(CONTRAST_FULCRUM * (s1 + s2) / mix);
 
   // Update the GUI stuff
   ++darktable.gui->reset;
@@ -1768,53 +1804,68 @@ static void auto_adjust_exposure_boost(GtkWidget *quad, gpointer user_data)
 static void auto_adjust_contrast_boost(GtkWidget *quad, gpointer user_data)
 {
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
+  dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
+
   if(darktable.gui->reset) return;
 
   dt_iop_request_focus(self);
 
   if(!self->enabled)
   {
-    // If module disabled, enable and do nothing
-    dt_dev_add_history_item(darktable.develop, self, TRUE);
-    return;
-  }
-
-  dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
-  dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
-
-  if(p->contrast_boost != 0.0f)
-  {
-    // Reset the contrast boost and do nothing
-    p->contrast_boost = 0.0f;
+    // activate module and do nothing
     ++darktable.gui->reset;
     dt_bauhaus_slider_set_soft(g->contrast_boost, p->contrast_boost);
     --darktable.gui->reset;
 
     invalidate_luminance_cache(self);
     dt_dev_add_history_item(darktable.develop, self, TRUE);
-    dt_bauhaus_widget_set_quad_active(quad, FALSE);
     return;
   }
 
-  if(!g->luminance_valid || self->dev->pipe->processing)
+  if(!g->luminance_valid || self->dev->pipe->processing || !g->histogram_valid)
   {
     dt_control_log(_("wait for the preview to finish recomputing"));
     return;
   }
 
-  // The goal is to spread 80 % of the exposure histogram between -4 ± 3 EV
+  // The goal is to spread 90 % of the exposure histogram in the [-7, -1] EV
   dt_iop_gui_enter_critical_section(self);
   g->histogram_valid = 0;
   dt_iop_gui_leave_critical_section(self);
 
-  const float target = log2f(CONTRAST_FULCRUM);
   update_histogram(self);
-  const float span_left = fabsf(target - g->histogram_first_decile);
-  const float span_right = fabsf(g->histogram_last_decile - target);
-  const float origin = fmaxf(span_left, span_right);
 
-  // Compute the correction
-  p->contrast_boost = (3.0f - origin);
+  // calculate contrast correction
+  const float fd_new = exp2f(g->histogram_first_decile);
+  const float ld_new = exp2f(g->histogram_last_decile);
+  const float e = exp2f(p->exposure_boost);
+  float c = exp2f(p->contrast_boost);
+  // revert current transformation
+  const float fd_old = ((fd_new - CONTRAST_FULCRUM) / c + CONTRAST_FULCRUM) / e;
+  const float ld_old = ((ld_new - CONTRAST_FULCRUM) / c + CONTRAST_FULCRUM) / e;
+
+  // calculate correction
+  const float s1 = CONTRAST_FULCRUM - exp2f(-7.0);
+  const float s2 = exp2f(-1.0) - CONTRAST_FULCRUM;
+  const float mix = fd_old * s2 +  ld_old * s1;
+
+  c = log2f(mix / (CONTRAST_FULCRUM * (ld_old - fd_old)) / c);
+
+  // when adding contrast, blur filters modify the histogram in a way difficult to predict
+  // here we implement a heuristic correction based on a set of images and regression analysis
+  if(p->details == DT_TONEEQ_EIGF && c > 0.0f)
+  {
+    const float correction = -0.0276f + 0.01823 * p->feathering + (0.7566f - 1.0f) * c;
+    if(p->feathering < 5.0f)
+      c += correction;
+    else if(p->feathering < 10.0f)
+      c += correction * (2.0f - p->feathering / 5.0f);
+  }
+  else if(p->details == DT_TONEEQ_GUIDED && c > 0.0f)
+      c = 0.0235f + 1.1225f * c;
+
+  p->contrast_boost += c;
 
   // Update the GUI stuff
   ++darktable.gui->reset;
@@ -1869,7 +1920,7 @@ static void switch_cursors(struct dt_iop_module_t *self)
   GtkWidget *widget = dt_ui_main_window(darktable.gui->ui);
 
   // if we are editing masks or using colour-pickers, do not display controls
-  if(!sanity_check(self) || in_mask_editing(self) || (self->picker && self->request_color_pick != DT_REQUEST_COLORPICK_OFF))
+  if(!sanity_check(self) || in_mask_editing(self) || dt_iop_color_picker_is_visible(self->dev))
   {
     // display default cursor
     GdkCursor *const cursor = gdk_cursor_new_from_name(gdk_display_get_default(), "default");
@@ -1879,9 +1930,9 @@ static void switch_cursors(struct dt_iop_module_t *self)
     return;
   }
 
-  // check if module is enabled and shown in UI
+  // check if module is expanded
   dt_iop_gui_enter_critical_section(self);
-  g->has_focus = (self->expanded && self->enabled);
+  g->has_focus = self->expanded;
   dt_iop_gui_leave_critical_section(self);
 
   if(!g->has_focus)
@@ -1943,10 +1994,9 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
 
   dt_develop_t *dev = self->dev;
   dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
-  if(!self->enabled) return 0;
 
   dt_iop_gui_enter_critical_section(self);
-  const int fail = (!sanity_check(self) || !g->luminance_valid);
+  const int fail = !sanity_check(self);
   dt_iop_gui_leave_critical_section(self);
   if(fail) return 0;
 
@@ -1987,23 +2037,7 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
                                                          g->thumb_preview_buf_height,
                                                          (size_t)x_pointer, (size_t)y_pointer));
 
-  // Search for nearest node in graph and highlight it
-  const float radius_threshold = 0.45f;
-  g->area_active_node = -1;
-  if(g->cursor_valid)
-  {
-    for(int i = 0; i < CHANNELS; ++i)
-    {
-      const float delta_x = fabsf(g->cursor_exposure - centers_params[i]);
-      if(delta_x < radius_threshold)
-      {
-        g->area_active_node = i;
-      }
-    }
-  }
-
   switch_cursors(self);
-  gtk_widget_queue_draw(GTK_WIDGET(g->area));
   return 1;
 }
 
@@ -2092,9 +2126,12 @@ int scrolled(struct dt_iop_module_t *self, double x, double y, int up, uint32_t 
 
   if(!sanity_check(self)) return 0;
   if(darktable.gui->reset) return 1;
-  if(!self->enabled) return 0;
   if(g == NULL) return 0;
   if(!g->has_focus) return 0;
+
+  // turn-on the module if off
+  if(!self->enabled)
+    if(self->off) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->off), 1);
 
   // add an option to allow skip mouse events while editing masks
   if(darktable.develop->darkroom_skip_mouse_events || in_mask_editing(self)) return 0;
@@ -2237,7 +2274,7 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   if(in_mask_editing(self)) return;
 
   dt_iop_gui_enter_critical_section(self);
-  const int fail = (!g->cursor_valid || !g->interpolation_valid || !g->luminance_valid || dev->pipe->processing || !sanity_check(self) || !g->has_focus);
+  const int fail = (!g->cursor_valid || !g->interpolation_valid || dev->pipe->processing || !sanity_check(self) || !g->has_focus);
   dt_iop_gui_leave_critical_section(self);
   if(fail) return;
 
@@ -2246,27 +2283,37 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
 
   dt_iop_gui_enter_critical_section(self);
 
-  // re-read the exposure in case it has changed
-  g->cursor_exposure = log2f(get_luminance_from_buffer(g->thumb_preview_buf,
-                                                       g->thumb_preview_buf_width,
-                                                       g->thumb_preview_buf_height,
-                                                       (size_t)g->cursor_pos_x, (size_t)g->cursor_pos_y));
-
   // Get coordinates
   const float x_pointer = g->cursor_pos_x;
   const float y_pointer = g->cursor_pos_y;
 
-  // Get the corresponding exposure
-  const float exposure_in = g->cursor_exposure;
-  const float luminance_in = exp2f(exposure_in);
+  float exposure_in = 0.0f;
+  float luminance_in = 0.0f;
+  float correction = 0.0f;
+  float exposure_out = 0.0f;
+  float luminance_out = 0.0f;
+  if(g->luminance_valid && self->enabled)
+  {
+    // re-read the exposure in case it has changed
+    g->cursor_exposure = log2f(get_luminance_from_buffer(g->thumb_preview_buf,
+                                                         g->thumb_preview_buf_width,
+                                                         g->thumb_preview_buf_height,
+                                                         (size_t)g->cursor_pos_x, (size_t)g->cursor_pos_y));
 
-  // Get the corresponding correction and compute resulting exposure
-  const float correction = log2f(pixel_correction(exposure_in, g->factors, g->sigma));
-  const float exposure_out = exposure_in + correction;
-  const float luminance_out = exp2f(exposure_out);
+    // Get the corresponding exposure
+    exposure_in = g->cursor_exposure;
+    luminance_in = exp2f(exposure_in);
+
+    // Get the corresponding correction and compute resulting exposure
+    correction = log2f(pixel_correction(exposure_in, g->factors, g->sigma));
+    exposure_out = exposure_in + correction;
+    luminance_out = exp2f(exposure_out);
+  }
 
   dt_iop_gui_leave_critical_section(self);
-
+  
+  if(isnan(correction) || isnan(exposure_in)) return; // something went wrong
+ 
   // Rescale and shift Cairo drawing coordinates
   const float wd = dev->preview_pipe->backbuf_width;
   const float ht = dev->preview_pipe->backbuf_height;
@@ -2279,7 +2326,6 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   cairo_scale(cr, zoom_scale, zoom_scale);
   cairo_translate(cr, -.5f * wd - zoom_x * wd, -.5f * ht - zoom_y * ht);
 
-  if(isnan(correction) || isnan(exposure_in)) return; // something went wrong
 
   // set custom cursor dimensions
   const double outer_radius = 16.;
@@ -2333,7 +2379,10 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   pango_cairo_context_set_resolution(pango_layout_get_context(layout), darktable.gui->dpi);
 
   // Build text object
-  snprintf(text, sizeof(text), _("%+.1f EV"), exposure_in);
+  if(g->luminance_valid && self->enabled)
+    snprintf(text, sizeof(text), _("%+.1f EV"), exposure_in);
+  else
+    snprintf(text, sizeof(text), "? EV");
   pango_layout_set_text(layout, text, -1);
   pango_layout_get_pixel_extents(layout, &ink, NULL);
 
@@ -2355,6 +2404,22 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
 
   pango_font_description_free(desc);
   g_object_unref(layout);
+
+  if(g->luminance_valid && self->enabled)
+  {
+    // Search for nearest node in graph and highlight it
+    const float radius_threshold = 0.45f;
+    g->area_active_node = -1;
+    if(g->cursor_valid)
+      for(int i = 0; i < CHANNELS; ++i)
+      {
+        const float delta_x = fabsf(g->cursor_exposure - centers_params[i]);
+        if(delta_x < radius_threshold)
+          g->area_active_node = i;
+      }
+
+    gtk_widget_queue_draw(GTK_WIDGET(g->area));
+  }
 }
 
 
@@ -3054,6 +3119,8 @@ void gui_reset(struct dt_iop_module_t *self)
   dt_iop_toneequalizer_gui_data_t *g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
   if(g == NULL) return;
   dt_iop_request_focus(self);
+  dt_bauhaus_widget_set_quad_active(g->exposure_boost, FALSE);
+  dt_bauhaus_widget_set_quad_active(g->contrast_boost, FALSE);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 
   // Redraw graph
@@ -3212,20 +3279,21 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_format(g->exposure_boost, "%+.2f EV");
   gtk_widget_set_tooltip_text(g->exposure_boost, _("use this to slide the mask average exposure along channels\n"
                                                    "for a better control of the exposure correction with the available nodes.\n"
-                                                   "the picker will auto-adjust the average exposure at -4EV."));
-  dt_bauhaus_widget_set_quad_paint(g->exposure_boost, dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
-  dt_bauhaus_widget_set_quad_toggle(g->exposure_boost, TRUE);
+                                                   "the magic wand will auto-adjust the average exposure"));
+  dt_bauhaus_widget_set_quad_paint(g->exposure_boost, dtgtk_cairo_paint_wand, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+  dt_bauhaus_widget_set_quad_toggle(g->exposure_boost, FALSE);
   g_signal_connect(G_OBJECT(g->exposure_boost), "quad-pressed", G_CALLBACK(auto_adjust_exposure_boost), self);
 
   g->contrast_boost = dt_bauhaus_slider_from_params(self, "contrast_boost");
-  dt_bauhaus_slider_set_soft_range(g->contrast_boost, -4.0, 4.0);
+  dt_bauhaus_slider_set_soft_range(g->contrast_boost, -2.0, 2.0);
   dt_bauhaus_slider_set_format(g->contrast_boost, "%+.2f EV");
   gtk_widget_set_tooltip_text(g->contrast_boost, _("use this to counter the averaging effect of the guided filter\n"
                                                    "and dilate the mask contrast around -4EV\n"
                                                    "this allows to spread the exposure histogram over more channels\n"
-                                                   "for a better control of the exposure correction."));
-  dt_bauhaus_widget_set_quad_paint(g->contrast_boost, dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
-  dt_bauhaus_widget_set_quad_toggle(g->contrast_boost, TRUE);
+                                                   "for a better control of the exposure correction.\n"
+                                                   "the magic wand will auto-adjust the contrast"));
+  dt_bauhaus_widget_set_quad_paint(g->contrast_boost, dtgtk_cairo_paint_wand, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+  dt_bauhaus_widget_set_quad_toggle(g->contrast_boost, FALSE);
   g_signal_connect(G_OBJECT(g->contrast_boost), "quad-pressed", G_CALLBACK(auto_adjust_contrast_boost), self);
 
   // start building top level widget

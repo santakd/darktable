@@ -133,9 +133,26 @@ void dt_conf_set_string(const char *name, const char *val)
   if(dt_conf_set_if_not_overridden(name, str)) g_free(str);
 }
 
-void dt_conf_set_folder_from_file_chooser(const char *name, GtkWidget *chooser)
+void dt_conf_set_folder_from_file_chooser(const char *name, GtkFileChooser *chooser)
 {
-  gchar *folder = gtk_file_chooser_get_current_folder(GTK_FILE_CHOOSER(chooser));
+
+#ifdef WIN32
+  // for Windows native file chooser, gtk_file_chooser_get_current_folder()
+  // does not work, so we workaround
+  if(GTK_IS_FILE_CHOOSER_NATIVE(chooser))
+  {
+    gchar *pathname = gtk_file_chooser_get_filename(chooser);
+    if(pathname)
+    {
+      gchar *folder = g_path_get_dirname(pathname);
+      if(dt_conf_set_if_not_overridden(name, folder)) g_free(folder);
+      g_free(pathname);
+    }
+    return;
+  }
+#endif
+
+  gchar *folder = gtk_file_chooser_get_current_folder(chooser);
   if(dt_conf_set_if_not_overridden(name, folder)) g_free(folder);
 }
 
@@ -310,12 +327,12 @@ const char *dt_conf_get_string_const(const char *name)
   return dt_conf_get_var(name);
 }
 
-gboolean dt_conf_get_folder_to_file_chooser(const char *name, GtkWidget *chooser)
+gboolean dt_conf_get_folder_to_file_chooser(const char *name, GtkFileChooser *chooser)
 {
   const gchar *folder = dt_conf_get_string_const(name);
   if (folder)
   {
-    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser),folder);
+    gtk_file_chooser_set_current_folder(chooser, folder);
     return TRUE;
   }
   return FALSE;

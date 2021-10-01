@@ -201,6 +201,13 @@ int dt_presets_import_from_file(const char *preset_path)
   if(!doc)
     return FALSE;
 
+  xmlNodePtr root = xmlDocGetRootElement(doc);
+  if(!root || xmlStrcmp(root->name, BAD_CAST "darktable_preset") != 0)
+  {
+    xmlFreeDoc(doc);
+    return FALSE;
+  }
+
   gchar *name = get_preset_element(doc, "name");
   gchar *description = get_preset_element(doc, "description");
   gchar *operation = get_preset_element(doc, "operation");
@@ -277,7 +284,7 @@ int dt_presets_import_from_file(const char *preset_path)
   DT_DEBUG_SQLITE3_BIND_INT(stmt, 24, def);
   DT_DEBUG_SQLITE3_BIND_INT(stmt, 25, format);
 
-  result = (sqlite3_step(stmt) == SQLITE_OK);
+  result = (sqlite3_step(stmt) == SQLITE_DONE);
 
   sqlite3_finalize(stmt);
 

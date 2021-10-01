@@ -32,6 +32,7 @@
 #include "develop/imageop_math.h"
 #include "develop/noise_generator.h"
 #include "develop/openmp_maths.h"
+#include "develop/tiling.h"
 #include "dtgtk/button.h"
 #include "dtgtk/drawingarea.h"
 #include "dtgtk/expander.h"
@@ -160,6 +161,14 @@ typedef enum dt_iop_filmic_rgb_gui_mode_t
   DT_FILMIC_GUI_LAST
 } dt_iop_filmic_rgb_gui_mode_t;
 
+// copy enum definition for introspection
+typedef enum dt_iop_filmic_noise_distribution_t
+{
+  DT_FILMIC_NOISE_UNIFORM = DT_NOISE_UNIFORM,      // $DESCRIPTION: "uniform"
+  DT_FILMIC_NOISE_GAUSSIAN = DT_NOISE_GAUSSIAN,    // $DESCRIPTION: "gaussian"
+  DT_FILMIC_NOISE_POISSONIAN = DT_NOISE_POISSONIAN // $DESCRIPTION: "poissonian"
+} dt_iop_filmic_noise_distribution_t;
+
 // clang-format off
 typedef struct dt_iop_filmicrgb_params_t
 {
@@ -168,9 +177,9 @@ typedef struct dt_iop_filmicrgb_params_t
   float white_point_source;    // $MIN: 0 $MAX: 16 $DEFAULT: 4.0 $DESCRIPTION: "white relative exposure"
   float reconstruct_threshold; // $MIN: -6.0 $MAX: 6.0 $DEFAULT: +3.0 $DESCRIPTION: "threshold"
   float reconstruct_feather;   // $MIN: 0.25 $MAX: 6.0 $DEFAULT: 3.0 $DESCRIPTION: "transition"
-  float reconstruct_bloom_vs_details; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "bloom/reconstruct"
-  float reconstruct_grey_vs_color; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "gray/colorful details"
-  float reconstruct_structure_vs_texture; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "structure/texture"
+  float reconstruct_bloom_vs_details; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "bloom ↔ reconstruct"
+  float reconstruct_grey_vs_color; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "gray ↔ colorful details"
+  float reconstruct_structure_vs_texture; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "structure ↔ texture"
   float security_factor;                  // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "dynamic range scaling"
   float grey_point_target;                // $MIN: 1 $MAX: 50 $DEFAULT: 18.45 $DESCRIPTION: "target middle gray"
   float black_point_target; // $MIN: 0.000 $MAX: 20.000 $DEFAULT: 0.01517634 $DESCRIPTION: "target black luminance"
@@ -179,14 +188,14 @@ typedef struct dt_iop_filmicrgb_params_t
   float latitude;           // $MIN: 0.01 $MAX: 100 $DEFAULT: 33.0
   float contrast;           // $MIN: 0 $MAX: 5 $DEFAULT: 1.35
   float saturation;         // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "extreme luminance saturation"
-  float balance;            // $MIN: -50 $MAX: 50 $DEFAULT: 0.0 $DESCRIPTION: "shadows/highlights balance"
+  float balance;            // $MIN: -50 $MAX: 50 $DEFAULT: 0.0 $DESCRIPTION: "shadows ↔ highlights balance"
   float noise_level;        // $MIN: 0.0 $MAX: 6.0 $DEFAULT: 0.2f $DESCRIPTION: "add noise in highlights"
   dt_iop_filmicrgb_methods_type_t preserve_color; // $DEFAULT: DT_FILMIC_METHOD_POWER_NORM $DESCRIPTION: "preserve chrominance"
   dt_iop_filmicrgb_colorscience_type_t version; // $DEFAULT: DT_FILMIC_COLORSCIENCE_V3 $DESCRIPTION: "color science"
   gboolean auto_hardness;                       // $DEFAULT: TRUE $DESCRIPTION: "auto adjust hardness"
   gboolean custom_grey;                         // $DEFAULT: FALSE $DESCRIPTION: "use custom middle-gray values"
   int high_quality_reconstruction;       // $MIN: 0 $MAX: 10 $DEFAULT: 1 $DESCRIPTION: "iterations of high-quality reconstruction"
-  int noise_distribution;                // $DEFAULT: DT_NOISE_GAUSSIAN $DESCRIPTION: "type of noise"
+  dt_iop_filmic_noise_distribution_t noise_distribution; // $DEFAULT: DT_NOISE_GAUSSIAN $DESCRIPTION: "type of noise"
   dt_iop_filmicrgb_curve_type_t shadows; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in shadows"
   dt_iop_filmicrgb_curve_type_t highlights; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in highlights"
   gboolean compensate_icc_black; // $DEFAULT: FALSE $DESCRIPTION: "compensate output ICC profile black point"
@@ -347,7 +356,7 @@ int default_group()
 
 int flags()
 {
-  return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING;
+  return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -768,7 +777,7 @@ static inline float linear_saturation(const float x, const float luminance, cons
 }
 
 
-#define MAX_NUM_SCALES 12
+#define MAX_NUM_SCALES 10
 
 
 #ifdef _OPENMP
@@ -1407,6 +1416,25 @@ static inline void restore_ratios(float *const restrict ratios, const float *con
       ratios[4*k + c] = clamp_simd(ratios[4*k + c]) * norms[k];
 }
 
+void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
+                     struct dt_develop_tiling_t *tiling)
+{
+  const int scales = get_scales(roi_in, piece);
+  const int max_filter_radius = (1 << scales);
+
+  // in + out + 2 * tmp + 2 * LF + 2 * temp + ratios
+  tiling->factor = 9.0f;
+  tiling->factor_cl = 9.0f;
+
+  tiling->maxbuf = 1.0f;
+  tiling->maxbuf_cl = 1.0f;
+  tiling->overhead = 0;
+  tiling->overlap = max_filter_radius;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
+  return;
+}
 
 void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const restrict ivoid,
              void *const restrict ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
@@ -1454,14 +1482,14 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
     }
   }
 
-  float *const restrict reconstructed = dt_alloc_align_float(4 * roi_out->width * roi_out->height);
+  float *const restrict reconstructed = dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
   const gboolean run_fast = (piece->pipe->type & DT_DEV_PIXELPIPE_FAST) == DT_DEV_PIXELPIPE_FAST;
 
   // if fast mode is not in use
   if(!run_fast && recover_highlights && mask && reconstructed)
   {
     // init the blown areas with noise to create particles
-    float *const restrict inpainted =  dt_alloc_align_float(4 * roi_out->width * roi_out->height);
+    float *const restrict inpainted =  dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
     inpaint_noise(in, mask, inpainted, data->noise_level / scale, data->reconstruct_threshold, data->noise_distribution,
                   roi_out->width, roi_out->height);
 
@@ -1475,7 +1503,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
     if(data->high_quality_reconstruction > 0 && success_1)
     {
       float *const restrict norms = dt_alloc_align_float((size_t)roi_out->width * roi_out->height);
-      float *const restrict ratios = dt_alloc_align_float(4 * roi_out->width * roi_out->height);
+      float *const restrict ratios = dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
 
       // reconstruct highlights PASS 2 on ratios
       if(norms && ratios)
@@ -2359,7 +2387,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   d->preserve_color = p->preserve_color;
   d->high_quality_reconstruction = p->high_quality_reconstruction;
   d->noise_level = p->noise_level;
-  d->noise_distribution = p->noise_distribution;
+  d->noise_distribution = (dt_noise_distribution_t)p->noise_distribution;
 
   // compute the curves and their LUT
   dt_iop_filmic_rgb_compute_spline(p, &d->spline);
@@ -2418,11 +2446,6 @@ void gui_update(dt_iop_module_t *self)
   g->gui_sizes_inited = FALSE;
 
   // fetch last view in dartablerc
-
-
-  self->color_picker_box[0] = self->color_picker_box[1] = .25f;
-  self->color_picker_box[2] = self->color_picker_box[3] = .50f;
-  self->color_picker_point[0] = self->color_picker_point[1] = 0.5f;
 
   dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
   dt_bauhaus_slider_set_soft(g->grey_point_source, p->grey_point_source);
@@ -3575,7 +3598,7 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
     }
     else if(g->active_button == DT_FILMIC_GUI_BUTTON_LABELS)
     {
-      gtk_widget_set_tooltip_text(GTK_WIDGET(g->area), _("toggle axis labels and values display."));
+      gtk_widget_set_tooltip_text(GTK_WIDGET(g->area), _("toggle axis labels and values display"));
     }
     else if(g->active_button == DT_FILMIC_GUI_BUTTON_TYPE)
     {
@@ -3894,9 +3917,6 @@ void gui_init(dt_iop_module_t *self)
 
   // Noise distribution
   g->noise_distribution = dt_bauhaus_combobox_from_params(self, "noise_distribution");
-  dt_bauhaus_combobox_add(g->noise_distribution, _("uniform"));
-  dt_bauhaus_combobox_add(g->noise_distribution, _("gaussian"));
-  dt_bauhaus_combobox_add(g->noise_distribution, _("poissonian"));
   gtk_widget_set_tooltip_text(g->noise_distribution, _("choose the statistical distribution of noise.\n"
                                                        "this is useful to match natural sensor noise pattern.\n"));
 
@@ -3959,7 +3979,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     if(p->version == DT_FILMIC_COLORSCIENCE_V1)
       dt_bauhaus_widget_set_label(g->saturation, NULL, N_("extreme luminance saturation"));
     else if(p->version == DT_FILMIC_COLORSCIENCE_V2 || p->version == DT_FILMIC_COLORSCIENCE_V3)
-      dt_bauhaus_widget_set_label(g->saturation, NULL, N_("middle tones saturation"));
+      dt_bauhaus_widget_set_label(g->saturation, NULL, N_("mid-tones saturation"));
   }
 
   if(!w || w == g->reconstruct_bloom_vs_details)

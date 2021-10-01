@@ -21,33 +21,53 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
-#define DT_COLORPICKER_SIZE_POINT 0
-#define DT_COLORPICKER_SIZE_BOX 1
+typedef enum dt_lib_colorpicker_size_t
+{
+  DT_LIB_COLORPICKER_SIZE_POINT = 0,
+  DT_LIB_COLORPICKER_SIZE_BOX,
+} dt_lib_colorpicker_size_t;
 
-/** The struct for live color picker samples */
+typedef enum dt_lib_colorpicker_statistic_t
+{
+  DT_LIB_COLORPICKER_STATISTIC_MEAN = 0,
+  DT_LIB_COLORPICKER_STATISTIC_MIN,
+  DT_LIB_COLORPICKER_STATISTIC_MAX,
+  DT_LIB_COLORPICKER_STATISTIC_N // needs to be the last one
+} dt_lib_colorpicker_statistic_t;
+
+typedef dt_aligned_pixel_t lib_colorpicker_sample_statistics[DT_LIB_COLORPICKER_STATISTIC_N];
+
+/** The struct for primary and live color picker samples */
 typedef struct dt_colorpicker_sample_t
 {
   /** The sample area or point */
+  // For the primary sample, these are the current sample area,
+  // whether from colorpicker lib or an iop. They are used for showing
+  // the sample in the center view, and sampling in the pixelpipe.
   float point[2];
   dt_boundingbox_t box;
-  int size;
-  int locked;
+  dt_lib_colorpicker_size_t size;
+  // NOTE: only applies to live samples
+  gboolean locked;
 
   /** The actual picked colors */
-  dt_aligned_pixel_t picked_color_rgb_mean;
-  dt_aligned_pixel_t picked_color_rgb_min;
-  dt_aligned_pixel_t picked_color_rgb_max;
-
-  dt_aligned_pixel_t picked_color_lab_mean;
-  dt_aligned_pixel_t picked_color_lab_min;
-  dt_aligned_pixel_t picked_color_lab_max;
+  // picked color in display profile, as picked from preview pixelpipe
+  lib_colorpicker_sample_statistics display;
+  // picked color converted display profile -> histogram profile
+  lib_colorpicker_sample_statistics scope;
+  // picked color converted display profile -> Lab
+  lib_colorpicker_sample_statistics lab;
+  // in scope profile with current statistic
+  int label_rgb[4];
+  // in display profile with current statistic
+  GdkRGBA swatch;
 
   /** The GUI elements */
   GtkWidget *container;
   GtkWidget *color_patch;
   GtkWidget *output_label;
-  GdkRGBA rgb;
 } dt_colorpicker_sample_t;
+
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

@@ -26,8 +26,9 @@
 #include "develop/imageop.h"
 #include "develop/imageop_gui.h"
 #include "dtgtk/drawingarea.h"
-#include "gui/color_picker_proxy.h"
 #include "gui/accelerators.h"
+#include "gui/color_picker_proxy.h"
+#include "libs/colorpicker.h"
 
 #define DT_GUI_CURVE_EDITOR_INSET DT_PIXEL_APPLY_DPI(5)
 
@@ -775,10 +776,7 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
    * update as rapidly */
   const float mean_picked_color = *self->picked_color;
 
-  if(self->color_picker_point[0] >= 0.0f
-     && self->color_picker_point[1] >= 0.0f
-     && self->picked_color_max[0] >= 0.0f
-     && mean_picked_color != c->last_picked_color)
+  if(mean_picked_color != c->last_picked_color)
   {
     dt_aligned_pixel_t previous_color;
     previous_color[0] = p->levels[channel][0];
@@ -944,13 +942,19 @@ void change_image(struct dt_iop_module_t *self)
   g->button_down = 0;
 }
 
+const dt_action_element_def_t _action_elements_levels[]
+  = { { N_("black"), dt_action_effect_value },
+      { N_("grey" ), dt_action_effect_value },
+      { N_("white"), dt_action_effect_value },
+      { NULL } };
+
 static float _action_process(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
 {
   dt_iop_module_t *self = g_object_get_data(G_OBJECT(target), "iop-instance");
   dt_iop_rgblevels_gui_data_t *c = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
   dt_iop_rgblevels_params_t *p = (dt_iop_rgblevels_params_t *)self->params;
 
-  if(move_size)
+  if(!isnan(move_size))
   {
     float bottop = -1e6;
     switch(effect)
@@ -977,18 +981,16 @@ static float _action_process(gpointer target, dt_action_element_t element, dt_ac
       fprintf(stderr, "[_action_process_tabs] unknown shortcut effect (%d) for levels\n", effect);
       break;
     }
+
+    gchar *text = g_strdup_printf("%s %.2f", _action_elements_levels[element].name, p->levels[c->channel][element]);
+    dt_action_widget_toast(DT_ACTION(self), target, text);
+    g_free(text);
   }
 
   return p->levels[c->channel][element];
 }
 
-const dt_action_element_def_t _action_elements_levels[]
-  = { { N_("black"), dt_action_effect_value },
-      { N_("grey" ), dt_action_effect_value },
-      { N_("white"), dt_action_effect_value },
-      { NULL } };
-
-const dt_action_def_t dt_action_def_levels
+const dt_action_def_t _action_def_levels
   = { N_("levels"),
       _action_process,
       _action_elements_levels };
@@ -1020,7 +1022,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->area), TRUE, TRUE, 0);
 
   g_object_set_data(G_OBJECT(c->area), "iop-instance", self);
-  dt_action_define_iop(self, NULL, N_("levels"), GTK_WIDGET(c->area), &dt_action_def_levels);
+  dt_action_define_iop(self, NULL, N_("levels"), GTK_WIDGET(c->area), &_action_def_levels);
 
   gtk_widget_set_tooltip_text(GTK_WIDGET(c->area),_("drag handles to set black, gray, and white points. "
                                                     "operates on L channel."));

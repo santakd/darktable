@@ -81,12 +81,12 @@ typedef struct midi_device
 
 const char *note_names[] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B", NULL };
 
-gchar *key_to_string(guint key, gboolean display)
+gchar *key_to_string(const guint key, const gboolean display)
 {
   return g_strdup_printf("%s%d", note_names[key % 12], key / 12 - 1);
 }
 
-gboolean string_to_key(gchar *string, guint *key)
+gboolean string_to_key(const gchar *string, guint *key)
 {
   int octave = 0;
   char name[3];
@@ -106,18 +106,43 @@ gboolean string_to_key(gchar *string, guint *key)
   return FALSE;
 }
 
-gchar *move_to_string(guint move, gboolean display)
+gchar *move_to_string(const guint move, const gboolean display)
 {
   return g_strdup_printf("CC%u", move);
 }
 
-gboolean string_to_move(gchar *string, guint *move)
+gboolean string_to_move(const gchar *string, guint *move)
 {
   return sscanf(string, "CC%u", move) == 1;
 }
 
+gboolean key_to_move(dt_lib_module_t *self, const dt_input_device_t id, const guint key, guint *move)
+{
+  for(GSList *devices = self->data; devices; devices = devices->next)
+  {
+    midi_device *midi = devices->data;
+    if(midi->id != id) continue;
+
+    if(midi->is_x_touch_mini)
+    {
+      if(key < 8)
+        *move = key + 1;
+      else if(key >= 24 && key < 32)
+        *move = key - 13;
+      else
+        return FALSE;
+    }
+    else
+    {
+      *move = key;
+    }
+  }
+
+  return TRUE;
+}
+
 const dt_input_driver_definition_t driver_definition
-  = { "midi", key_to_string, string_to_key, move_to_string, string_to_move };
+  = { "midi", key_to_string, string_to_key, move_to_string, string_to_move, key_to_move };
 
 void midi_write(midi_device *midi, gint channel, gint type, gint key, gint velocity)
 {
@@ -276,8 +301,8 @@ void update_with_move(midi_device *midi, PmTimestamp timestamp, gint controller,
 
 static gboolean poll_midi_devices(gpointer user_data)
 {
-  GSList *devices = (GSList *)((dt_lib_module_t *)user_data)->data;
-  while(devices)
+  dt_lib_module_t *self = user_data;
+  for(GSList *devices = self->data; devices; devices = devices->next)
   {
     midi_device *midi = devices->data;
 
@@ -349,8 +374,6 @@ static gboolean poll_midi_devices(gpointer user_data)
         for(int j = 0; (j != midi->first_knob || (j += midi->num_knobs)) && j < 128; j++) midi->last_known[j] = -1;
       }
     }
-
-    devices = devices->next;
   }
 
   return G_SOURCE_CONTINUE;
@@ -368,13 +391,48 @@ void midi_open_devices(dt_lib_module_t *self)
 
   dt_input_device_t id = dt_register_input_driver(self, &driver_definition);
 
-  for(int i = 0; i < Pm_CountDevices() && i < 10; i++)
+  const char *devices_string = dt_conf_get_string_const("plugins/midi/devices");
+  gchar **dev_strings = g_strsplit(devices_string, ",", 0);
+
+  int last_dev = -1;
+
+  for(int i = 0; i < Pm_CountDevices(); i++)
   {
     const PmDeviceInfo *info = Pm_GetDeviceInfo(i);
     dt_print(DT_DEBUG_INPUT, "[midi_open_devices] found midi device '%s' via '%s'\n", info->name, info->interf);
 
     if(info->input && !strstr(info->name, "Midi Through Port"))
     {
+      int dev = -1;
+
+      gchar **cur_dev = dev_strings;
+      for(; cur_dev && *cur_dev; cur_dev++)
+      {
+        if(**cur_dev == '-')
+        {
+          if(strstr(info->name, (*cur_dev) + 1))
+          {
+            dev = 10;
+            break;
+          }
+        }
+        else
+        {
+          dev++;
+
+          if(dev > last_dev) last_dev = dev;
+
+          if(strstr(info->name, *cur_dev))
+          {
+            break;
+          }
+        }
+      }
+
+      if(!cur_dev || !*cur_dev) dev = ++last_dev;
+
+      if(dev >= 10) continue;
+
       PortMidiStream *stream_in;
       PmError error = Pm_OpenInput(&stream_in, i, NULL, EVENT_BUFFER_SIZE, NULL, NULL);
 
@@ -385,12 +443,12 @@ void midi_open_devices(dt_lib_module_t *self)
       }
       else
       {
-        fprintf(stderr, "[midi_open_devices] opened midi device '%s' via '%s'\n", info->name, info->interf);
+        fprintf(stderr, "[midi_open_devices] opened midi device '%s' via '%s' as midi%d\n", info->name, info->interf, dev);
       }
 
       midi_device *midi = (midi_device *)g_malloc0(sizeof(midi_device));
 
-      midi->id          = id++;
+      midi->id          = id + dev;
       midi->info        = info;
       midi->portmidi_in = stream_in;
 
@@ -410,7 +468,7 @@ void midi_open_devices(dt_lib_module_t *self)
       {
         const PmDeviceInfo *infoOutput = Pm_GetDeviceInfo(j);
 
-        if(infoOutput->output && !strcmp(info->name, infoOutput->name))
+        if(!strcmp(info->name, infoOutput->name) && infoOutput->output && !infoOutput->opened)
         {
           Pm_OpenOutput(&midi->portmidi_out, j, NULL, 1000, NULL, NULL, 0);
         }
@@ -419,6 +477,8 @@ void midi_open_devices(dt_lib_module_t *self)
       self->data = g_slist_append(self->data, midi);
     }
   }
+
+  g_strfreev(dev_strings);
 
   if(self->data) g_timeout_add(10, poll_midi_devices, self);
 }
@@ -453,7 +513,7 @@ static gboolean _timeout_midi_update(gpointer user_data)
   {
     midi_device *midi = devices->data;
 
-    for(int i = 0; i < midi->num_knobs; i++) update_with_move(midi, 0, i + midi->first_knob, 0);
+    for(int i = 0; i < midi->num_knobs; i++) update_with_move(midi, 0, i + midi->first_knob, NAN);
 
     for(int i = 0; i < midi->num_keys; i++)
       midi_write(midi, midi->is_x_touch_mini ? 0 : midi->channel, 0x9,

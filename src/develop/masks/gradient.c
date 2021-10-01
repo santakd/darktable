@@ -260,7 +260,7 @@ static void _gradient_init_values(float zoom_scale, dt_masks_form_gui_t *gui, fl
   // in the correct direction as dragged. We test for this by checking the
   // angle between two vectors that should be 90 degrees apart. If the angle
   // is -90 degrees, then the image is flipped.
-  float check_angle = atan2f(pts[7] - pts[1], pts[6] - pts[0]) - atan2(pts[5] - pts[1], pts[4] - pts[0]);
+  float check_angle = atan2f(pts[7] - pts[1], pts[6] - pts[0]) - atan2f(pts[5] - pts[1], pts[4] - pts[0]);
   // Normalize to the range -180 to 180 degrees
   check_angle = atan2f(sinf(check_angle), cosf(check_angle));
   if(check_angle < 0.0f) rot -= M_PI;
@@ -359,7 +359,7 @@ static int _gradient_events_button_released(struct dt_iop_module_t *module, floa
 
     dt_dev_distort_backtransform(darktable.develop, pts2, 4);
 
-    float check_angle = atan2f(pts2[7] - pts2[1], pts2[6] - pts2[0]) - atan2(pts2[5] - pts2[1], pts2[4] - pts2[0]);
+    float check_angle = atan2f(pts2[7] - pts2[1], pts2[6] - pts2[0]) - atan2f(pts2[5] - pts2[1], pts2[4] - pts2[0]);
     // Normalize to the range -180 to 180 degrees
     check_angle = atan2f(sinf(check_angle), cosf(check_angle));
     if (check_angle < 0)
@@ -521,7 +521,7 @@ static int _gradient_events_mouse_moved(struct dt_iop_module_t *module, float pz
     float pts2[8] = { xref, yref, x, y, xref + 10.0f, yref, xref, yref + 10.0f };
     dt_dev_distort_backtransform(darktable.develop, pts2, 4);
 
-    float check_angle = atan2f(pts2[7] - pts2[1], pts2[6] - pts2[0]) - atan2(pts2[5] - pts2[1], pts2[4] - pts2[0]);
+    float check_angle = atan2f(pts2[7] - pts2[1], pts2[6] - pts2[0]) - atan2f(pts2[5] - pts2[1], pts2[4] - pts2[0]);
     // Normalize to the range -180 to 180 degrees
     check_angle = atan2f(sinf(check_angle), cosf(check_angle));
     if(check_angle < 0.0f)
@@ -623,8 +623,6 @@ static int _gradient_get_points(dt_develop_t *dev, float x, float y, float rotat
   const int count = sqrtf(wd * wd + ht * ht) + 3;
   *points = dt_alloc_align_float((size_t)2 * count);
   if(*points == NULL) return 0;
-  memset(*points, 0, sizeof(float) * 2 * count);
-
 
   // we set the anchor point
   (*points)[0] = x * wd;
@@ -1218,20 +1216,19 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   dt_free_align(lut);
 
   // we allocate the buffer
-  *buffer = dt_alloc_align_float((size_t)w * h);
+  float *const bufptr = *buffer = dt_alloc_align_float((size_t)w * h);
   if(*buffer == NULL)
   {
     dt_free_align(points);
     return 0;
   }
-  memset(*buffer, 0, sizeof(float) * w * h);
 
 // we fill the mask buffer by interpolation
 #ifdef _OPENMP
 #if !defined(__SUNOS__) && !defined(__NetBSD__)
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(h, w, gw, grid) \
-  shared(buffer, points) schedule(static)
+  dt_omp_firstprivate(h, w, gw, grid, bufptr) \
+  shared(points) schedule(simd:static)
 #else
 #pragma omp parallel for shared(points, buffer)
 #endif
@@ -1240,14 +1237,17 @@ static int _gradient_get_mask(const dt_iop_module_t *const module, const dt_dev_
   {
     const int jj = j % grid;
     const int mj = j / grid;
+    const int grid_jj = grid - jj;
     for(int i = 0; i < w; i++)
     {
       const int ii = i % grid;
       const int mi = i / grid;
-      (*buffer)[j * w + i] = (points[(mj * gw + mi) * 2] * (grid - ii) * (grid - jj)
-                              + points[(mj * gw + mi + 1) * 2] * ii * (grid - jj)
-                              + points[((mj + 1) * gw + mi) * 2] * (grid - ii) * jj
-                              + points[((mj + 1) * gw + mi + 1) * 2] * ii * jj) / (grid * grid);
+      const int grid_ii = grid - ii;
+      const size_t pt_index = mj * gw + mi;
+      bufptr[j * w + i] = (points[2 * pt_index] * grid_ii * grid_jj
+                           + points[2 * (pt_index + 1)] * ii * grid_jj
+                           + points[2 * (pt_index + gw)] * grid_ii * jj
+                           + points[2 * (pt_index + gw + 1)] * ii * jj) / (grid * grid);
     }
   }
 
@@ -1398,7 +1398,7 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
 #if !defined(__SUNOS__) && !defined(__NetBSD__)
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(h, w, grid, gw) \
-  shared(buffer, points) schedule(static)
+  shared(buffer, points) schedule(simd:static)
 #else
 #pragma omp parallel for shared(points, buffer)
 #endif
@@ -1407,14 +1407,18 @@ static int _gradient_get_mask_roi(const dt_iop_module_t *const module, const dt_
   {
     const int jj = j % grid;
     const int mj = j / grid;
+    const int grid_jj = grid - jj;
     for(int i = 0; i < w; i++)
     {
       const int ii = i % grid;
       const int mi = i / grid;
+      const int grid_ii = grid - ii;
       const size_t mindex = (size_t)mj * gw + mi;
       buffer[(size_t)j * w + i]
-          = (points[mindex * 2] * (grid - ii) * (grid - jj) + points[(mindex + 1) * 2] * ii * (grid - jj)
-             + points[(mindex + gw) * 2] * (grid - ii) * jj + points[(mindex + gw + 1) * 2] * ii * jj)
+          = (points[mindex * 2] * grid_ii * grid_jj
+             + points[(mindex + 1) * 2] * ii * grid_jj
+             + points[(mindex + gw) * 2] * grid_ii * jj
+             + points[(mindex + gw + 1) * 2] * ii * jj)
             / (grid * grid);
     }
   }

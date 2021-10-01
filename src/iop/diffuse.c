@@ -34,6 +34,7 @@
 #include "develop/imageop_math.h"
 #include "develop/noise_generator.h"
 #include "develop/openmp_maths.h"
+#include "develop/tiling.h"
 #include "dtgtk/button.h"
 #include "dtgtk/drawingarea.h"
 #include "dtgtk/expander.h"
@@ -48,7 +49,7 @@
 
 DT_MODULE_INTROSPECTION(2, dt_iop_diffuse_params_t)
 
-#define MAX_NUM_SCALES 12
+#define MAX_NUM_SCALES 10
 typedef struct dt_iop_diffuse_params_t
 {
   // global parameters
@@ -149,7 +150,7 @@ int default_group()
 
 int flags()
 {
-  return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING;
+  return IOP_FLAGS_INCLUDE_IN_STYLES | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -467,6 +468,31 @@ static inline unsigned int num_steps_to_reach_equivalent_sigma(const float sigma
     radius = sqrtf(sqf(radius) + sqf((float)(1 << s) * sigma_filter));
   }
   return s + 1;
+}
+
+void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
+                     struct dt_develop_tiling_t *tiling)
+{
+  dt_iop_diffuse_data_t *data = (dt_iop_diffuse_data_t *)piece->data;
+
+  const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
+  const float final_radius = (data->radius + data->radius_center) * 2.f / scale;
+  const int diffusion_scales = num_steps_to_reach_equivalent_sigma(B_SPLINE_SIGMA, final_radius);
+  const int scales = CLAMP(diffusion_scales, 1, MAX_NUM_SCALES);
+  const int max_filter_radius = (1 << scales);
+
+  // in + out + 2 * tmp + 2 * LF + s details + grey mask
+  tiling->factor = 6.25f + scales;
+  tiling->factor_cl = 6.25f + scales;
+
+  tiling->maxbuf = 1.0f;
+  tiling->maxbuf_cl = 1.0f;
+  tiling->overhead = 0;
+  tiling->overlap = max_filter_radius;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
+  return;
 }
 
 static inline void init_reconstruct(float *const restrict reconstructed, const size_t width, const size_t height)
@@ -991,7 +1017,7 @@ static inline void inpaint_mask(float *const restrict inpainted, const float *co
       const uint32_t i = k / width;
       const uint32_t j = k - i;
       uint32_t DT_ALIGNED_ARRAY state[4]
-          = { splitmix32(j + 1), splitmix32((j + 1) * (i + 3)),
+          = { splitmix32(j + 1), splitmix32((uint64_t)(j + 1) * (i + 3)),
               splitmix32(1337), splitmix32(666) };
       xoshiro128plus(state);
       xoshiro128plus(state);
@@ -1020,13 +1046,13 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   float *restrict in = DT_IS_ALIGNED((float *const restrict)ivoid);
   float *const restrict out = DT_IS_ALIGNED((float *const restrict)ovoid);
 
-  float *const restrict temp1 = dt_alloc_align_float(roi_out->width * roi_out->height * 4);
-  float *const restrict temp2 = dt_alloc_align_float(roi_out->width * roi_out->height * 4);
+  float *const restrict temp1 = dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
+  float *const restrict temp2 = dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
 
   float *restrict temp_in = NULL;
   float *restrict temp_out = NULL;
 
-  uint8_t *const restrict mask = dt_alloc_align(64, roi_out->width * roi_out->height * sizeof(uint8_t));
+  uint8_t *const restrict mask = dt_alloc_align(64, sizeof(uint8_t) * roi_out->width * roi_out->height);
 
   const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / scale;
@@ -1481,7 +1507,7 @@ void gui_init(struct dt_iop_module_t *self)
                                            "negative values sharpen.\n"
                                            "zero does nothing."));
 
-  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_section_label_new(_("diffusion directionnality")), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_section_label_new(_("diffusion directionality")), FALSE, FALSE, 0);
 
   g->anisotropy_first = dt_bauhaus_slider_from_params(self, "anisotropy_first");
   dt_bauhaus_slider_set_digits(g->anisotropy_first, 4);

@@ -37,8 +37,6 @@ static gboolean on_match_select(GtkEntryCompletion *widget, GtkTreeModel *model,
   gchar *s = gtk_editable_get_chars(e, 0, -1);
   gint cur_pos = gtk_editable_get_position(e);
   gint p = cur_pos;
-  gchar *end;
-  gint del_end_pos = -1;
 
   GValue value = {
     0,
@@ -54,22 +52,11 @@ static gboolean on_match_select(GtkEntryCompletion *widget, GtkTreeModel *model,
     }
   }
 
-  end = s + cur_pos;
-
-  if(end)
-  {
-    del_end_pos = end - s + 1;
-  }
-  else
-  {
-    del_end_pos = cur_pos;
-  }
-
   size_t text_len = strlen(varname) + 2;
   gchar *addtext = (gchar *)g_malloc(text_len);
   snprintf(addtext, text_len, "%s)", varname);
 
-  gtk_editable_delete_text(e, p, del_end_pos);
+  gtk_editable_delete_text(e, p, cur_pos);
   gtk_editable_insert_text(e, addtext, -1, &p);
   gtk_editable_set_position(e, p);
   g_value_unset(&value);
@@ -192,6 +179,14 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "SEQUENCE", N_("$(SEQUENCE) - sequence number") },
           { "MAX_WIDTH", N_("$(MAX_WIDTH) - maximum image export width") },
           { "MAX_HEIGHT", N_("$(MAX_HEIGHT) - maximum image export height") },
+          { "SENSOR_WIDTH", N_("$(SENSOR_WIDTH) - image sensor width") },
+          { "SENSOR_HEIGHT", N_("$(SENSOR_HEIGHT) - image sensor height") },
+          { "RAW_WIDTH", N_("$(RAW_WIDTH) - RAW image width") },
+          { "RAW_HEIGHT", N_("$(RAW_HEIGHT) - RAW image height") },
+          { "CROP_WIDTH", N_("$(CROP_WIDTH) - image width after crop") },
+          { "CROP_HEIGHT", N_("$(CROP_HEIGHT) - image height after crop") },
+          { "EXPORT_WIDTH", N_("$(EXPORT_WIDTH) - exported image width") },
+          { "EXPORT_HEIGHT", N_("$(EXPORT_HEIGHT) - exported image height") },
           { "YEAR", N_("$(YEAR) - year") },
           { "MONTH", N_("$(MONTH) - month") },
           { "DAY", N_("$(DAY) - day") },

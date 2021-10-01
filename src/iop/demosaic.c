@@ -2963,6 +2963,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const int qual_flags = demosaic_qual_flags(piece, img, roi_out);
   int demosaicing_method = data->demosaicing_method;
+  // There might be a module in the pipeline that wants the output displayed as a mask (highlights reconstruction in recovery mode)
+  // for that case we pass as monochrome 
+  if(piece->pipe->mask_display == DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU)
+    demosaicing_method = DT_IOP_DEMOSAIC_PASSTHROUGH_MONOCHROME;
+
   if((qual_flags & DEMOSAIC_MEDIUM_QUAL)
   // only overwrite setting if quality << requested and in dr mode and not a special method
   && (demosaicing_method != DT_IOP_DEMOSAIC_PASSTHROUGH_MONOCHROME)
@@ -3479,21 +3484,21 @@ static int process_rcd_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
     dt_opencl_release_mem_object(dev_tmp);
     dev_tmp = NULL;
 
-    cfa = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    cfa = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(cfa == NULL) goto error;
-    VH_dir = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    VH_dir = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(VH_dir == NULL) goto error;
-    PQ_dir = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    PQ_dir = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(PQ_dir == NULL) goto error;
-    VP_diff = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    VP_diff = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(VP_diff == NULL) goto error;
-    HQ_diff = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    HQ_diff = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(HQ_diff == NULL) goto error;
-    rgb0 = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    rgb0 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(rgb0 == NULL) goto error;
-    rgb1 = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    rgb1 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(rgb1 == NULL) goto error;
-    rgb2 = dt_opencl_alloc_device_buffer(devid, roi_in->width * roi_in->height * sizeof(float));
+    rgb2 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * roi_in->width * roi_in->height);
     if(rgb2 == NULL) goto error;
 
     {
@@ -3708,7 +3713,7 @@ error:
 
 static int process_default_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
                               cl_mem dev_out, const dt_iop_roi_t *const roi_in,
-                              const dt_iop_roi_t *const roi_out)
+                              const dt_iop_roi_t *const roi_out, const int demosaicing_method)
 {
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
   dt_iop_demosaic_global_data_t *gd = (dt_iop_demosaic_global_data_t *)self->global_data;
@@ -3716,14 +3721,12 @@ static int process_default_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
 
   const int devid = piece->pipe->devid;
   const int qual_flags = demosaic_qual_flags(piece, img, roi_out);
-  const int demosaicing_method = data->demosaicing_method;
 
   cl_mem dev_aux = NULL;
   cl_mem dev_tmp = NULL;
   cl_mem dev_med = NULL;
   cl_mem dev_green_eq = NULL;
   cl_int err = -999;
-
 
   if(qual_flags & DEMOSAIC_FULL_SCALE)
   {
@@ -5121,7 +5124,13 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_dev_clear_rawdetail_mask(piece->pipe);
 
   dt_iop_demosaic_data_t *data = (dt_iop_demosaic_data_t *)piece->data;
-  const int demosaicing_method = data->demosaicing_method;
+
+  int demosaicing_method = data->demosaicing_method;
+  // There might be a module in the pipeline that wants the output displayed as a mask (highlights reconstruction in recovery mode)
+  // for that case we pass as monochrome 
+  if(piece->pipe->mask_display == DT_DEV_PIXELPIPE_DISPLAY_PASSTHRU)
+    demosaicing_method = DT_IOP_DEMOSAIC_PASSTHROUGH_MONOCHROME;
+
   const int qual_flags = demosaic_qual_flags(piece, &self->dev->image_storage, roi_out);
   cl_mem high_image = NULL;
   cl_mem low_image = NULL;
@@ -5136,7 +5145,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   if(demosaicing_method == DT_IOP_DEMOSAIC_PASSTHROUGH_MONOCHROME || demosaicing_method == DT_IOP_DEMOSAIC_PPG)
   {
-    if(!process_default_cl(self, piece, dev_in, dev_out, roi_in, roi_out)) return FALSE;
+    if(!process_default_cl(self, piece, dev_in, dev_out, roi_in, roi_out, demosaicing_method)) return FALSE;
   }
   else if((demosaicing_method & ~DEMOSAIC_DUAL) == DT_IOP_DEMOSAIC_RCD)
   {
@@ -5212,8 +5221,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     dev_aux = dev_out;
 
   // here we have work to be done only for dual demosaicers
-  blend = dt_opencl_alloc_device_buffer(devid, width * height * sizeof(float));
-  details = dt_opencl_alloc_device_buffer(devid, width * height * sizeof(float));
+  blend = dt_opencl_alloc_device_buffer(devid, sizeof(float) * width * height);
+  details = dt_opencl_alloc_device_buffer(devid, sizeof(float) * width * height);
   low_image = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
   if((blend == NULL) || (low_image == NULL) || (details == NULL)) goto finish;
 
@@ -5723,16 +5732,29 @@ void gui_update(struct dt_iop_module_t *self)
   gtk_stack_set_visible_child_name(GTK_STACK(self->widget), self->default_enabled ? "raw" : "non_raw");
 }
 
-static void show_mask_callback(GtkWidget *slider, gpointer user_data)
+static void show_mask_callback(GtkWidget *togglebutton, dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   if(darktable.gui->reset) return;
+  dt_iop_request_focus(self);
+
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->off), TRUE);
   dt_iop_demosaic_gui_data_t *g = (dt_iop_demosaic_gui_data_t *)self->gui_data;
+
   g->show_mask = !(g->show_mask);
   dt_bauhaus_widget_set_quad_active(g->dual_mask, g->show_mask);
-  dt_bauhaus_widget_set_quad_toggle(g->dual_mask, g->show_mask);
   dt_dev_reprocess_center(self->dev);
+}
+
+void gui_focus(struct dt_iop_module_t *self, gboolean in)
+{
+  dt_iop_demosaic_gui_data_t *g = (dt_iop_demosaic_gui_data_t *)self->gui_data;
+  if(!in)
+  {
+    const gboolean was_mask = g->show_mask;
+    g->show_mask = FALSE;  
+    dt_bauhaus_widget_set_quad_active(GTK_WIDGET(g->dual_mask), FALSE);
+    if(was_mask) dt_dev_reprocess_center(self->dev);
+  }
 }
 
 void gui_init(struct dt_iop_module_t *self)
@@ -5753,13 +5775,13 @@ void gui_init(struct dt_iop_module_t *self)
   g->median_thrs = dt_bauhaus_slider_from_params(self, "median_thrs");
   dt_bauhaus_slider_set_step(g->median_thrs, 0.001);
   dt_bauhaus_slider_set_digits(g->median_thrs, 3);
-  gtk_widget_set_tooltip_text(g->median_thrs, _("threshold for edge-aware median.\nset to 0.0 to switch off.\n"
-                                                "set to 1.0 to ignore edges."));
+  gtk_widget_set_tooltip_text(g->median_thrs, _("threshold for edge-aware median.\nset to 0.0 to switch off\n"
+                                                "set to 1.0 to ignore edges"));
   g->dual_thrs = dt_bauhaus_slider_from_params(self, "dual_thrs");
   dt_bauhaus_slider_set_step(g->dual_thrs, 0.01);
   dt_bauhaus_slider_set_digits(g->dual_thrs, 2);
-  gtk_widget_set_tooltip_text(g->dual_thrs, _("contrast threshold for dual demosaic.\nset to 0.0 for high frequency content.\n"
-                                                "set to 1.0 for flat content."));
+  gtk_widget_set_tooltip_text(g->dual_thrs, _("contrast threshold for dual demosaic.\nset to 0.0 for high frequency content\n"
+                                                "set to 1.0 for flat content"));
   g->dual_mask = dt_bauhaus_combobox_new(self);
   dt_bauhaus_widget_set_label(g->dual_mask, NULL, N_("display blending mask"));
   dt_bauhaus_widget_set_quad_paint(g->dual_mask, dtgtk_cairo_paint_showmask, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
@@ -5768,7 +5790,7 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), g->dual_mask, FALSE, FALSE, 0);
 
   g->lmmse_refine = dt_bauhaus_combobox_from_params(self, "lmmse_refine");
-  gtk_widget_set_tooltip_text(g->lmmse_refine, _("LMMSE refinement steps. the median steps average the output,\nrefine adds some recalculation of red & blue channels."));
+  gtk_widget_set_tooltip_text(g->lmmse_refine, _("LMMSE refinement steps. the median steps average the output,\nrefine adds some recalculation of red & blue channels"));
 
   g->color_smoothing = dt_bauhaus_combobox_from_params(self, "color_smoothing");
   gtk_widget_set_tooltip_text(g->color_smoothing, _("how many color smoothing median steps after demosaicing"));

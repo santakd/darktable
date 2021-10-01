@@ -844,9 +844,6 @@ static void _tree_cell_edited(GtkCellRendererText *cell, gchar *path_string, gch
 
   g_strlcpy(form->name, text, sizeof(form->name));
   dt_dev_add_masks_history_item(darktable.develop, NULL, FALSE);
-
-  // and we update the cell text
-  _set_iter_name(lm, form, 0, 1.0f, model, &iter);
 }
 
 static void _tree_selection_change(GtkTreeSelection *selection, dt_lib_masks_t *self)
@@ -1174,11 +1171,7 @@ static int _tree_button_pressed(GtkWidget *treeview, GdkEventButton *event, dt_l
 
     gtk_widget_show_all(GTK_WIDGET(menu));
 
-#if GTK_CHECK_VERSION(3, 22, 0)
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
-#else
-    gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL, 0, gdk_event_get_time((GdkEvent *)event));
-#endif
 
     return 1;
   }

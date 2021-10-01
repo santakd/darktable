@@ -143,6 +143,10 @@
 @define-color thumbnail_hover_bg_color @grey_85;
 @define-color thumbnail_hover_fg_color @grey_90;
 @define-color filmstrip_bg_color @darkroom_bg_color;
+@define-color timeline_bg_color shade(@filmstrip_bg_color, 0.9);
+@define-color timeline_fg_color @text_color;
+@define-color timeline_text_bg_color alpha(black, .8);
+@define-color timeline_text_fg_color alpha(white, .9);
 @define-color thumbnail_localcopy_color @grey_75;
 
 /* Brushes */
@@ -610,7 +614,17 @@ spinbutton>button
 /* Set duplicate module space in darkroom */
 #left .duplicate-ui .text-button
 {
-  margin-top: 0.28em;
+  margin-top: 0.5em;
+}
+
+#left .duplicate-ui grid > label
+{
+  margin-top: 1em;
+}
+
+#left .duplicate-ui entry
+{
+  margin: 1.25em 0 1.25em 0.5em;
 }
 
 /* Set modules name header */
@@ -692,6 +706,16 @@ spinbutton>button
 #search-box label
 {
   margin-right: 0.5em;
+}
+
+.search image.left
+{
+  padding: 0 0.35em 0 0.21em;
+}
+
+#filter-box
+{
+  min-width: 50em;
 }
 
 /*-------------------
@@ -989,6 +1013,11 @@ popover separator
   background-color: @selected_bg_color;
 }
 
+combobox separator
+{
+  min-height: 0.07em;
+}
+
 /*----------------------
   - GTK Notebooks tabs -
   ----------------------*/
@@ -1260,22 +1289,37 @@ dialog scrollbar
   padding: 0 0.14em;
 }
 
-/* Set buttons and search field on presets and shortcuts control buttons */
+/* Set buttons and search field on presets and shortcuts control buttons ; first on shortcuts options to be sure things remains consistent between shortcuts views in preferences window and in standalone shortcuts one */
+#shortcut_controls
+{
+  margin: 0.35em 0 1.05em 0;
+}
+
+#shortcut_controls .search
+{
+  margin-right: 0.35em;
+}
+
+#preset_controls entry,
+#shortcut_controls entry
+{
+  min-width: 15em;
+}
+
+#shortcut_controls button
+{
+  margin-left: 0.21em;
+}
+
 #preferences_box #shortcut_controls,
 #preferences_box #preset_controls
 {
   margin: 0.35em 1.05em 1.05em 1.05em;
 }
 
-#preferences_box #shortcut_controls
-{
-  margin-left: 0.35em;
-}
-
-#preferences_box #shortcut_controls button,
 #preferences_box #preset_controls button
 {
-margin: 0 0.14em;
+  margin-right: 0.21em;
 }
 
 /*--------------------------------
@@ -2153,8 +2197,10 @@ Details :
     state = :active    if the thumb correspond to one of the images worked on (filmstrip)
     state = :hover     if the mouse hover the widget
     class = .dt_group_left / .dt_group_right / .dt_group_top / .dt_group_bottom  if we need to draw group borders around thumb
+    class = .dt_thumbnail_rating_[0-6]   rating value of the image (6==rejected)
   #thumb_image
     only the borders are drawn - background is ignored
+    color transparency is used to draw the image
   all icons inside the widget
     class = .dt_thumb_btn
     state = :hover : the mouse is hovering the icon
@@ -2239,7 +2285,7 @@ Details :
 }
 
 /* Set top margin on active image in filmstrip */
-#thumb_main:active #thumb_back
+#thumbtable_filmstrip #thumb_main:active #thumb_back
 {
   border-top: 0.105em solid @border_color;
 }
@@ -2472,6 +2518,41 @@ Details :
 .dt_overlays_hover_block #thumb_main:hover #thumb_audio:hover
 {
   color: @thumbnail_fg_color;
+}
+
+/* Set rejected images */
+.dt_thumbnail_rating_6 #thumb_image
+{
+  color: rgba(0,0,0,0.35); /* only the transparency is used to fade the image drawing */
+}
+
+.dt_overlays_hover .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_hover_extended .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_hover_extended .dt_thumbnail_rating_6#thumb_main:hover #thumb_bottom_label,
+.dt_overlays_always .dt_thumbnail_rating_6 #thumb_ext,
+.dt_overlays_always .dt_thumbnail_rating_6 #thumb_altered,
+.dt_overlays_always .dt_thumbnail_rating_6#thumb_main:hover #thumb_ext,
+.dt_overlays_always .dt_thumbnail_rating_6#thumb_main:hover #thumb_altered,
+.dt_overlays_always .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_always_extended .dt_thumbnail_rating_6 #thumb_ext,
+.dt_overlays_always_extended .dt_thumbnail_rating_6 #thumb_altered,
+.dt_overlays_always_extended .dt_thumbnail_rating_6 #thumb_bottom_label,
+.dt_overlays_always_extended .dt_thumbnail_rating_6#thumb_main:hover #thumb_ext,
+.dt_overlays_always_extended .dt_thumbnail_rating_6#thumb_main:hover #thumb_altered,
+.dt_overlays_always_extended .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_always_extended .dt_thumbnail_rating_6#thumb_main:hover #thumb_bottom_label,
+.dt_overlays_mixed .dt_thumbnail_rating_6 #thumb_ext,
+.dt_overlays_mixed .dt_thumbnail_rating_6 #thumb_altered,
+.dt_overlays_mixed .dt_thumbnail_rating_6#thumb_main:hover #thumb_ext,
+.dt_overlays_mixed .dt_thumbnail_rating_6#thumb_main:hover #thumb_altered,
+.dt_overlays_mixed .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_mixed .dt_thumbnail_rating_6#thumb_main:hover #thumb_bottom_label,
+.dt_overlays_hover_block .dt_thumbnail_rating_6#thumb_main:hover #thumb_ext,
+.dt_overlays_hover_block .dt_thumbnail_rating_6#thumb_main:hover #thumb_altered,
+.dt_overlays_hover_block .dt_thumbnail_rating_6#thumb_main:hover .dt_thumb_btn,
+.dt_overlays_hover_block .dt_thumbnail_rating_6#thumb_main:hover #thumb_bottom_label
+{
+  color: rgba(0,0,0,0.25); /* only the transparency is used to fade the image drawing */
 }
 
 /* Set local copy mark */

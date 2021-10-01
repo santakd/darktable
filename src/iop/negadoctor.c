@@ -974,7 +974,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_set_digits(g->soft_clip, 4);
   dt_bauhaus_slider_set_format(g->soft_clip, "%.2f %%");
   gtk_widget_set_tooltip_text(g->soft_clip, _("gradually compress specular highlights past this value\n"
-                                              "to avoid clipping while pushing the exposure for midtones.\n"
+                                              "to avoid clipping while pushing the exposure for mid-tones.\n"
                                               "this somewhat reproduces the behaviour of matte paper."));
 
   gtk_box_pack_start(GTK_BOX(page3), dt_ui_section_label_new(_("virtual print emulation")), FALSE, FALSE, 0);
@@ -1041,10 +1041,6 @@ void gui_update(dt_iop_module_t *const self)
   const dt_iop_negadoctor_params_t *const p = (dt_iop_negadoctor_params_t *)self->params;
 
   dt_iop_color_picker_reset(self, TRUE);
-
-  self->color_picker_box[0] = self->color_picker_box[1] = .10f;
-  self->color_picker_box[2] = self->color_picker_box[3] = .50f;
-  self->color_picker_point[0] = self->color_picker_point[1] = 0.5f;
 
   dt_bauhaus_combobox_set(g->film_stock, p->film_stock);
 

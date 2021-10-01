@@ -82,6 +82,10 @@ typedef enum dt_gui_color_t
   DT_GUI_COLOR_THUMBNAIL_BORDER,
   DT_GUI_COLOR_THUMBNAIL_SELECTED_BORDER,
   DT_GUI_COLOR_FILMSTRIP_BG,
+  DT_GUI_COLOR_TIMELINE_BG,
+  DT_GUI_COLOR_TIMELINE_FG,
+  DT_GUI_COLOR_TIMELINE_TEXT_BG,
+  DT_GUI_COLOR_TIMELINE_TEXT_FG,
   DT_GUI_COLOR_CULLING_SELECTED_BORDER,
   DT_GUI_COLOR_CULLING_FILMSTRIP_SELECTED_BORDER,
   DT_GUI_COLOR_PREVIEW_HOVER_BORDER,
@@ -215,11 +219,6 @@ gboolean dt_gui_get_scroll_delta(const GdkEventScroll *event, gdouble *delta);
  * Effectively makes smooth scroll events act like old-style unit
  * scroll events. */
 gboolean dt_gui_get_scroll_unit_delta(const GdkEventScroll *event, int *delta);
-
-/** block any keyaccelerators when widget have focus, block is released when widget lose focus. */
-void dt_gui_key_accel_block_on_focus_connect(GtkWidget *w);
-/** clean up connected signal handlers before destroying your widget: */
-void dt_gui_key_accel_block_on_focus_disconnect(GtkWidget *w);
 
 /*
  * new ui api
@@ -438,7 +437,14 @@ void dt_gui_container_remove_children(GtkContainer *container);
 void dt_gui_container_destroy_children(GtkContainer *container);
 
 void dt_gui_menu_popup(GtkMenu *menu, GtkWidget *button, GdkGravity widget_anchor, GdkGravity menu_anchor);
+
 void dt_gui_draw_rounded_rectangle(cairo_t *cr, float width, float height, float x, float y);
+
+// event handler for "key-press-event" of GtkTreeView to decide if focus switches to GtkSearchEntry
+gboolean dt_gui_search_start(GtkWidget *widget, GdkEventKey *event, GtkSearchEntry *entry);
+
+// event handler for "stop-search" of GtkSearchEntry
+void dt_gui_search_stop(GtkSearchEntry *entry, GtkWidget *widget);
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

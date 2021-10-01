@@ -127,11 +127,13 @@ typedef unsigned int u_int;
 /* Create cloned functions for various CPU SSE generations */
 /* See for instructions https://hannes.hauswedell.net/post/2017/12/09/fmv/ */
 /* TL;DR : use only on SIMD functions containing low-level paralellized/vectorized loops */
-#if __has_attribute(target_clones) && !defined(_WIN32) && (defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64))
+#if __has_attribute(target_clones) && !defined(_WIN32) && !defined(NATIVE_ARCH)
+# if defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
 #define __DT_CLONE_TARGETS__ __attribute__((target_clones("default", "sse2", "sse3", "sse4.1", "sse4.2", "popcnt", "avx", "avx2", "avx512f", "fma4")))
-#elif __has_attribute(target_clones) && !defined(_WIN32) && defined(__PPC64__)
+# elif defined(__PPC64__)
 /* __PPC64__ is the only macro tested for in is_supported_platform.h, other macros would fail there anyway. */
 #define __DT_CLONE_TARGETS__ __attribute__((target_clones("default","cpu=power9")))
+# endif
 #else
 #define __DT_CLONE_TARGETS__
 #endif
@@ -153,7 +155,7 @@ typedef unsigned int u_int;
 // version of current performance configuration version
 // if you want to run an updated version of the performance configuration later
 // bump this number and make sure you have an updated logic in dt_configure_performance()
-#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 1
+#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 2
 
 // every module has to define this:
 #ifdef _DEBUG
@@ -349,6 +351,12 @@ static inline float *dt_alloc_align_float(size_t pixels)
 {
   return (float*)__builtin_assume_aligned(dt_alloc_align(64, pixels * sizeof(float)), 64);
 }
+static inline float *dt_calloc_align_float(size_t pixels)
+{
+  float *const buf = (float*)dt_alloc_align(64, pixels * sizeof(float));
+  if(buf) memset(buf, 0, pixels * sizeof(float));
+  return (float*)__builtin_assume_aligned(buf, 64);
+}
 size_t dt_round_size(const size_t size, const size_t alignment);
 size_t dt_round_size_sse(const size_t size);
 
@@ -393,13 +401,15 @@ static inline void dt_unlock_image_pair(int32_t imgid1, int32_t imgid2) RELEASE(
   dt_pthread_mutex_unlock(&(darktable.db_image[imgid2 & (DT_IMAGE_DBLOCKS-1)]));
 }
 
+extern GdkModifierType dt_modifier_shortcuts;
+
 // check whether the specified mask of modifier keys exactly matches, among the set Shift+Control+(Alt/Meta).
 // ignores the state of any other shifting keys
 static inline gboolean dt_modifier_is(const GdkModifierType state, const GdkModifierType desired_modifier_mask)
 {
   const GdkModifierType modifiers = gtk_accelerator_get_default_mod_mask();
 //TODO: on Macs, remap the GDK_CONTROL_MASK bit in desired_modifier_mask to be the bit for the Cmd key
-  return (state & modifiers) == desired_modifier_mask;
+  return ((state | dt_modifier_shortcuts) & modifiers) == desired_modifier_mask;
 }
 
 // check whether the given modifier state includes AT LEAST the specified mask of modifier keys
@@ -408,7 +418,7 @@ static inline gboolean dt_modifiers_include(const GdkModifierType state, const G
 //TODO: on Macs, remap the GDK_CONTROL_MASK bit in desired_modifier_mask to be the bit for the Cmd key
   const GdkModifierType modifiers = gtk_accelerator_get_default_mod_mask();
   // check whether all modifier bits of interest are turned on
-  return (state & (modifiers & desired_modifier_mask)) == desired_modifier_mask;
+  return ((state | dt_modifier_shortcuts) & (modifiers & desired_modifier_mask)) == desired_modifier_mask;
 }
 
 
@@ -526,42 +536,6 @@ static inline float *dt_calloc_perthread_float(const size_t n, size_t* padded_si
 // For some combinations of compiler and architecture, the compiler may actually emit inferior code if given
 // a hint to vectorize a loop.  Uncomment the following line if such a combination is the compilation target.
 //#define DT_NO_SIMD_HINTS
-
-// To be able to vectorize per-pixel loops, we need to operate on all four channels, but if the compiler does
-// not auto-vectorize, doing so increases computation by 1/3 for a channel which typically is ignored anyway.
-// Select the appropriate number of channels over which to loop to produce the fastest code.
-#ifdef DT_NO_VECTORIZATION
-#define DT_PIXEL_SIMD_CHANNELS 3
-#else
-#define DT_PIXEL_SIMD_CHANNELS 4
-#endif
-
-// A macro which gives us a configurable shorthand to produce the optimal performance when processing all of the
-// channels in a pixel.  Its first argument is the name of the variable to be used inside the 'for' loop it creates,
-// while the optional second argument is a set of OpenMP directives, typically specifying variable alignment.
-// If indexing off of the begining of any buffer allocated with dt's image or aligned allocation functions, the
-// alignment to specify is 64; otherwise, use 16, as there may have been an odd number of pixels from the start.
-// Sample usage:
-//         for_each_channel(k,aligned(src,dest:16))
-//         {
-//           src[k] = dest[k] / 3.0f;
-//         }
-#if defined(_OPENMP) && defined(OPENMP_SIMD_) && !defined(DT_NO_SIMD_HINTS)
-//https://stackoverflow.com/questions/45762357/how-to-concatenate-strings-in-the-arguments-of-pragma
-#define _DT_Pragma_(x) _Pragma(#x)
-#define _DT_Pragma(x) _DT_Pragma_(x)
-#define for_each_channel(_var, ...) \
-  _DT_Pragma(omp simd __VA_ARGS__) \
-  for (size_t _var = 0; _var < DT_PIXEL_SIMD_CHANNELS; _var++)
-#define for_four_channels(_var, ...) \
-  _DT_Pragma(omp simd __VA_ARGS__) \
-  for (size_t _var = 0; _var < 4; _var++)
-#else
-#define for_each_channel(_var, ...) \
-  for (size_t _var = 0; _var < DT_PIXEL_SIMD_CHANNELS; _var++)
-#define for_four_channels(_var, ...) \
-  for (size_t _var = 0; _var < 4; _var++)
-#endif
 
 // copy the RGB channels of a pixel using nontemporal stores if possible; includes the 'alpha' channel as well
 // if faster due to vectorization, but subsequent code should ignore the value of the alpha unless explicitly

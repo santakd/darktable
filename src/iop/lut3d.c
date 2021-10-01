@@ -1547,14 +1547,14 @@ static void button_clicked(GtkWidget *widget, dt_iop_module_t *self)
   if (strlen(lutfolder) == 0)
   {
     fprintf(stderr, "[lut3d] Lut root folder not defined\n");
-    dt_control_log(_("Lut root folder not defined"));
+    dt_control_log(_("lut root folder not defined"));
     g_free(lutfolder);
     return;
   }
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
-  GtkWidget *filechooser = gtk_file_chooser_dialog_new(
-      _("select lut file"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_OPEN, _("_cancel"), GTK_RESPONSE_CANCEL,
-      _("_select"), GTK_RESPONSE_ACCEPT, (char *)NULL);
+  GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
+        _("select lut file"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_OPEN,
+        _("_select"), _("_cancel"));
   gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(filechooser), FALSE);
 
   char *composed = g_build_filename(lutfolder, p->filepath, NULL);
@@ -1588,7 +1588,7 @@ static void button_clicked(GtkWidget *widget, dt_iop_module_t *self)
   gtk_file_filter_set_name(filter, _("all files"));
   gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(filechooser), filter);
 
-  if(gtk_dialog_run(GTK_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(filechooser)) == GTK_RESPONSE_ACCEPT)
   {
     gchar *filepath = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
     if (strcmp(lutfolder, filepath) < 0)
@@ -1599,14 +1599,14 @@ static void button_clicked(GtkWidget *widget, dt_iop_module_t *self)
     }
     else if (!filepath[0])// file chosen outside of root folder
     {
-      fprintf(stderr, "[lut3d] Select file outside Lut root folder is not allowed\n");
-      dt_control_log(_("Select file outside Lut root folder is not allowed"));
+      fprintf(stderr, "[lut3d] select file outside Lut root folder is not allowed\n");
+      dt_control_log(_("select file outside Lut root folder is not allowed"));
     }
     g_free(filepath);
     gtk_widget_set_sensitive(g->filepath, p->filepath[0]);
   }
   g_free(lutfolder);
-  gtk_widget_destroy(filechooser);
+  g_object_unref(filechooser);
 }
 
 static void _show_hide_colorspace(dt_iop_module_t *self)
@@ -1675,7 +1675,7 @@ void gui_init(dt_iop_module_t *self)
 #ifdef HAVE_GMIC
   gtk_widget_set_tooltip_text(button, _("select a png (haldclut)"
       ", a cube, a 3dl or a gmz (compressed lut) file "
-      "CAUTION: 3D lut folder must be set in preferences/core options/miscellaneous before choosing the lut file"));
+      "CAUTION: 3D lut folder must be set in preferences/processing before choosing the lut file"));
 #else
   gtk_widget_set_tooltip_text(button, _("select a png (haldclut)"
       ", a cube or a 3dl file "
@@ -1705,7 +1705,6 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start((GtkBox *)self->widget,entry, TRUE, TRUE, 0);
   gtk_widget_add_events(entry, GDK_KEY_RELEASE_MASK);
   g_signal_connect(G_OBJECT(entry), "changed", G_CALLBACK(entry_callback), self);
-  dt_gui_key_accel_block_on_focus_connect(entry);
   g->lutentry = entry;
   // treeview
   GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
@@ -1747,10 +1746,6 @@ void gui_init(dt_iop_module_t *self)
 
 void gui_cleanup(dt_iop_module_t *self)
 {
-#ifdef HAVE_GMIC
-  dt_iop_lut3d_gui_data_t *g = (dt_iop_lut3d_gui_data_t *)self->gui_data;
-  dt_gui_key_accel_block_on_focus_disconnect(g->lutentry);
-#endif // HAVE_GMIC
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(module_moved_callback), self);
 
   IOP_GUI_FREE;

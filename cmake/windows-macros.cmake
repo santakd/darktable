@@ -27,6 +27,23 @@ macro(_detach_debuginfo target dest)
     set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES $<TARGET_FILE_NAME:${target}>.dbg)
 endmacro()
 
+
+#-------------------------------------------------------------------------------
+# _copy_required_library(<target> <library>)
+#
+# Helper function to copy required library (specified by target) alongside the 
+# target binary. 
+# 
+# This is required as Win doesn't have a RPATH
+#-------------------------------------------------------------------------------
+function(_copy_required_library target library)
+  message( STATUS "WIN32: Adding post-build step to copy required lib alongside target binary")
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${library}> $<TARGET_FILE_DIR:${target}>
+  )
+endfunction()
+
+
 function(InstallDependencyFiles)
 
 if (WIN32 AND NOT BUILD_MSYS2_INSTALL)
@@ -246,7 +263,7 @@ if (WIN32 AND NOT BUILD_MSYS2_INSTALL)
       file(GLOB mofiles "${IsoCodes_LOCALEDIR}/${MO_TARGET_DIR}/*")
       foreach(sysfile ${mofiles})
         install(FILES ${sysfile}
-                DESTINATION ${CMAKE_INSTALL_LOCALEDIR}/${language}/LC_MESSAGES
+                DESTINATION ${CMAKE_INSTALL_LOCALEDIR}/${MO_TARGET_DIR}
                 COMPONENT DTApplication)
       endforeach(sysfile)
     endforeach()

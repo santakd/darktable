@@ -191,7 +191,7 @@ static inline void create_lens_kernel(float *const restrict buffer,
       const float y = (float)(j - 1) / radius - 1;
 
       // get current radial distance from kernel center
-      const float r = hypotf(x, y);
+      const float r = dt_fast_hypotf(x, y);
 
       // get the radial distance at current angle of the shape envelope
       const float M = cosf((2.f * asinf(k) + M_PI_F * m) / (2.f * n))
@@ -761,7 +761,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
 
   if(!g->img_cached)
   {
-    g->img = dt_alloc_align(64, allocation.width * allocation.width * 4 * sizeof(unsigned char));
+    g->img = dt_alloc_align(64, sizeof(unsigned char) * 4 * allocation.width * allocation.width);
     g->img_width = allocation.width;
     g->img_cached = TRUE;
     build_gui_kernel(g->img, g->img_width, g->img_width, p);

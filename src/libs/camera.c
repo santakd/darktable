@@ -480,12 +480,12 @@ void gui_init(dt_lib_module_t *self)
   gtk_widget_set_tooltip_text(GTK_WIDGET(lib->gui.timer), _("the count of seconds before actually doing a capture"));
   gtk_widget_set_tooltip_text(GTK_WIDGET(lib->gui.count),
                _("the amount of images to capture in a sequence,\nyou can use this in conjunction with "
-                 "delayed mode to create stop-motion sequences."));
+                 "delayed mode to create stop-motion sequences"));
   gtk_widget_set_tooltip_text(GTK_WIDGET(lib->gui.brackets),
-               _("the amount of brackets on each side of centered shoot, amount of images = (brackets*2)+1."));
+               _("the amount of brackets on each side of centered shoot, amount of images = (brackets*2) + 1"));
   gtk_widget_set_tooltip_text(GTK_WIDGET(lib->gui.steps),
                _("the amount of steps per bracket, steps is camera configurable and usually 3 steps per "
-                 "stop\nwith other words, 3 steps is 1EV exposure step between brackets."));
+                 "stop\nwith other words, 3 steps is 1EV exposure step between brackets"));
 
   g_signal_connect(G_OBJECT(lib->gui.toggle_timer), "clicked", G_CALLBACK(_toggle_capture_mode_clicked), lib);
   g_signal_connect(G_OBJECT(lib->gui.toggle_sequence), "clicked", G_CALLBACK(_toggle_capture_mode_clicked), lib);
@@ -497,10 +497,6 @@ void gui_init(dt_lib_module_t *self)
   gtk_widget_set_sensitive(GTK_WIDGET(lib->gui.brackets), FALSE);
   gtk_widget_set_sensitive(GTK_WIDGET(lib->gui.steps), FALSE);
 
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.timer);
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.count);
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.brackets);
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.steps);
 
 
   // Camera settings
@@ -521,7 +517,6 @@ void gui_init(dt_lib_module_t *self)
   gtk_widget_set_halign(label, GTK_ALIGN_START);
   lib->gui.plabel = gtk_entry_new();
   gtk_entry_set_width_chars(GTK_ENTRY(lib->gui.plabel), 0);
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.plabel);
   gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(label), 0, lib->gui.rows++, 1, 1);
   gtk_grid_attach_next_to(GTK_GRID(self->widget), GTK_WIDGET(lib->gui.plabel), GTK_WIDGET(label), GTK_POS_RIGHT, 1, 1);
 
@@ -532,7 +527,6 @@ void gui_init(dt_lib_module_t *self)
   g_signal_connect(G_OBJECT(widget), "clicked", G_CALLBACK(_show_property_popupmenu_clicked), lib);
   lib->gui.pname = gtk_entry_new();
   gtk_entry_set_width_chars(GTK_ENTRY(lib->gui.pname), 0);
-  dt_gui_key_accel_block_on_focus_connect(lib->gui.pname);
   gtk_box_pack_start(hbox, GTK_WIDGET(lib->gui.pname), TRUE, TRUE, 0);
   gtk_box_pack_start(hbox, GTK_WIDGET(widget), FALSE, FALSE, 0);
   gtk_grid_attach(GTK_GRID(self->widget), GTK_WIDGET(label), 0, lib->gui.rows++, 1, 1);
@@ -548,8 +542,6 @@ void gui_init(dt_lib_module_t *self)
 void gui_cleanup(dt_lib_module_t *self)
 {
   dt_lib_camera_t *lib = self->data;
-  dt_gui_key_accel_block_on_focus_disconnect(lib->gui.plabel);
-  dt_gui_key_accel_block_on_focus_disconnect(lib->gui.pname);
   free(lib->data.listener);
   lib->data.listener = NULL;
   free(self->data);

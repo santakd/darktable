@@ -235,24 +235,6 @@ static void _text_entry_changed_callback(GtkEntry *entry, dt_lib_module_t *self)
   _lib_modulegroups_update_iop_visibility(self);
 }
 
-static gboolean _text_entry_key_press_callback(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
-{
-
-  if(event->keyval == GDK_KEY_Escape)
-  {
-    gtk_entry_set_text(GTK_ENTRY(widget), "");
-    gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
-    return TRUE;
-  }
-  else if(event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter)
-  {
-    gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
-    return TRUE;
-  }
-
-  return FALSE;
-}
-
 static DTGTKCairoPaintIconFunc _buttons_get_icon_fct(const gchar *icon)
 {
   if(g_strcmp0(icon, "active") == 0)
@@ -2753,9 +2735,10 @@ void gui_init(dt_lib_module_t *self)
 
   /* search box */
   d->text_entry = gtk_search_entry_new();
+  dt_action_define(&darktable.view_manager->proxy.darkroom.view->actions, NULL, "search modules", d->text_entry, NULL);
   gtk_entry_set_placeholder_text(GTK_ENTRY(d->text_entry), _("search modules by name or tag"));
   g_signal_connect(G_OBJECT(d->text_entry), "search-changed", G_CALLBACK(_text_entry_changed_callback), self);
-  g_signal_connect(G_OBJECT(d->text_entry), "key-press-event", G_CALLBACK(_text_entry_key_press_callback), self);
+  g_signal_connect(G_OBJECT(d->text_entry), "stop-search", G_CALLBACK(dt_gui_search_stop), dt_ui_center(darktable.gui->ui));
   gtk_box_pack_start(GTK_BOX(d->hbox_search_box), d->text_entry, TRUE, TRUE, 0);
   gtk_entry_set_width_chars(GTK_ENTRY(d->text_entry), 0);
   gtk_entry_set_icon_tooltip_text(GTK_ENTRY(d->text_entry), GTK_ENTRY_ICON_SECONDARY, _("clear text"));
@@ -2805,10 +2788,6 @@ void gui_init(dt_lib_module_t *self)
 
 void gui_cleanup(dt_lib_module_t *self)
 {
-  dt_lib_modulegroups_t *d = (dt_lib_modulegroups_t *)self->data;
-
-  dt_gui_key_accel_block_on_focus_disconnect(d->text_entry);
-
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_dt_dev_image_changed_callback), self);
 
   darktable.develop->proxy.modulegroups.module = NULL;
@@ -3865,8 +3844,6 @@ void view_leave(dt_lib_module_t *self, dt_view_t *old_view, dt_view_t *new_view)
 {
   if(!strcmp(old_view->module_name, "darkroom"))
   {
-    dt_lib_modulegroups_t *d = (dt_lib_modulegroups_t *)self->data;
-    dt_gui_key_accel_block_on_focus_disconnect(d->text_entry);
     _basics_hide(self);
   }
 }
@@ -3876,7 +3853,6 @@ void view_enter(dt_lib_module_t *self, dt_view_t *old_view, dt_view_t *new_view)
   if(!strcmp(new_view->module_name, "darkroom"))
   {
     dt_lib_modulegroups_t *d = (dt_lib_modulegroups_t *)self->data;
-    dt_gui_key_accel_block_on_focus_connect(d->text_entry);
 
     // and we initialize the buttons too
     const char *preset = dt_conf_get_string_const("plugins/darkroom/modulegroups_preset");

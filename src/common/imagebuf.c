@@ -88,13 +88,13 @@ gboolean dt_iop_alloc_image_buffers(struct dt_iop_module_t *const module,
     if (size & DT_IMGSZ_PERTHREAD)
     {
       *bufptr = dt_alloc_perthread_float(nfloats,paddedsize);
-      if (size & DT_IMGSZ_CLEARBUF)
+      if ((size & DT_IMGSZ_CLEARBUF) && *bufptr)
         memset(*bufptr, 0, *paddedsize * dt_get_num_threads() * sizeof(float));
     }
     else
     {
       *bufptr = dt_alloc_align_float(nfloats);
-      if (size & DT_IMGSZ_CLEARBUF)
+      if ((size & DT_IMGSZ_CLEARBUF) && *bufptr)
         memset(*bufptr, 0, nfloats * sizeof(float));
     }
     if (!*bufptr)
@@ -227,14 +227,17 @@ void dt_iop_image_fill(float *const buf, const float fill_value, const size_t wi
 #ifdef _OPENMP
   if (nfloats > parallel_imgop_minimum)	// is the copy big enough to outweigh threading overhead?
   {
-    // we can gain a little by using a small number of threads in parallel, but not much since the memory bus
-    // quickly saturates (basically, each core can saturate a memory channel, so a system with quad-channel
-    // memory won't be able to take advantage of more than four cores).
-    const int nthreads = MIN(darktable.num_openmp_threads,parallel_imgop_maxthreads);
-#pragma omp parallel for simd aligned(buf:16) default(none) \
-  dt_omp_firstprivate(buf, fill_value, nfloats) schedule(simd:static) num_threads(nthreads)
-    for(size_t k = 0; k < nfloats; k++)
-      buf[k] = fill_value;
+    const size_t nthreads = MIN(16,darktable.num_openmp_threads);
+    // determine the number of 4-float vectors to be processed by each thread
+    const size_t chunksize = (((nfloats + nthreads - 1) / nthreads) + 3) / 4;
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(buf, fill_value, nfloats, nthreads, chunksize) schedule(static) num_threads(nthreads)
+    for(size_t chunk = 0; chunk < nthreads; chunk++)
+    {
+#pragma omp simd aligned(buf:16)
+      for(size_t k = 4 * chunk * chunksize; k < MIN(4*(chunk+1)*chunksize, nfloats); k++)
+        buf[k] = fill_value;
+    }
     return;
   }
 #endif // _OPENMP

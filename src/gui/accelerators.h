@@ -27,9 +27,9 @@
 GtkWidget *dt_shortcuts_prefs(GtkWidget *widget);
 GHashTable *dt_shortcut_category_lists(dt_view_type_flags_t v);
 
-void dt_shortcuts_save(gboolean backup);
+void dt_shortcuts_save(const gchar *ext, const gboolean backup);
 
-void dt_shortcuts_load(gboolean clear);
+void dt_shortcuts_load(const gchar *ext, const gboolean clear);
 
 void dt_shortcuts_reinitialise();
 
@@ -37,11 +37,11 @@ void dt_shortcuts_select_view(dt_view_type_flags_t view);
 
 gboolean dt_shortcut_dispatcher(GtkWidget *w, GdkEvent *event, gpointer user_data);
 
+float dt_action_process(const gchar *action, int instance, const gchar *element, const gchar *effect, float size);
+
 void dt_action_insert_sorted(dt_action_t *owner, dt_action_t *new_action);
 
-dt_action_t *dt_action_locate(dt_action_t *owner, gchar **path);
-
-void dt_action_define_key_pressed_accel(dt_action_t *action, const gchar *name, GtkAccelKey *key);
+dt_action_t *dt_action_locate(dt_action_t *owner, gchar **path, gboolean create);
 
 void dt_action_define_preset(dt_action_t *action, const gchar *name);
 // delete if new_name == NULL
@@ -50,21 +50,24 @@ void dt_action_rename(dt_action_t *action, const gchar *new_name);
 
 typedef uint8_t dt_input_device_t;
 
+// FIXME this could eventually be refactored into dt_input_module_t
+// with its own _api.h and loader
 typedef struct dt_input_driver_definition_t
 {
   gchar *name;
-  gchar *(*key_to_string)(guint key, gboolean display);
-  gboolean (*string_to_key)(gchar *string, guint *key);
-  gchar *(*move_to_string)(guint move, gboolean display);
-  gboolean (*string_to_move)(gchar *string, guint *move);
+  gchar *(*key_to_string)(const guint key, const gboolean display);
+  gboolean (*string_to_key)(const gchar *string, guint *key);
+  gchar *(*move_to_string)(const guint move, const gboolean display);
+  gboolean (*string_to_move)(const gchar *string, guint *move);
+  gboolean (*key_to_move)(dt_lib_module_t *self, const dt_input_device_t id, const guint key, guint *move);
   dt_lib_module_t *module;
 } dt_input_driver_definition_t;
 
 dt_input_device_t dt_register_input_driver(dt_lib_module_t *module, const dt_input_driver_definition_t *callbacks);
-void dt_shortcut_key_press(dt_input_device_t id, guint time, guint key);
-void dt_shortcut_key_release(dt_input_device_t id, guint time, guint key);
-gboolean dt_shortcut_key_active(dt_input_device_t id, guint key);
-float dt_shortcut_move(dt_input_device_t id, guint time, guint move, double size);
+void dt_shortcut_key_press(dt_input_device_t id, const guint time, const guint key);
+void dt_shortcut_key_release(dt_input_device_t id, const guint time, const guint key);
+gboolean dt_shortcut_key_active(dt_input_device_t id, const guint key);
+float dt_shortcut_move(dt_input_device_t id, const guint time, const guint move, const double size);
 
 typedef enum dt_shortcut_flag_t
 {
@@ -95,6 +98,7 @@ typedef enum dt_shortcut_move_t
 extern const gchar *dt_action_effect_value[];
 extern const gchar *dt_action_effect_selection[];
 extern const gchar *dt_action_effect_toggle[];
+extern const gchar *dt_action_effect_hold[];
 extern const gchar *dt_action_effect_activate[];
 extern const gchar *dt_action_effect_presets[];
 
@@ -103,6 +107,8 @@ typedef struct dt_action_element_def_t
   const gchar *name;
   const gchar **effects;
 } dt_action_element_def_t;
+
+extern const dt_action_element_def_t dt_action_elements_hold[];
 
 typedef struct dt_shortcut_fallback_t
 {
@@ -128,6 +134,7 @@ typedef struct dt_action_def_t
   float (*process)(gpointer target, dt_action_element_t, dt_action_effect_t, float size);
   const dt_action_element_def_t *elements;
   const dt_shortcut_fallback_t *fallbacks;
+  const gboolean no_widget;
 } dt_action_def_t;
 
 extern const dt_action_def_t dt_action_def_toggle;
@@ -173,15 +180,15 @@ void dt_accel_connect_instance_iop(dt_iop_module_t *module);
 void dt_accel_connect_lua(const gchar *path, GClosure *closure);
 void dt_accel_connect_shortcut(dt_action_t *owner, const gchar *path_string, GClosure *closure);
 
-// Disconnect function
-void dt_accel_cleanup_closures_iop(dt_iop_module_t *module); // rename to cleanup instance_list
+// Cleanup function
+void dt_action_cleanup_instance_iop(dt_iop_module_t *module);
 
 // Rename/remove functions
 void dt_accel_rename_global(const gchar *path, const gchar *new_path);
 void dt_accel_rename_lua(const gchar *path, const gchar *new_path);
 
 // UX miscellaneous functions
-void dt_accel_widget_toast(GtkWidget *widget);
+void dt_action_widget_toast(dt_action_t *action, GtkWidget *widget, const gchar *text);
 
 // Get the scale multiplier for adjusting sliders with shortcuts
 float dt_accel_get_slider_scale_multiplier();
