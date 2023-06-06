@@ -1,5 +1,6 @@
 // This file is part of darktable
 // Copyright (c) 2010-2016 Tobias Ellinghaus <me@houz.org>.
+// Copyright (C) 2023 darktable developers.
 
 // darktable is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -30,6 +31,7 @@
 
 #include "control/conf.h"
 #include "control/control.h"
+#include "common/darktable.h"
 
 #include <glib.h>
 #include <string.h>
@@ -79,7 +81,7 @@ const dt_pwstorage_t *dt_pwstorage_new()
 #endif
   else if(strcmp(_backend_str, "gnome keyring") == 0)
   {
-    fprintf(stderr, "[pwstorage_new] GNOME Keyring backend is no longer supported.\n");
+    dt_print(DT_DEBUG_ALWAYS, "[pwstorage_new] GNOME Keyring backend is no longer supported.\n");
     dt_control_log(_("GNOME Keyring backend is no longer supported. configure a different one"));
     _backend = PW_STORAGE_BACKEND_NONE;
   }
@@ -225,6 +227,9 @@ GHashTable *dt_pwstorage_get(const gchar *slot)
   return g_hash_table_new(g_str_hash, g_str_equal);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

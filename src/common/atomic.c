@@ -28,7 +28,7 @@ extern inline int dt_atomic_CAS_int(dt_atomic_int *var, int *expected, int value
 #if !defined(__STDC_NO_ATOMICS__)
 // using C11 atomics, everything is handled in the header file, so we don't need to define anything in this file
 
-#elif defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNU_MINOR__ >= 8))
+#elif defined(__GNUC__)
 // using GNU intrinsics. everything is handled in the header file
 
 #else
@@ -37,3 +37,10 @@ extern inline int dt_atomic_CAS_int(dt_atomic_int *var, int *expected, int value
 pthread_mutex_t dt_atom_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #endif // __STDC_NO_ATOMICS__
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
+// vim: shiftwidth=2 expandtab tabstop=2 cindent
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

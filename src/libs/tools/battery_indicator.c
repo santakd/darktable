@@ -38,10 +38,9 @@ const char *name(dt_lib_module_t *self)
   return _("battery indicator");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  static const char *v[] = {"*", NULL};
-  return v;
+  return DT_VIEW_ALL;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -54,7 +53,7 @@ int expandable(dt_lib_module_t *self)
   return 0;
 }
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 1000;
 }
@@ -66,7 +65,7 @@ void gui_init(dt_lib_module_t *self)
 
   d->fill = _get_fill();
 
-  self->widget = d->icon = dtgtk_icon_new(_paint_battery, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, d);
+  self->widget = d->icon = dtgtk_icon_new(_paint_battery, 0, d);
   gtk_widget_set_size_request(d->icon, DT_PIXEL_APPLY_DPI(23), -1);
   gtk_widget_set_tooltip_text(d->icon, _("battery indicator"));
 
@@ -167,6 +166,8 @@ static void _paint_battery(cairo_t *cr, gint x, gint y, gint w, gint h, gint fla
   g_object_unref(layout);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

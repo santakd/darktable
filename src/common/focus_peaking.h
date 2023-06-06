@@ -21,6 +21,11 @@
 #include "common/fast_guided_filter.h"
 #include "develop/openmp_maths.h"
 
+/* NOTE: this code complies with the optimizations in "common/extra_optimizations.h".
+ * Consider including that at the beginning of a *.c file where you use this
+ * header (provided the rest of the code complies).
+ **/
+
 #ifdef _OPENMP
 #pragma omp declare simd
 #endif
@@ -77,9 +82,8 @@ static inline void get_indices(const size_t i, const size_t j, const size_t widt
   index[7] = lower_line + right_row;      // south east
 }
 
-static inline void dt_focuspeaking(cairo_t *cr, int width, int height,
-                                   uint8_t *const restrict image,
-                                   const int buf_width, const int buf_height)
+static inline void dt_focuspeaking(cairo_t *cr, const int buf_width, const int buf_height,
+                                   uint8_t *const restrict image)
 {
   float *const restrict luma = dt_alloc_align_float((size_t)buf_width * buf_height);
   uint8_t *const restrict focus_peaking = dt_alloc_align(64, sizeof(uint8_t) * buf_width * buf_height * 4);
@@ -236,6 +240,8 @@ schedule(static) collapse(2) aligned(focus_peaking, luma_ds:64) reduction(+:sigm
   dt_free_align(focus_peaking);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

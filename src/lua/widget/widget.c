@@ -242,7 +242,7 @@ static int visible_member(lua_State *L)
     if(value)
     {
       gtk_widget_show(widget->widget);
-      // enable gtk_widget_show_all() in case it was disabled by 
+      // enable gtk_widget_show_all() in case it was disabled by
       // setting a widget to hidden
       gtk_widget_set_no_show_all(widget->widget, FALSE);
     }
@@ -399,6 +399,9 @@ int dt_lua_init_widget(lua_State* L)
   lua_pop(L, 1);
   return 0;
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

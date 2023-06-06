@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2014-2021 darktable developers.
+    Copyright (C) 2014-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -75,16 +75,16 @@ void dt_init_print_info(dt_print_info_t *pinfo)
 void dt_get_printer_info(const char *printer_name, dt_printer_info_t *pinfo)
 {
   cups_dest_t *dests;
-  int num_dests = cupsGetDests(&dests);
+  const int num_dests = cupsGetDests(&dests);
   cups_dest_t *dest = cupsGetDest(printer_name, NULL, num_dests, dests);
 
-  if (dest)
+  if(dest)
   {
     const char *PPDFile = cupsGetPPD (printer_name);
     g_strlcpy(pinfo->name, dest->name, MAX_NAME);
     ppd_file_t *ppd = ppdOpenFile(PPDFile);
 
-    if (ppd)
+    if(ppd)
     {
       ppdMarkDefaults(ppd);
       cupsMarkOptions(ppd, dest->num_options, dest->options);
@@ -94,7 +94,7 @@ void dt_get_printer_info(const char *printer_name, dt_printer_info_t *pinfo)
       // 2. zedoPrinterDriver exists
       ppd_attr_t *attr = ppdFindAttr(ppd, "ModelName", NULL);
 
-      if (attr)
+      if(attr)
       {
         pinfo->is_turboprint = strstr(attr->value, "TurboPrint") != NULL;
       }
@@ -103,7 +103,7 @@ void dt_get_printer_info(const char *printer_name, dt_printer_info_t *pinfo)
 
       attr = ppdFindAttr(ppd, "HWMargins", NULL);
 
-      if (attr)
+      if(attr)
       {
         // scanf use local number format and PPD has en numbers
         dt_util_str_to_loc_numbers_format(attr->value);
@@ -122,11 +122,11 @@ void dt_get_printer_info(const char *printer_name, dt_printer_info_t *pinfo)
 
       attr = ppdFindAttr(ppd, "DefaultResolution", NULL);
 
-      if (attr)
+      if(attr)
       {
         char *x = strstr(attr->value, "x");
 
-        if (x)
+        if(x)
           sscanf (x+1, "%ddpi", &pinfo->resolution);
         else
           sscanf (attr->value, "%ddpi", &pinfo->resolution);
@@ -151,12 +151,12 @@ static int _dest_cb(void *user_data, unsigned flags, cups_dest_t *dest)
   const char *psvalue = cupsGetOption("printer-state", dest->num_options, dest->options);
 
   // check that the printer is ready
-  if (psvalue!=NULL && strtol(psvalue, NULL, 10) < IPP_PRINTER_STOPPED)
+  if(psvalue!=NULL && strtol(psvalue, NULL, 10) < IPP_PRINTER_STOPPED)
   {
     dt_printer_info_t pr;
     memset(&pr, 0, sizeof(pr));
     dt_get_printer_info(dest->name, &pr);
-    if (pctl->cb) pctl->cb(&pr, pctl->user_data);
+    if(pctl->cb) pctl->cb(&pr, pctl->user_data);
     dt_print(DT_DEBUG_PRINT, "[print] new printer %s found\n", dest->name);
   }
   else
@@ -171,9 +171,9 @@ static int _detect_printers_callback(dt_job_t *job)
 {
   dt_prtctl_t *pctl = dt_control_job_get_params(job);
   int res;
-#if ((CUPS_VERSION_MAJOR == 1) && (CUPS_VERSION_MINOR >= 6)) || CUPS_VERSION_MAJOR > 1
+#if((CUPS_VERSION_MAJOR == 1) && (CUPS_VERSION_MINOR >= 6)) || CUPS_VERSION_MAJOR > 1
 #if defined(__APPLE__) && MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_8
-  if (&cupsEnumDests != NULL)
+  if(&cupsEnumDests != NULL)
 #endif
     res = cupsEnumDests(CUPS_MEDIA_FLAGS_DEFAULT, 30000, &_cancel, 0, 0, _dest_cb, pctl);
 #if defined(__APPLE__) && MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_8
@@ -184,7 +184,7 @@ static int _detect_printers_callback(dt_job_t *job)
   {
     cups_dest_t *dests;
     const int num_dests = cupsGetDests(&dests);
-    for (int k=0; k<num_dests; k++)
+    for(int k=0; k<num_dests; k++)
     {
       _dest_cb((void *)pctl, 0, &dests[k]);
     }
@@ -218,13 +218,13 @@ void dt_printers_discovery(void (*cb)(dt_printer_info_t *pr, void *user_data), v
 
 static gboolean paper_exists(GList *papers, const char *name)
 {
-  if (strstr(name,"custom_") == name)
+  if(strstr(name,"custom_") == name)
     return TRUE;
 
   for(GList *p = papers; p; p = g_list_next(p))
   {
     const dt_paper_info_t *pi = (dt_paper_info_t*)p->data;
-    if (!strcmp(pi->name,name) || !strcmp(pi->common_name,name))
+    if(!strcmp(pi->name,name) || !strcmp(pi->common_name,name))
       return TRUE;
   }
   return FALSE;
@@ -237,7 +237,7 @@ dt_paper_info_t *dt_get_paper(GList *papers, const char *name)
   for(GList *p = papers; p; p = g_list_next(p))
   {
     dt_paper_info_t *pi = (dt_paper_info_t*)p->data;
-    if (!strcmp(pi->name,name) || !strcmp(pi->common_name,name))
+    if(!strcmp(pi->name,name) || !strcmp(pi->common_name,name))
     {
       result = pi;
       break;
@@ -261,39 +261,39 @@ GList *dt_get_papers(const dt_printer_info_t *printer)
   const char *printer_name = printer->name;
   GList *result = NULL;
 
-#if ((CUPS_VERSION_MAJOR == 1) && (CUPS_VERSION_MINOR >= 7)) || CUPS_VERSION_MAJOR > 1
+#if((CUPS_VERSION_MAJOR == 1) && (CUPS_VERSION_MINOR >= 7)) || CUPS_VERSION_MAJOR > 1
 #if defined(__APPLE__) && MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_9
-  if (&cupsConnectDest != NULL && &cupsCopyDestInfo != NULL && &cupsGetDestMediaCount != NULL &&
+  if(&cupsConnectDest != NULL && &cupsCopyDestInfo != NULL && &cupsGetDestMediaCount != NULL &&
       &cupsGetDestMediaByIndex != NULL && &cupsFreeDestInfo != NULL)
 #endif
   {
     cups_dest_t *dests;
-    int num_dests = cupsGetDests(&dests);
+    const int num_dests = cupsGetDests(&dests);
     cups_dest_t *dest = cupsGetDest(printer_name, NULL, num_dests, dests);
 
     int cancel = 0; // important
 
     char resource[1024];
 
-    if (dest)
+    if(dest)
     {
       http_t *hcon = cupsConnectDest(dest, 0, 2000, &cancel, resource, sizeof(resource), NULL, (void *)NULL);
 
-      if (hcon)
+      if(hcon)
       {
         cups_size_t size;
         cups_dinfo_t *info = cupsCopyDestInfo (hcon, dest);
         const int count = cupsGetDestMediaCount(hcon, dest, info, CUPS_MEDIA_FLAGS_DEFAULT);
-        for (int k=0; k<count; k++)
+        for(int k=0; k<count; k++)
         {
-          if (cupsGetDestMediaByIndex(hcon, dest, info, k, CUPS_MEDIA_FLAGS_DEFAULT, &size))
+          if(cupsGetDestMediaByIndex(hcon, dest, info, k, CUPS_MEDIA_FLAGS_DEFAULT, &size))
           {
-            if (size.width!=0 && size.length!=0 && !paper_exists(result, size.media))
+            if(size.width!=0 && size.length!=0 && !paper_exists(result, size.media))
             {
               pwg_media_t *med = pwgMediaForPWG (size.media);
               char common_name[MAX_NAME] = { 0 };
 
-              if (med->ppd)
+              if(med->ppd)
                 g_strlcpy(common_name, med->ppd, sizeof(common_name));
               else
                 g_strlcpy(common_name, size.media, sizeof(common_name));
@@ -328,13 +328,13 @@ GList *dt_get_papers(const dt_printer_info_t *printer)
   const char *PPDFile = cupsGetPPD(printer_name);
   ppd_file_t *ppd = ppdOpenFile(PPDFile);
 
-  if (ppd)
+  if(ppd)
   {
     ppd_size_t *size = ppd->sizes;
 
-    for (int k=0; k<ppd->num_sizes; k++)
+    for(int k=0; k<ppd->num_sizes; k++)
     {
-      if (size->width!=0 && size->length!=0 && !paper_exists(result, size->name))
+      if(size->width!=0 && size->length!=0 && !paper_exists(result, size->name))
       {
         dt_paper_info_t *paper = (dt_paper_info_t*)malloc(sizeof(dt_paper_info_t));
         g_strlcpy(paper->name, size->name, MAX_NAME);
@@ -368,15 +368,15 @@ GList *dt_get_media_type(const dt_printer_info_t *printer)
   const char *PPDFile = cupsGetPPD(printer_name);
   ppd_file_t *ppd = ppdOpenFile(PPDFile);
 
-  if (ppd)
+  if(ppd)
   {
       ppd_option_t *opt = ppdFindOption(ppd, "MediaType");
 
-      if (opt)
+      if(opt)
       {
         ppd_choice_t *choice = opt->choices;
 
-        for (int k=0; k<opt->num_choices; k++)
+        for(int k=0; k<opt->num_choices; k++)
         {
           dt_medium_info_t *media = (dt_medium_info_t*)malloc(sizeof(dt_medium_info_t));
           g_strlcpy(media->name, choice->choice, MAX_NAME);
@@ -402,7 +402,7 @@ dt_medium_info_t *dt_get_medium(GList *media, const char *name)
   for(GList *m = media; m; m = g_list_next(m))
   {
     dt_medium_info_t *mi = (dt_medium_info_t*)m->data;
-    if (!strcmp(mi->name, name) || !strcmp(mi->common_name, name))
+    if(!strcmp(mi->name, name) || !strcmp(mi->common_name, name))
     {
       result = mi;
       break;
@@ -411,11 +411,11 @@ dt_medium_info_t *dt_get_medium(GList *media, const char *name)
   return result;
 }
 
-void dt_print_file(const int32_t imgid, const char *filename, const char *job_title, const dt_print_info_t *pinfo)
+void dt_print_file(const dt_imgid_t imgid, const char *filename, const char *job_title, const dt_print_info_t *pinfo)
 {
   // first for safety check that filename exists and is readable
 
-  if (!g_file_test(filename, G_FILE_TEST_IS_REGULAR))
+  if(!g_file_test(filename, G_FILE_TEST_IS_REGULAR))
   {
     dt_control_log(_("file `%s' to print not found for image %d on `%s'"), filename, imgid, pinfo->printer.name);
     return;
@@ -425,7 +425,7 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
   int num_options = 0;
 
   // for turboprint drived printer, use the turboprint dialog
-  if (pinfo->printer.is_turboprint)
+  if(pinfo->printer.is_turboprint)
   {
     const char *tp_intent_name[] = { "perception_0", "colorimetric-relative_1", "saturation_1", "colorimetric-absolute_1" };
     char tmpfile[PATH_MAX] = { 0 };
@@ -437,7 +437,7 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
     if(fd == -1)
     {
       dt_control_log(_("failed to create temporary file for printing options"));
-      fprintf(stderr, "failed to create temporary pdf for printing options\n");
+      dt_print(DT_DEBUG_ALWAYS, "failed to create temporary PDF for printing options\n");
       return;
     }
     close(fd);
@@ -466,8 +466,9 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
 
     gint exit_status = 0;
 
-    g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
-                  NULL, NULL, NULL, NULL, &exit_status, NULL);
+    g_spawn_sync(NULL, argv, NULL,
+                 G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+                 NULL, NULL, NULL, NULL, &exit_status, NULL);
 
     g_free(argv[1]);
     g_free(argv[3]);
@@ -486,17 +487,17 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
         const int ropt = fscanf(stream, "%*s %99[^= ]=%99s", optname, optvalue);
 
         // if we parsed an option name=value
-        if (ropt==2)
+        if(ropt==2)
         {
           char *v = optvalue;
 
           // remove possible single quote around value
-          if (*v == '\'') v++;
-          if (v[strlen(v)-1] == '\'') v[strlen(v)-1] = '\0';
+          if(*v == '\'') v++;
+          if(v[strlen(v)-1] == '\'') v[strlen(v)-1] = '\0';
 
           num_options = cupsAddOption(optname, v, num_options, &options);
         }
-        else if (ropt == EOF)
+        else if(ropt == EOF)
           break;
       }
       fclose(stream);
@@ -512,11 +513,11 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
   else
   {
     cups_dest_t *dests;
-    int num_dests = cupsGetDests(&dests);
+    const int num_dests = cupsGetDests(&dests);
     cups_dest_t *dest = cupsGetDest(pinfo->printer.name, NULL, num_dests, dests);
 
-    for (int j = 0; j < dest->num_options; j ++)
-      if (cupsGetOption(dest->options[j].name, num_options,
+    for(int j = 0; j < dest->num_options; j ++)
+      if(cupsGetOption(dest->options[j].name, num_options,
                         options) == NULL)
         num_options = cupsAddOption(dest->options[j].name,
                                     dest->options[j].value,
@@ -546,7 +547,7 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
 
     // if the printer has no hardware margins activate the borderless mode
 
-    if (pinfo->printer.hw_margin_top == 0 || pinfo->printer.hw_margin_bottom == 0
+    if(pinfo->printer.hw_margin_top == 0 || pinfo->printer.hw_margin_bottom == 0
         || pinfo->printer.hw_margin_left == 0 || pinfo->printer.hw_margin_right == 0)
     {
       // there is many variant for this parameter
@@ -555,18 +556,19 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
       num_options = cupsAddOption("Borderless", "true", num_options, &options);
     }
 
-    num_options = cupsAddOption("landscape", pinfo->page.landscape ? "true" : "false", num_options, &options);
+    // as cups-filter pdftopdf will autorotate the page, there is no
+    // need to set an option in the case of landscape mode images
   }
 
   // print lp options
 
   dt_print(DT_DEBUG_PRINT, "[print] printer options (%d)\n", num_options);
-  for (int k=0; k<num_options; k++)
+  for(int k=0; k<num_options; k++)
     dt_print(DT_DEBUG_PRINT, "[print]   %2d  %s=%s\n", k+1, options[k].name, options[k].value);
 
   const int job_id = cupsPrintFile(pinfo->printer.name, filename, job_title, num_options, options);
 
-  if (job_id == 0)
+  if(job_id == 0)
     dt_control_log(_("error while printing `%s' on `%s'"), job_title, pinfo->printer.name);
   else
     dt_control_log(_("printing `%s' on `%s'"), job_title, pinfo->printer.name);
@@ -576,8 +578,9 @@ void dt_print_file(const int32_t imgid, const char *filename, const char *job_ti
 
 void dt_get_print_layout(const dt_print_info_t *prt,
                          const int32_t area_width, const int32_t area_height,
-                         int32_t *px, int32_t *py, int32_t *pwidth, int32_t *pheight,
-                         int32_t *ax, int32_t *ay, int32_t *awidth, int32_t *aheight)
+                         float *px, float *py, float *pwidth, float *pheight,
+                         float *ax, float *ay, float *awidth, float *aheight,
+                         gboolean *borderless)
 {
   /* this is where the layout is done for the display and for the print too. So this routine is one
      of the most critical for the print circuitry. */
@@ -611,13 +614,13 @@ void dt_get_print_layout(const dt_print_info_t *prt,
   }
 
   // the image area aspect
-  const float a_aspect = (double)area_width / (double)area_height;
+  const float a_aspect = (float)area_width / (float)area_height;
 
   // page aspect
   const float pg_aspect = pg_width / pg_height;
 
   // display page
-  int32_t p_bottom, p_right;
+  float p_bottom, p_right;
 
   if(a_aspect > pg_aspect)
   {
@@ -648,10 +651,15 @@ void dt_get_print_layout(const dt_print_info_t *prt,
 
   // display picture area, that is removing the non printable areas and user's margins
 
-  const int32_t bx = *px + ((np_left + border_left) / pg_width) * (*pwidth);
-  const int32_t by = *py + ((np_top + border_top)/ pg_height) * (*pheight);
-  const int32_t bb = p_bottom - ((np_bottom + border_bottom) / pg_height) * (*pheight);
-  const int32_t br = p_right - ((np_right + border_right) / pg_width) * (*pwidth);
+  const float bx = *px + (border_left / pg_width) * (*pwidth);
+  const float by = *py + (border_top / pg_height) * (*pheight);
+  const float bb = p_bottom - (border_bottom / pg_height) * (*pheight);
+  const float br = p_right - (border_right / pg_width) * (*pwidth);
+
+  *borderless = border_left   < np_left
+             || border_right  < np_right
+             || border_top    < np_top
+             || border_bottom < np_bottom;
 
   // now we have the printable area (ax, ay) -> (ax + awidth, ay + aheight)
 
@@ -661,6 +669,9 @@ void dt_get_print_layout(const dt_print_info_t *prt,
   *aheight = bb - by;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

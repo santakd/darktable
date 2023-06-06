@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,7 +34,7 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
-#define GRAIN_LIGHTNESS_STRENGTH_SCALE 0.15
+#define GRAIN_LIGHTNESS_STRENGTH_SCALE 0.15f
 // (m_pi/2)/4 = half hue colorspan
 #define GRAIN_HUE_COLORRANGE 0.392699082
 #define GRAIN_HUE_STRENGTH_SCALE 0.25
@@ -111,20 +111,21 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 }
 
 
-static int grad3[12][3] = { { 1, 1, 0 },
-                            { -1, 1, 0 },
-                            { 1, -1, 0 },
-                            { -1, -1, 0 },
-                            { 1, 0, 1 },
-                            { -1, 0, 1 },
-                            { 1, 0, -1 },
-                            { -1, 0, -1 },
-                            { 0, 1, 1 },
-                            { 0, -1, 1 },
-                            { 0, 1, -1 },
-                            { 0, -1, -1 } };
+static const double grad3[12][3]
+  = { { 1, 1, 0 },
+      { -1, 1, 0 },
+      { 1, -1, 0 },
+      { -1, -1, 0 },
+      { 1, 0, 1 },
+      { -1, 0, 1 },
+      { 1, 0, -1 },
+      { -1, 0, -1 },
+      { 0, 1, 1 },
+      { 0, -1, 1 },
+      { 0, 1, -1 },
+      { 0, -1, -1 } };
 
-static int permutation[]
+static const int permutation[]
     = { 151, 160, 137, 91,  90,  15,  131, 13,  201, 95,  96,  53,  194, 233, 7,   225, 140, 36,  103, 30,
         69,  142, 8,   99,  37,  240, 21,  10,  23,  190, 6,   148, 247, 120, 234, 75,  0,   26,  197, 62,
         94,  252, 219, 203, 117, 35,  11,  32,  57,  177, 33,  88,  237, 149, 56,  87,  174, 20,  125, 136,
@@ -139,12 +140,18 @@ static int permutation[]
         181, 199, 106, 157, 184, 84,  204, 176, 115, 121, 50,  45,  127, 4,   150, 254, 138, 236, 205, 93,
         222, 114, 67,  29,  24,  72,  243, 141, 128, 195, 78,  66,  215, 61,  156, 180 };
 
-static int perm[512];
+static size_t perm[512];	// permutation lookup table
+static size_t perm_mod[512];	// same as above, but all values mod 12 for selection from grad3
+
 static void _simplex_noise_init()
 {
-  for(int i = 0; i < 512; i++) perm[i] = permutation[i & 255];
+  for(int i = 0; i < 512; i++)
+  {
+    perm[i] = permutation[i & 255];
+    perm_mod[i] = perm[i] % 12;
+  }
 }
-static double dot(int g[], double x, double y, double z)
+static double dot(const double g[], const double x, const double y, const double z)
 {
   return g[0] * x + g[1] * y + g[2] * z;
 }
@@ -246,13 +253,13 @@ static double _simplex_noise(double xin, double yin, double zin)
   const double y3 = y0 - 1.0 + 3.0 * G3;
   const double z3 = z0 - 1.0 + 3.0 * G3;
   // Work out the hashed gradient indices of the four simplex corners
-  const int ii = i & 255;
-  const int jj = j & 255;
-  const int kk = k & 255;
-  const int gi0 = perm[ii + perm[jj + perm[kk]]] % 12;
-  const int gi1 = perm[ii + i1 + perm[jj + j1 + perm[kk + k1]]] % 12;
-  const int gi2 = perm[ii + i2 + perm[jj + j2 + perm[kk + k2]]] % 12;
-  const int gi3 = perm[ii + 1 + perm[jj + 1 + perm[kk + 1]]] % 12;
+  const size_t ii = i & 255;
+  const size_t jj = j & 255;
+  const size_t kk = k & 255;
+  const size_t gi0 = perm_mod[ii + perm[jj + perm[kk]]];
+  const size_t gi1 = perm_mod[ii + i1 + perm[jj + j1 + perm[kk + k1]]];
+  const size_t gi2 = perm_mod[ii + i2 + perm[jj + j2 + perm[kk + k2]]];
+  const size_t gi3 = perm_mod[ii + 1 + perm[jj + 1 + perm[kk + 1]]];
   // Calculate the contribution from the four corners
   double t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
   if(t0 < 0)
@@ -347,15 +354,17 @@ static double _perlin_2d_noise(double x,double y,uint32_t octaves,double persist
   return total;
 }*/
 
-static double _simplex_2d_noise(double x, double y, uint32_t octaves, double persistance, double z)
+#define OCTAVES 3
+
+static double _simplex_2d_noise(double x, double y, double z)
 {
   double total = 0;
 
   // parametrization of octaves to match power spectrum of real grain scans
-  static double f[] = {0.4910, 0.9441, 1.7280};
-  static double a[] = {0.2340, 0.7850, 1.2150};
+  static const double f[] = {0.4910, 0.9441, 1.7280};
+  static const double a[] = {0.2340, 0.7850, 1.2150};
 
-  for(uint32_t o = 0; o < octaves; o++)
+  for(uint32_t o = 0; o < OCTAVES; o++)
   {
     total += (_simplex_noise(x * f[o] / z, y * f[o] / z, o) * a[o]);
   }
@@ -391,7 +400,7 @@ static void evaluate_grain_lut(float *grain_lut, const float mb)
 
 static float dt_lut_lookup_2d_1c(const float *grain_lut, const float x, const float y)
 {
-  const float _x = CLAMPS((x + 0.5) * (GRAIN_LUT_SIZE - 1), 0, GRAIN_LUT_SIZE - 1);
+  const float _x = CLAMPS((x + 0.5f) * (GRAIN_LUT_SIZE - 1), 0, GRAIN_LUT_SIZE - 1);
   const float _y = CLAMPS(y * (GRAIN_LUT_SIZE - 1), 0, GRAIN_LUT_SIZE - 1);
 
   const int _x0 = _x < GRAIN_LUT_SIZE - 2 ? _x : GRAIN_LUT_SIZE - 2;
@@ -408,8 +417,8 @@ static float dt_lut_lookup_2d_1c(const float *grain_lut, const float x, const fl
   const float l10 = grain_lut[_y1 * GRAIN_LUT_SIZE + _x0];
   const float l11 = grain_lut[_y1 * GRAIN_LUT_SIZE + _x1];
 
-  const float xy0 = (1.0 - y_diff) * l00 + l10 * y_diff;
-  const float xy1 = (1.0 - y_diff) * l01 + l11 * y_diff;
+  const float xy0 = (1.0f - y_diff) * l00 + l10 * y_diff;
+  const float xy1 = (1.0f - y_diff) * l01 + l11 * y_diff;
   return xy0 * (1.0f - x_diff) + xy1 * x_diff;
 }
 
@@ -419,7 +428,7 @@ const char *name()
   return _("grain");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("simulate silver grains from film"),
                                       _("creative"),
@@ -440,7 +449,7 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
 // see: http://eternallyconfuzzled.com/tuts/algorithms/jsw_tut_hashing.aspx
@@ -452,41 +461,48 @@ static unsigned int _hash_string(char *s)
   return h;
 }
 
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void process(struct dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const ivoid,
+             void *const ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                        ivoid, ovoid, roi_in, roi_out))
+    return;
+
   dt_iop_grain_data_t *data = (dt_iop_grain_data_t *)piece->data;
 
   unsigned int hash = _hash_string(piece->pipe->image.filename) % (int)fmax(roi_out->width * 0.3, 1.0);
 
-  const gboolean fastmode = (piece->pipe->type & DT_DEV_PIXELPIPE_FAST) == DT_DEV_PIXELPIPE_FAST;
-  const int ch = piece->colors;
+  const gboolean fastmode = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
   // Apply grain to image
-  const double strength = (data->strength / 100.0);
-  const double octaves = 3;
+  const float strength = (data->strength / 100.0f);
   // double zoom=1.0+(8*(data->scale/100.0));
   const double wd = fminf(piece->buf_in.width, piece->buf_in.height);
   const double zoom = (1.0 + 8 * data->scale / 100) / 800.0;
   // in fastpipe mode, skip the downsampling for zoomed-out views
-  const int filter = !fastmode && fabsf(roi_out->scale - 1.0f) > 0.01;
+  const int filter = !fastmode && fabsf(roi_out->scale - 1.0f) > 0.01f;
   // filter width depends on world space (i.e. reverse wd norm and roi->scale, as well as buffer input to
   // pixelpipe iscale)
   const double filtermul = piece->iscale / (roi_out->scale * wd);
-  const float fib1 = 34.0, fib2 = 21.0;
+  const float fib1 = 34.0f, fib2 = 21.0f;
   const float fib1div2 = fib1 / fib2;
-
+  const double scale = roi_out->scale;	// is only used in double expressions, so avoid conversion
+  const double fib2inv = 1.0 / fib2;
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, filter, filtermul, ivoid, ovoid, roi_out, strength, \
-                      wd, zoom, octaves, fib2, fib1div2) \
-  shared(data, hash)
+  dt_omp_firstprivate(filter, filtermul, ivoid, ovoid, roi_out, strength, \
+                      scale, wd, zoom, fib2, fib2inv, fib1div2, data, hash) \
+  schedule(static)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
-    float *in = ((float *)ivoid) + (size_t)roi_out->width * j * ch;
-    float *out = ((float *)ovoid) + (size_t)roi_out->width * j * ch;
-    const double wy = (roi_out->y + j) / roi_out->scale;
+    float *in = ((float *)ivoid) + (size_t)4 * roi_out->width * j;
+    float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+    const double wy = (roi_out->y + j) / scale;
     const double y = wy / wd;
     // y: normalized to shorter side of image, so with pixel aspect = 1.
 
@@ -494,11 +510,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     {
       // calculate x, y in a resolution independent way:
       // wx,wy: worldspace in full image pixel coords:
-      const double wx = (roi_out->x + i) / roi_out->scale;
+      const double wx = (roi_out->x + i) / scale;
       // x: normalized to shorter side of image, so with pixel aspect = 1.
       const double x = wx / wd;
-      //  double noise=_perlin_2d_noise(x, y, octaves,0.25, zoom)*1.5;
-      double noise = 0.0;
+      float noise = 0.0;
       if(filter)
       {
         // if zoomed out a lot, use rank-1 lattice downsampling
@@ -507,21 +522,20 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           float px = l / fib2, py = l * fib1div2;
           py -= (int)py;
           float dx = px * filtermul, dy = py * filtermul;
-          noise += (1.0 / fib2) * _simplex_2d_noise(x + dx + hash, y + dy, octaves, 1.0, zoom);
+          noise += fib2inv * _simplex_2d_noise(x + dx + hash, y + dy, zoom);
         }
       }
       else
       {
-        noise = _simplex_2d_noise(x + hash, y, octaves, 1.0, zoom);
+        noise = _simplex_2d_noise(x + hash, y, zoom);
       }
 
       out[0] = in[0] + dt_lut_lookup_2d_1c(data->grain_lut, (noise * strength) * GRAIN_LIGHTNESS_STRENGTH_SCALE, in[0] / 100.0f);
       out[1] = in[1];
       out[2] = in[2];
-      out[3] = in[3];
 
-      out += ch;
-      in += ch;
+      out += 4;
+      in += 4;
     }
   }
 }
@@ -551,16 +565,6 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
   piece->data = NULL;
 }
 
-void gui_update(struct dt_iop_module_t *self)
-{
-  dt_iop_grain_gui_data_t *g = (dt_iop_grain_gui_data_t *)self->gui_data;
-  dt_iop_grain_params_t *p = (dt_iop_grain_params_t *)self->params;
-
-  dt_bauhaus_slider_set(g->scale, p->scale);
-  dt_bauhaus_slider_set(g->strength, p->strength);
-  dt_bauhaus_slider_set(g->midtones_bias, p->midtones_bias);
-}
-
 void init_global(struct dt_iop_module_so_t *self)
 {
   _simplex_noise_init();
@@ -573,20 +577,22 @@ void gui_init(struct dt_iop_module_t *self)
   /* courseness */
   g->scale = dt_bauhaus_slider_from_params(self, "scale");
   dt_bauhaus_slider_set_factor(g->scale, GRAIN_SCALE_FACTOR);
-  dt_bauhaus_slider_set_step(g->scale, 20.0/GRAIN_SCALE_FACTOR);
-  dt_bauhaus_slider_set_digits(g->scale, 5);
-  dt_bauhaus_slider_set_format(g->scale, _("%.0f ISO"));
+  dt_bauhaus_slider_set_digits(g->scale, 0);
+  dt_bauhaus_slider_set_format(g->scale, " ISO");
   gtk_widget_set_tooltip_text(g->scale, _("the grain size (~ISO of the film)"));
 
   g->strength = dt_bauhaus_slider_from_params(self, N_("strength"));
-  dt_bauhaus_slider_set_format(g->strength, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->strength, "%");
   gtk_widget_set_tooltip_text(g->strength, _("the strength of applied grain"));
 
   g->midtones_bias = dt_bauhaus_slider_from_params(self, "midtones_bias");
-  dt_bauhaus_slider_set_format(g->midtones_bias, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->midtones_bias, "%");
   gtk_widget_set_tooltip_text(g->midtones_bias, _("amount of mid-tones bias from the photographic paper response modeling. the greater the bias, the more pronounced the fall off of the grain in shadows and highlights"));
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

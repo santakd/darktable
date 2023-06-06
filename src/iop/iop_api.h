@@ -20,10 +20,6 @@
 
 #ifdef FULL_API_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "common/introspection.h"
 
 #include <cairo/cairo.h>
@@ -37,6 +33,10 @@ extern "C" {
 
 #ifdef HAVE_OPENCL
 #include <CL/cl.h>
+#endif
+
+#if defined(__cplusplus) && !defined(INCLUDE_API_FROM_MODULE_H)
+extern "C" {
 #endif
 
 struct dt_iop_module_so_t;
@@ -78,7 +78,7 @@ DEFAULT(int, flags, void);
 DEFAULT(const char *, deprecated_msg, void);
 
 /** get a descriptive text used for example in a tooltip in more modules */
-DEFAULT(const char *, description, struct dt_iop_module_t *self);
+DEFAULT(const char **, description, struct dt_iop_module_t *self);
 
 DEFAULT(int, operation_tags, void);
 DEFAULT(int, operation_tags_filter, void);
@@ -127,12 +127,7 @@ OPTIONAL(void, gui_post_expose, struct dt_iop_module_t *self, cairo_t *cr, int32
 /** optional callback to be notified if the module acquires gui focus/loses it. */
 OPTIONAL(void, gui_focus, struct dt_iop_module_t *self, gboolean in);
 
-/** Optional callback for keyboard accelerators */
-OPTIONAL(void, init_key_accels, struct dt_iop_module_so_t *so);
-OPTIONAL(void, original_init_key_accels, struct dt_iop_module_so_t *so);
 /** Key accelerator registration callbacks */
-OPTIONAL(void, connect_key_accels, struct dt_iop_module_t *self);
-OPTIONAL(void, disconnect_key_accels, struct dt_iop_module_t *self);
 OPTIONAL(GSList *, mouse_actions, struct dt_iop_module_t *self);
 
 /** optional event callbacks */
@@ -187,14 +182,6 @@ DEFAULT(void, process_tiling, struct dt_iop_module_t *self, struct dt_dev_pixelp
                                void *const o, const struct dt_iop_roi_t *const roi_in,
                                const struct dt_iop_roi_t *const roi_out, const int bpp);
 
-#if defined(__SSE__)
-/** a variant process(), that can contain SSE2 intrinsics. */
-/** can be provided by each IOP. */
-OPTIONAL(void, process_sse2, struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const void *const i,
-                             void *const o, const struct dt_iop_roi_t *const roi_in,
-                             const struct dt_iop_roi_t *const roi_out);
-#endif
-
 #ifdef HAVE_OPENCL
 /** the opencl equivalent of process(). */
 OPTIONAL(int, process_cl, struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in,
@@ -233,12 +220,15 @@ OPTIONAL(void, set_preferences, void *menu, struct dt_iop_module_t *self);
 
 #pragma GCC visibility pop
 
-#ifdef __cplusplus
-}
+#if defined(__cplusplus) && !defined(INCLUDE_API_FROM_MODULE_H)
+} // extern "C"
 #endif
 
 #endif // FULL_API_H
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

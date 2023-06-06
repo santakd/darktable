@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@
 
 // this was removed from lcms2 in 2.4
 #ifndef TYPE_XYZA_FLT
-  #define TYPE_XYZA_FLT         (FLOAT_SH(1)|COLORSPACE_SH(PT_XYZ)|EXTRA_SH(1)|CHANNELS_SH(3)|BYTES_SH(4))
+  #define TYPE_XYZA_FLT (FLOAT_SH(1)|COLORSPACE_SH(PT_XYZ)|EXTRA_SH(1)|CHANNELS_SH(3)|BYTES_SH(4))
 #endif
 
 // max iccprofile file name length
@@ -104,6 +104,42 @@ typedef enum dt_colorspaces_profile_direction_t
                              | DT_PROFILE_DIRECTION_DISPLAY2
 } dt_colorspaces_profile_direction_t;
 
+/* CICP color primaries (Recommendation ITU-T H.273) */
+typedef enum dt_colorspaces_cicp_color_primaries_t
+{
+    DT_CICP_COLOR_PRIMARIES_REC709 = 1,
+    DT_CICP_COLOR_PRIMARIES_UNSPECIFIED = 2,
+    DT_CICP_COLOR_PRIMARIES_REC2020 = 9,
+    DT_CICP_COLOR_PRIMARIES_XYZ = 10,
+    DT_CICP_COLOR_PRIMARIES_P3 = 12 // D65
+} dt_colorspaces_cicp_color_primaries_t;
+
+/* CICP transfer characteristics (Recommendation ITU-T H.273) */
+typedef enum dt_colorspaces_cicp_transfer_characteristics_t
+{
+    DT_CICP_TRANSFER_CHARACTERISTICS_REC709 = 1,
+    DT_CICP_TRANSFER_CHARACTERISTICS_UNSPECIFIED = 2,
+    DT_CICP_TRANSFER_CHARACTERISTICS_REC601 = 6,
+    DT_CICP_TRANSFER_CHARACTERISTICS_LINEAR = 8,
+    DT_CICP_TRANSFER_CHARACTERISTICS_SRGB = 13,
+    DT_CICP_TRANSFER_CHARACTERISTICS_REC2020_10B = 14,
+    DT_CICP_TRANSFER_CHARACTERISTICS_REC2020_12B = 15,
+    DT_CICP_TRANSFER_CHARACTERISTICS_PQ = 16,
+    DT_CICP_TRANSFER_CHARACTERISTICS_HLG = 18
+} dt_colorspaces_cicp_transfer_characteristics_t;
+
+/* CICP matrix coefficients (Recommendation ITU-T H.273) */
+typedef enum dt_colorspaces_cicp_matrix_coefficients_t
+{
+    DT_CICP_MATRIX_COEFFICIENTS_IDENTITY = 0,
+    DT_CICP_MATRIX_COEFFICIENTS_REC709 = 1,
+    DT_CICP_MATRIX_COEFFICIENTS_UNSPECIFIED = 2,
+    DT_CICP_MATRIX_COEFFICIENTS_SYCC = 5,
+    DT_CICP_MATRIX_COEFFICIENTS_REC601 = 6,
+    DT_CICP_MATRIX_COEFFICIENTS_REC2020_NCL = 9,
+    DT_CICP_MATRIX_COEFFICIENTS_CHROMA_DERIVED_NCL = 12
+} dt_colorspaces_cicp_matrix_coefficients_t;
+
 typedef struct dt_colorspaces_t
 {
   GList *profiles;
@@ -152,12 +188,16 @@ typedef struct dt_colorspaces_color_profile_t
   int work_pos;                             // position in working combo box, -1 if not applicable
 } dt_colorspaces_color_profile_t;
 
-int mat3inv_float(float *const dst, const float *const src);
-int mat3inv_double(double *const dst, const double *const src);
-int mat3inv(float *const dst, const float *const src);
+typedef struct dt_colorspaces_cicp_t
+{
+    dt_colorspaces_cicp_color_primaries_t color_primaries;
+    dt_colorspaces_cicp_transfer_characteristics_t transfer_characteristics;
+    dt_colorspaces_cicp_matrix_coefficients_t matrix_coefficients;
+} dt_colorspaces_cicp_t;
 
 /** populate the global color profile lists */
 dt_colorspaces_t *dt_colorspaces_init();
+
 /** cleanup on shutdown */
 void dt_colorspaces_cleanup(dt_colorspaces_t *self);
 
@@ -173,14 +213,11 @@ cmsHPROFILE dt_colorspaces_create_vendor_profile(const char *makermodel);
 /** create a ICC virtual profile from the shipped alternate matrices in darktable. */
 cmsHPROFILE dt_colorspaces_create_alternate_profile(const char *makermodel);
 
-/** just get the associated transformation matrix, for manual application. */
-int dt_colorspaces_get_darktable_matrix(const char *makermodel, float *matrix);
-
 /** return the work profile as set in colorin */
-const dt_colorspaces_color_profile_t *dt_colorspaces_get_work_profile(const int imgid);
+const dt_colorspaces_color_profile_t *dt_colorspaces_get_work_profile(const dt_imgid_t imgid);
 
 /** return the output profile as set in colorout, taking export override into account if passed in. */
-const dt_colorspaces_color_profile_t *dt_colorspaces_get_output_profile(const int imgid,
+const dt_colorspaces_color_profile_t *dt_colorspaces_get_output_profile(const dt_imgid_t imgid,
                                                                         dt_colorspaces_color_profile_type_t over_type,
                                                                         const char *over_filename);
 
@@ -208,11 +245,75 @@ void dt_colorspaces_get_profile_name(cmsHPROFILE p, const char *language, const 
 const char *dt_colorspaces_get_name(dt_colorspaces_color_profile_type_t type, const char *filename);
 
 /** common functions to change between colorspaces, used in iop modules */
-void rgb2hsl(const dt_aligned_pixel_t rgb, float *h, float *s, float *l);
-void hsl2rgb(dt_aligned_pixel_t rgb, float h, float s, float l);
+//void rgb2hsl(const dt_aligned_pixel_t rgb, float *h, float *s, float *l);
+//void hsl2rgb(dt_aligned_pixel_t rgb, float h, float s, float l);
+static inline void rgb2hsl(const dt_aligned_pixel_t rgb, float *h, float *s, float *l)
+{
+  const float r = rgb[0], g = rgb[1], b = rgb[2];
+  const float pmax = fmaxf(r, fmax(g, b));
+  const float pmin = fminf(r, fmin(g, b));
+  const float delta = (pmax - pmin);
+
+  float hv = 0, sv = 0, lv = (pmin + pmax) / 2.0;
+
+  if(delta != 0.0f)
+  {
+    sv = lv < 0.5 ? delta / fmaxf(pmax + pmin, 1.52587890625e-05f)
+                  : delta / fmaxf(2.0 - pmax - pmin, 1.52587890625e-05f);
+
+    if(pmax == r)
+      hv = (g - b) / delta;
+    else if(pmax == g)
+      hv = 2.0 + (b - r) / delta;
+    else if(pmax == b)
+      hv = 4.0 + (r - g) / delta;
+    hv /= 6.0;
+    if(hv < 0.0)
+      hv += 1.0;
+    else if(hv > 1.0)
+      hv -= 1.0;
+  }
+  *h = hv;
+  *s = sv;
+  *l = lv;
+}
+
+// for efficiency, 'hue' must be pre-scaled to be in 0..6
+static inline float hue2rgb(float m1, float m2, float hue)
+{
+  // compute the value for one of the RGB channels from the hue angle.
+  // If 1 <= angle < 3, return m2; if 4 <= angle <= 6, return m1; otherwise, linearly interpolate between m1 and m2.
+  if(hue < 1.0f)
+    return (m1 + (m2 - m1) * hue);
+  else if(hue < 3.0f)
+    return m2;
+  else
+    return hue < 4.0f ? (m1 + (m2 - m1) * (4.0f - hue)) : m1;
+}
+
+static inline void hsl2rgb(dt_aligned_pixel_t rgb, float h, float s, float l)
+{
+  float m1, m2;
+  if(s == 0)
+  {
+    rgb[0] = rgb[1] = rgb[2] = l;
+    rgb[3] = 0.0f;
+    return;
+  }
+  m2 = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
+  m1 = (2.0 * l - m2);
+  h *= 6.0f;  // pre-scale hue angle
+  rgb[0] = hue2rgb(m1, m2, h < 4.0f ? h + 2.0f : h - 4.0f);
+  rgb[1] = hue2rgb(m1, m2, h);
+  rgb[2] = hue2rgb(m1, m2, h > 2.0f ? h - 2.0f : h + 4.0f);
+  rgb[3] = 0.0f;
+}
+
+
 
 /** trigger updating the display profile from the system settings (x atom, colord, ...) */
 void dt_colorspaces_set_display_profile(const dt_colorspaces_color_profile_type_t profile_type);
+
 /** get the profile described by type & filename.
  *  this doesn't support image specifics like embedded profiles or camera matrices */
 const dt_colorspaces_color_profile_t *
@@ -224,6 +325,9 @@ dt_colorspaces_get_profile(dt_colorspaces_color_profile_type_t type, const char 
  *  or just a base name */
 gboolean  dt_colorspaces_is_profile_equal(const char *fullname, const char *filename);
 
+/** try to infer profile type from CICP */
+dt_colorspaces_color_profile_type_t dt_colorspaces_cicp_to_type(const dt_colorspaces_cicp_t *cicp, const char *filename);
+
 /** update the display transforms of srgb and adobergb to the display profile.
  * make sure that darktable.color_profiles->xprofile_lock is held when calling this! */
 void dt_colorspaces_update_display_transforms();
@@ -231,10 +335,10 @@ void dt_colorspaces_update_display_transforms();
 void dt_colorspaces_update_display2_transforms();
 
 /** Calculate CAM->XYZ, XYZ->CAM matrices **/
-int dt_colorspaces_conversion_matrices_xyz(const char *name, float in_XYZ_to_CAM[9], double XYZ_to_CAM[4][3], double CAM_to_XYZ[3][4]);
+int dt_colorspaces_conversion_matrices_xyz(const float adobe_XYZ_to_CAM[4][3], float in_XYZ_to_CAM[9], double XYZ_to_CAM[4][3], double CAM_to_XYZ[3][4]);
 
 /** Calculate CAM->RGB, RGB->CAM matrices and default WB multipliers */
-int dt_colorspaces_conversion_matrices_rgb(const char *name, double RGB_to_CAM[4][3], double CAM_to_RGB[3][4], const float *embedded_matrix, double mul[4]);
+int dt_colorspaces_conversion_matrices_rgb(const float adobe_XYZ_to_CAM[4][3], double RGB_to_CAM[4][3], double CAM_to_RGB[3][4], const float *embedded_matrix, double mul[4]);
 
 /** Applies CYGM WB coeffs to an image that's already been converted to RGB by dt_colorspaces_cygm_to_rgb */
 void dt_colorspaces_cygm_apply_coeffs_to_rgb(float *out, const float *in, int num, double RGB_to_CAM[4][3], double CAM_to_RGB[3][4], dt_aligned_pixel_t coeffs);
@@ -245,6 +349,9 @@ void dt_colorspaces_cygm_to_rgb(float *out, int num, double CAM_to_RGB[3][4]);
 /** convert RGB buffer to CYGM */
 void dt_colorspaces_rgb_to_cygm(float *out, int num, double RGB_to_CAM[4][3]);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

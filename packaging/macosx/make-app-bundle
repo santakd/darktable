@@ -18,13 +18,6 @@ do
 	install_name_tool -rpath @loader_path/../lib/darktable @loader_path/../Resources/lib/darktable "$i"
 done
 ln -s /Applications package/
-#copy gtk-osx-application translations if we can find them
-IFS=""
-port contents gtk-osx-application-common-gtk\* | sed "s|^ */|/|" | grep "\.lproj/GtkosxApplication\.strings$" | while read -r i
-do
-	mkdir package/darktable.app/Contents/Resources/"$(basename "$(dirname "$i")")"
-	cp "$i" package/darktable.app/Contents/Resources/"$(basename "$(dirname "$i")")"
-done
 
 if [ -z "$STRIPDEBUGINFO" ]
 then
@@ -37,7 +30,7 @@ fi
 
 if [ -n "$CODECERT" ]
 then
-	find package/darktable.app/Contents/Resources/lib -type d -name \*.dSYM -prune -or -type f -exec codesign --verbose --force --options runtime -s "${CODECERT}" \{} \;
+	find package/darktable.app/Contents/Resources/lib{,exec} -type d -name \*.dSYM -prune -or -type f -exec codesign --verbose --force --options runtime -s "${CODECERT}" \{} \;
 	codesign --deep --verbose --force --options runtime -s "${CODECERT}" package/darktable.app
 fi
 
@@ -72,7 +65,7 @@ echo '
 chmod -Rf go-w /Volumes/"${PROGN}"
 sync
 hdiutil detach ${device}
-DMG="${PROGN}-$(git describe --tags|sed 's/^release-//;s/-/+/;s/-/~/;s/rc/~rc/')"
+DMG="${PROGN}-$(git describe --tags|sed 's/^release-//;s/-/+/;s/-/~/;s/rc/~rc/')_$(uname -m)"
 hdiutil convert "pack.temp.dmg" -format UDZO -imagekey zlib-level=9 -o "${DMG}"
 rm -f pack.temp.dmg
 rm -Rf package

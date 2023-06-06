@@ -1,15 +1,15 @@
 add_subdirectory(external)
 
-include(CheckCCompilerFlag)
-include(CheckCXXCompilerFlag)
 include(CheckCSourceCompiles)
 include(CheckCXXSymbolExists)
+
 
 #
 # Add files for libdarktable
 #
 FILE(GLOB SOURCE_FILES
   "bauhaus/bauhaus.c"
+  "common/act_on.c"
   "common/atomic.c"
   "common/bilateral.c"
   "common/bilateralcl.c"
@@ -18,6 +18,7 @@ FILE(GLOB SOURCE_FILES
   "common/calculator.c"
   "common/collection.c"
   "common/color_picker.c"
+  "common/color_vocabulary.c"
   "common/colorlabels.c"
   "common/colorspaces.c"
   "common/curve_tools.c"
@@ -26,13 +27,13 @@ FILE(GLOB SOURCE_FILES
   "common/cpuid.c"
   "common/darktable.c"
   "common/database.c"
+  "common/datetime.c"
   "common/dbus.c"
   "common/dtpthread.c"
   "common/eaw.c"
   "common/exif.cc"
   "common/film.c"
   "common/file_location.c"
-  "common/fswatch.c"
   "common/gaussian.c"
   "common/grouping.c"
   "common/guided_filter.c"
@@ -43,16 +44,17 @@ FILE(GLOB SOURCE_FILES
   "common/image_cache.c"
   "common/image_compression.c"
   "common/imagebuf.c"
-  "common/imageio.c"
-  "common/imageio_jpeg.c"
-  "common/imageio_png.c"
-  "common/imageio_module.c"
-  "common/imageio_pfm.c"
-  "common/imageio_pnm.c"
-  "common/imageio_rgbe.c"
-  "common/imageio_tiff.c"
-  "common/imageio_im.c"
-  "common/imageio_gm.c"
+  "imageio/imageio.c"
+  "imageio/imageio_jpeg.c"
+  "imageio/imageio_png.c"
+  "imageio/imageio_module.c"
+  "imageio/imageio_pfm.c"
+  "imageio/imageio_pnm.c"
+  "imageio/imageio_rgbe.c"
+  "imageio/imageio_tiff.c"
+  "imageio/imageio_im.c"
+  "imageio/imageio_gm.c"
+  "imageio/imageio_qoi.c"
   "common/import_session.c"
   "common/interpolation.c"
   "common/locallaplacian.c"
@@ -87,6 +89,9 @@ FILE(GLOB SOURCE_FILES
   "common/iop_group.c"
   "common/iop_order.c"
   "common/iop_profile.c"
+  "common/dng_opcode.c"
+  "common/wb_presets.c"
+  "common/distance_transform.c"
   "control/conf.c"
   "control/control.c"
   "control/crawler.c"
@@ -127,6 +132,7 @@ FILE(GLOB SOURCE_FILES
   "dtgtk/gradientslider.c"
   "dtgtk/icon.c"
   "dtgtk/paint.c"
+  "dtgtk/range.c"
   "dtgtk/resetlabel.c"
   "dtgtk/sidepanel.c"
   "dtgtk/thumbnail.c"
@@ -181,6 +187,9 @@ if(WIN32)
   list(APPEND SOURCE_FILES "win/filepath.c")
   list(APPEND HEADER_FILES "win/filepath.h")
 
+  list(APPEND SOURCE_FILES "win/scandir.c")
+  list(APPEND HEADER_FILES "win/scandir.h")
+
   # Use mingw's sprintf instead of windows's
   ADD_DEFINITIONS( -D__USE_MINGW_ANSI_STDIO=1 )
 
@@ -210,36 +219,13 @@ include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/external/OpenCL)
 # initial compiler flags
 add_definitions("-DHAVE_CONFIG_H")
 
-CHECK_C_COMPILER_FLAG("-std=c99" COMPILER_SUPPORTS_C99)
-if(NOT COMPILER_SUPPORTS_C99)
-        message(FATAL_ERROR "The compiler ${CMAKE_C_COMPILER} has no C99 support. Please use a different C compiler.")
-endif()
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
-CHECK_C_COMPILER_FLAG("-std=c11" COMPILER_SUPPORTS_C11)
-if(NOT COMPILER_SUPPORTS_C11)
-  message(FATAL_ERROR "The compiler ${CMAKE_C_COMPILER} has no C11 support. Please use a different C compiler.")
-endif()
-
-# yes, need to keep both the CMAKE_CXX_FLAGS and CMAKE_CXX_STANDARD.
-# with just the CMAKE_CXX_STANDARD, try_compile() breaks:
-#   https://gitlab.kitware.com/cmake/cmake/issues/16456
-# with just the CMAKE_CXX_FLAGS, 'bundled' pugixml breaks tests
-#   https://github.com/darktable-org/rawspeed/issues/112#issuecomment-321517003
-
-message(STATUS "Checking for -std=c++14 support")
-CHECK_CXX_COMPILER_FLAG("-std=c++14" COMPILER_SUPPORTS_CXX14)
-if(NOT COMPILER_SUPPORTS_CXX14)
-  message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++14 support. Please use a different C++ compiler.")
-else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-  message(STATUS "Checking for -std=c++14 support - works")
-endif()
-
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
 
 if(APPLE AND (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -276,10 +262,6 @@ if(USE_OPENMP)
   endif()
 
   list(APPEND LIBS ${OpenMP_C_LIBRARIES} ${OpenMP_CXX_LIBRARIES})
-
-  if(WIN32)
-    list(APPEND LIBS gomp)
-  endif(WIN32)
 endif(USE_OPENMP)
 
 if(USE_DARKTABLE_PROFILING)
@@ -298,8 +280,8 @@ include_directories(SYSTEM ${Glib_INCLUDE_DIRS})
 list(APPEND LIBS ${Glib_LIBRARIES})
 
 # GTK3 pulls in ATK, GDK, GDK-PIXBUF, CAIRO, GLIB, PANGO
-find_package(GTK3 3.22 REQUIRED)
-add_definitions("-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_22")
+find_package(GTK3 3.24.15 REQUIRED)
+add_definitions("-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_24")
 #add_definitions("-DGDK_VERSION_MAX_ALLOWED=GDK_VERSION_MIN_REQUIRED")
 include_directories(SYSTEM ${GTK3_INCLUDE_DIRS})
 list(APPEND LIBS ${GTK3_LIBRARIES})
@@ -310,22 +292,27 @@ include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
 list(APPEND LIBS ${LIBXML2_LIBRARIES})
 add_definitions(${LIBXML2_DEFINITIONS})
 
-# used to launch a tiny http server, which could be used by OAuth services
-find_package(LibSoup2)
-if(LibSoup2_FOUND)
-  include_directories(SYSTEM ${LibSoup2_INCLUDE_DIRS})
-  list(APPEND LIBS ${LibSoup2_LIBRARIES})
-  add_definitions(${LibSoup2_DEFINITIONS})
-  add_definitions("-DHAVE_HTTP_SERVER")
-  list(APPEND SOURCES "common/http_server.c")
-endif(LibSoup2_FOUND)
-
 if(USE_CAMERA_SUPPORT)
-  find_package(Gphoto2)
-  include_directories(SYSTEM ${Gphoto2_INCLUDE_DIRS})
-  list(APPEND LIBS ${Gphoto2_LIBRARIES})
-  add_definitions(${Gphoto2_DEFINITIONS})
+  find_package(Gphoto2 2.5)
+  if(Gphoto2_FOUND)
+    include_directories(SYSTEM ${Gphoto2_INCLUDE_DIRS})
+    list(APPEND LIBS ${Gphoto2_LIBRARIES})
+    set(SOURCES ${SOURCES} "common/camera_control.c" "control/jobs/camera_jobs.c" )
+    add_definitions("-DHAVE_GPHOTO2")
+    # CPack ignores variables you define in your CMakeLists.txt file,
+    # and only variables ${CPACK_*} are correctly used.
+    # so this needs to be saved by adding another variable with a name beginning with CPACK
+    set(CPACK_NSIS_GPHOTO2_VERSION ${Gphoto2_VERSION_STRING} CACHE STRING "Gphoto2 version string")
+  endif()
 endif(USE_CAMERA_SUPPORT)
+
+# Used for 16-bit (half) float TIFF export (and faster import)
+# (IlmBase Half library in 2.5 and earlier and Imath 3.0 did not have C API)
+find_package(Imath 3.1 CONFIG)
+if(TARGET Imath::Imath)
+  list(APPEND LIBS Imath::Imath)
+  add_compile_definitions(HAVE_IMATH)
+endif()
 
 if(USE_OPENEXR)
   find_package(OpenEXR 3.0 CONFIG)
@@ -337,17 +324,31 @@ if(USE_OPENEXR)
   if(OpenEXR_FOUND)
     include_directories(SYSTEM ${OpenEXR_INCLUDE_DIRS})
     list(APPEND LIBS ${OpenEXR_LIBRARIES})
-    add_definitions(${OpenEXR_DEFINITIONS})
-    list(APPEND SOURCES "common/imageio_exr.cc")
+    add_definitions("-DHAVE_OPENEXR")
+    list(APPEND SOURCES "imageio/imageio_exr.cc")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} exr CACHE INTERNAL "")
   endif(OpenEXR_FOUND)
 endif(USE_OPENEXR)
+
+if(USE_JXL)
+  find_package(JXL 0.7.0)
+  if(JXL_FOUND)
+    include_directories(SYSTEM ${JXL_INCLUDE_DIRS})
+    list(APPEND LIBS ${JXL_LIBRARIES})
+    add_definitions("-DHAVE_LIBJXL")
+    list(APPEND SOURCES "imageio/imageio_jpegxl.c")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} jxl CACHE INTERNAL "")
+  endif(JXL_FOUND)
+endif(USE_JXL)
 
 if(USE_WEBP)
   find_package(WebP 0.3.0)
   if(WebP_FOUND)
     include_directories(SYSTEM ${WebP_INCLUDE_DIRS})
     list(APPEND LIBS ${WebP_LIBRARIES})
-    add_definitions(${WebP_DEFINITIONS})
+    add_definitions("-DHAVE_WEBP")
+    list(APPEND SOURCES "imageio/imageio_webp.c")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} webp CACHE INTERNAL "")
   endif(WebP_FOUND)
 endif(USE_WEBP)
 
@@ -356,19 +357,54 @@ if (USE_AVIF)
     if (TARGET avif)
         list(APPEND LIBS avif)
         add_definitions(-DHAVE_LIBAVIF=1)
-        list(APPEND SOURCES "common/imageio_avif.c")
+        list(APPEND SOURCES "imageio/imageio_avif.c")
         set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
     endif()
 endif()
 
-if(USE_LENSFUN)
-  find_package(LensFun)
-  if(LensFun_FOUND)
-    include_directories(SYSTEM ${LensFun_INCLUDE_DIRS})
-    list(APPEND LIBS ${LensFun_LIBRARIES})
-    add_definitions(${LensFun_DEFINITIONS})
+if(USE_HEIF)
+  find_package(libheif CONFIG)
+  if(NOT TARGET heif)
+    find_package(libheif 1.13.0 MODULE)
+  endif()
+  if(TARGET heif)
+    if(libheif_VERSION VERSION_GREATER_EQUAL 1.13)
+      list(APPEND LIBS heif)
+      add_definitions(-DHAVE_LIBHEIF=1)
+      list(APPEND SOURCES "imageio/imageio_heif.c")
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} heif heic hif CACHE INTERNAL "")
+      if(NOT TARGET avif)
+        # libheif can handle avif, too
+        set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
+      endif()
+    else()
+      set(libheif_FOUND NOTFOUND)
+    endif()
   endif()
 endif()
+
+# For now we use the LibRaw submodule
+if(USE_LIBRAW)
+  if(DONT_USE_INTERNAL_LIBRAW)
+    find_package(libraw 0.21.0)
+    if(libraw_FOUND)
+      message(STATUS "Using system LibRaw")
+      list(APPEND LIBS ${libraw_LIBRARY})
+      add_definitions(-DHAVE_LIBRAW=1)
+      list(APPEND SOURCES "imageio/imageio_libraw.c")
+    else()
+      message(STATUS "System LibRaw not found or not suitable, building from intree copy")
+    endif()
+  else()
+    message(STATUS "Building LibRaw from intree copy")
+    add_definitions(-DHAVE_LIBRAW=1)
+    list(APPEND SOURCES "imageio/imageio_libraw.c")
+  endif()
+endif()
+
+find_package(LensFun REQUIRED)
+include_directories(SYSTEM ${LensFun_INCLUDE_DIRS})
+list(APPEND LIBS ${LensFun_LIBRARIES})
 
 find_package(Sqlite3 3.15 REQUIRED)
 if(NOT Sqlite3_VERSION VERSION_LESS 3.24)
@@ -388,11 +424,14 @@ foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 LibXml2 CURL PNG JP
   add_definitions(${${lib}_DEFINITIONS})
 endforeach(lib)
 
-# Require exiv2 >= 0.24 to make sure everything we need is available
-find_package(Exiv2 0.24 REQUIRED)
+# Require exiv2 >= 0.25 to make sure everything we need is available
+find_package(Exiv2 0.25 REQUIRED)
 include_directories(SYSTEM ${Exiv2_INCLUDE_DIRS})
 list(APPEND LIBS ${Exiv2_LIBRARIES})
 add_definitions(${Exiv2_DEFINITIONS})
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND Exiv2_VERSION VERSION_LESS "0.28.0")
+  set(CMAKE_CXX_STANDARD 14)
+endif()
 
 # Optionally enable ISOBMFF support in Exiv2
 if (USE_ISOBMFF)
@@ -400,10 +439,12 @@ if (USE_ISOBMFF)
     # exiv2 >= 0.27.4 provides optional support for ISOBMFF files.
     # This must be manually enabled during exiv2 build and can be checked with
     # the EXV_ENABLE_BMFF symbol.
-    check_cxx_symbol_exists(EXV_ENABLE_BMFF "exiv2/exiv2.hpp" HAVE_EXV_ENABLE_BMFF)
+    check_symbol_exists(EXV_ENABLE_BMFF
+      "${Exiv2_INCLUDE_DIRS}/exiv2/exv_conf.h"
+      HAVE_EXV_ENABLE_BMFF)
     if(HAVE_EXV_ENABLE_BMFF)
       add_definitions(-DHAVE_LIBEXIV2_WITH_ISOBMFF=1)
-      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 heif CACHE INTERNAL "")
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 CACHE INTERNAL "")
       message(STATUS "Exiv2 >= 0.27.4 found with ISOBMFF support (CR3, AVIF, HEIF)")
     else()
       message(STATUS "Exiv2 >= 0.27.4 found, but was not compiled with ISOBMFF support (CR3, AVIF, HEIF)")
@@ -413,14 +454,20 @@ if (USE_ISOBMFF)
   endif()
 endif()
 
+# Optionally enable MIDI support
+if(USE_PORTMIDI)
+  find_package(PortMidi)
+endif(USE_PORTMIDI)
+
 if(USE_OPENJPEG)
   find_package(OpenJPEG)
   if(OpenJPEG_FOUND)
     add_definitions("-DHAVE_OPENJPEG")
-    list(APPEND SOURCES "common/imageio_j2k.c")
+    list(APPEND SOURCES "imageio/imageio_j2k.c")
 
     include_directories(SYSTEM ${OpenJPEG_INCLUDE_DIRS})
     list(APPEND LIBS ${OpenJPEG_LIBRARIES})
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc CACHE INTERNAL "")
   endif(OpenJPEG_FOUND)
 endif(USE_OPENJPEG)
 
@@ -463,6 +510,12 @@ if(USE_MAC_INTEGRATION)
     include_directories(SYSTEM ${MacIntegration_INCLUDE_DIRS})
     list(APPEND LIBS ${MacIntegration_LIBRARIES})
     add_definitions("-DMAC_INTEGRATION")
+    find_package(P11Kit)
+    if(P11Kit_FOUND)
+      include_directories(SYSTEM ${P11Kit_INCLUDE_DIRS})
+      list(APPEND LIBS ${P11Kit_LINK_LIBRARIES})
+      add_definitions("-DHAVE_P11KIT")
+    endif()
   endif(MacIntegration_FOUND)
 endif(USE_MAC_INTEGRATION)
 
@@ -479,24 +532,29 @@ if(USE_GRAPHICSMAGICK)
   find_package(GraphicsMagick)
   if(GraphicsMagick_FOUND)
     add_definitions(-DHAVE_GRAPHICSMAGICK)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} gif jpc jp2 bmp dcm jng miff mng pbm pnm ppm pgm CACHE INTERNAL "")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc miff mng pam webp jxl CACHE INTERNAL "")
     include_directories(SYSTEM ${GraphicsMagick_INCLUDE_DIRS})
     list(APPEND LIBS ${GraphicsMagick_LIBRARIES})
   endif(GraphicsMagick_FOUND)
 endif(USE_GRAPHICSMAGICK)
 
 if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
-  # Do not use find_package(): module is not working with ImageMagick 7
+  # Do not use find_package(): module is not providing needed CFLAGS
   find_package(PkgConfig)
-  pkg_check_modules(ImageMagick MagickWand QUIET)
+  pkg_check_modules(ImageMagick MagickWand)
   if(ImageMagick_FOUND)
+    if(ImageMagick_VERSION VERSION_GREATER 7)
+      add_definitions(-DHAVE_IMAGEMAGICK7)
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} qoi CACHE INTERNAL "")
+    endif(ImageMagick_VERSION VERSION_GREATER 7)
     add_definitions(-DHAVE_IMAGEMAGICK ${ImageMagick_CFLAGS_OTHER})
-    if(NOT ImageMagick_VERSION VERSION_GREATER 7)
-      message(FATAL "ImageMagick version must be >= 7")
-    endif(NOT ImageMagick_VERSION VERSION_GREATER 7)
     include_directories(SYSTEM ${ImageMagick_INCLUDE_DIRS})
-    find_library(ImageMagick_LIBRARY ${ImageMagick_LIBRARIES} HINTS ${ImageMagick_LIBDIR})
-    list(APPEND LIBS ${ImageMagick_LIBRARY})
+    foreach(lib ${ImageMagick_LIBRARIES})
+      find_library(ImageMagick_LIBRARY NAMES ${lib} HINTS ${ImageMagick_LIBRARY_DIRS})
+      list(APPEND LIBS ${ImageMagick_LIBRARY})
+      unset(ImageMagick_LIBRARY CACHE)
+    endforeach(lib)
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc miff mng pam webp jxl CACHE INTERNAL "")
   endif(ImageMagick_FOUND)
 endif(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
 
@@ -510,55 +568,18 @@ if(USE_GMIC)
 endif(USE_GMIC)
 
 if(USE_ICU)
-  find_package(ICU)
+  find_package(ICU COMPONENTS i18n data uc)
   if(ICU_FOUND)
     add_definitions(-DHAVE_ICU -DSQLITE_CORE -DSQLITE_ENABLE_ICU)
-    list(APPEND LIBS ${ICU_LIBRARIES})
+    list(APPEND LIBS ICU::i18n ICU::data ICU::uc)
     set(SOURCES ${SOURCES} "common/sqliteicu.c")
   endif(ICU_FOUND)
 endif(USE_ICU)
-
-#
-# Add HAVE_xxx defines used by darktable
-#
-
-if(LensFun_FOUND)
-  add_definitions("-DHAVE_LENSFUN")
-endif(LensFun_FOUND)
-
-if(OpenEXR_FOUND)
-  add_definitions("-DHAVE_OPENEXR")
-  set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc CACHE INTERNAL "")
-endif(OpenEXR_FOUND)
 
 if(USE_OPENCL)
   add_definitions("-DHAVE_OPENCL")
 endif(USE_OPENCL)
 
-
-if(Gphoto2_FOUND)
-  set(SOURCES ${SOURCES} "common/camera_control.c" "control/jobs/camera_jobs.c" )
-  add_definitions("-DHAVE_GPHOTO2")
-
-  # Gphoto 2.5 changed the prototype of a set of callback functions.
-  # The interface change makes it necessary to detect the version here,
-  # as it's not possible to do in code. Argh.
-  # Diff: http://sourceforge.net/p/gphoto/code/12735/
-  #
-  # This workaround may be removed when darktable no longer needs
-  # to support gphoto2 < 2.5.0.
-  #
-  if(${Gphoto2_VERSION_STRING} VERSION_LESS "2.5")
-  else()
-    add_definitions("-DHAVE_GPHOTO_25_OR_NEWER")
-  endif()
-
-  # CPack ignores variables you define in your CMakeLists.txt file,
-  # and only variables ${CPACK_*} are correctly used.
-  # so this needs to be saved by adding another variable with a name beginning with CPACK
-  set(CPACK_NSIS_GPHOTO2_VERSION ${Gphoto2_VERSION_STRING} CACHE STRING "Gphoto2 version string")
-  set(CPACK_NSIS_GRAPHICSMAGICK_VERSION ${GraphicsMagick_PKGCONF_VERSION} CACHE STRING "GM version string")
-endif(Gphoto2_FOUND)
 
 # Check for __builtin_cpu_supports here due to a bug in clang/llvm. LLVM uses
 # libgcc to provide the symbols, so if clang wasn't compiled with libgcc, the
@@ -612,7 +633,7 @@ if(NOT CUSTOM_CFLAGS)
 
   #-g MUST be set for ALL builds, or there will be no support for them when bugs happen
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
-  set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2")
+  set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -ftree-vectorize")
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
   if(CMAKE_COMPILER_IS_GNUCC)
     if(BUILD_SSE2_CODEPATHS)
@@ -626,7 +647,7 @@ if(NOT CUSTOM_CFLAGS)
   endif()
 
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
-  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2")
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -ftree-vectorize")
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
   if(CMAKE_COMPILER_IS_GNUCXX)
     if(BUILD_SSE2_CODEPATHS)
@@ -646,6 +667,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 #
 # Generate config.h
 #
+list(REMOVE_DUPLICATES DT_SUPPORTED_EXTENSIONS)
 string(REPLACE ";" "\", \"" DT_SUPPORTED_EXTENSIONS_STRING "${DT_SUPPORTED_EXTENSIONS}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config.cmake.h" "${DARKTABLE_BINDIR}/config.h" @ONLY)
 
@@ -926,7 +948,7 @@ unset(LIBS)
 unset(STATIC_LIBS)
 unset(LIB_DEPS)
 
-add_library(lib_darktable_imageio_rawspeed STATIC common/imageio_rawspeed.cc)
+add_library(lib_darktable_imageio_rawspeed STATIC imageio/imageio_rawspeed.cc)
 target_link_libraries(lib_darktable_imageio_rawspeed PRIVATE rawspeed)
 target_link_libraries(lib_darktable PRIVATE lib_darktable_imageio_rawspeed)
 
@@ -993,7 +1015,7 @@ if (WIN32)
 else()
     set_target_properties(darktable
                           PROPERTIES
-                          INSTALL_RPATH ${CMAKE_INSTALL_LIBDIR_RPATH})
+                          INSTALL_RPATH ${RPATH_ORIGIN}/${REL_BIN_TO_LIBDIR})
 endif(WIN32)
 
 install(TARGETS darktable DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT DTApplication)
@@ -1002,3 +1024,16 @@ InstallDependencyFiles()
 
 # Tell CPack about the components and group the data components together (CPACK_COMPONENT_${COMPONENT_NAME_ALL_CAPS}_GROUP).
 set(CPACK_COMPONENTS_ALL DTApplication DTDebugSymbols DTDocuments)
+
+if(USE_LIBRAW AND NOT (DONT_USE_INTERNAL_LIBRAW AND libraw_FOUND))
+  set(LIBRAW_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/LibRaw" CACHE STRING "Relative path to libraw directory (default=CMAKE_CURRENT_SOURCE_DIR)")
+  if(NOT USE_OPENMP)
+    set(ENABLE_OPENMP OFF CACHE BOOL "")
+  endif()
+  set(ENABLE_LCMS OFF CACHE BOOL "")
+  set(ENABLE_JASPER OFF CACHE BOOL "")
+
+  # LibRaw sub-module
+  add_subdirectory(external/LibRaw-cmake)
+  target_link_libraries(lib_darktable PRIVATE libraw::libraw)
+endif()

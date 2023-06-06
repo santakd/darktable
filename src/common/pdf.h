@@ -1,6 +1,6 @@
 /*
  *    This file is part of darktable,
- *    Copyright (C) 2015-2021 darktable developers.
+ *    Copyright (C) 2015-2023 darktable developers.
  *
  *    darktable is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -101,10 +101,10 @@ static const struct
   const float  height;
 } dt_pdf_paper_sizes[] =
 {
-  {N_("a4"),     dt_pdf_mm_to_point(210),   dt_pdf_mm_to_point(297)},
-  {N_("a3"),     dt_pdf_mm_to_point(297),   dt_pdf_mm_to_point(420)},
-  {N_("letter"), dt_pdf_inch_to_point(8.5), dt_pdf_inch_to_point(11.0)},
-  {N_("legal"),  dt_pdf_inch_to_point(8.5), dt_pdf_inch_to_point(14.0)},
+  {N_("A4"),     dt_pdf_mm_to_point(210),   dt_pdf_mm_to_point(297)},
+  {N_("A3"),     dt_pdf_mm_to_point(297),   dt_pdf_mm_to_point(420)},
+  {N_("Letter"), dt_pdf_inch_to_point(8.5), dt_pdf_inch_to_point(11.0)},
+  {N_("Legal"),  dt_pdf_inch_to_point(8.5), dt_pdf_inch_to_point(14.0)},
   {NULL,         0.0,                       0.0}
 };
 
@@ -124,6 +124,9 @@ void dt_pdf_finish(dt_pdf_t *pdf, dt_pdf_page_t **pages, int n_pages);
 int dt_pdf_parse_length(const char *str, float *length);
 int dt_pdf_parse_paper_size(const char *str, float *width, float *height);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

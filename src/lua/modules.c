@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2020 darktable developers.
+   Copyright (C) 2013-2023 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,10 +15,11 @@
    You should have received a copy of the GNU General Public License
    along with darktable.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "lua/modules.h"
-#include "common/imageio.h"
+
 #include "control/conf.h"
+#include "imageio/imageio_common.h"
 #include "lua/image.h"
+#include "lua/modules.h"
 #include "lua/types.h"
 
 
@@ -128,6 +129,9 @@ int dt_lua_init_early_modules(lua_State *L)
   lua_setfield(L, LUA_REGISTRYINDEX, "dt_lua_modules");
   return 0;
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

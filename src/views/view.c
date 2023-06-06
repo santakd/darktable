@@ -16,6 +16,8 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "common/extra_optimizations.h"
+
 #include "views/view.h"
 #include "bauhaus/bauhaus.h"
 #include "common/collection.h"
@@ -48,8 +50,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
-#define DECORATION_SIZE_LIMIT 40
 
 static void dt_view_manager_load_modules(dt_view_manager_t *vm);
 static int dt_view_load_module(void *v, const char *libname, const char *module_name);
@@ -173,12 +173,9 @@ static int dt_view_load_module(void *v, const char *libname, const char *module_
 
   if(darktable.gui)
   {
-    module->actions = (dt_action_t){ DT_ACTION_TYPE_VIEW, module->module_name, module->name(module),
-                                     .owner = &darktable.control->actions_views };
+    module->actions = (dt_action_t){ DT_ACTION_TYPE_VIEW, module->module_name, module->name(module) };
     dt_action_insert_sorted(&darktable.control->actions_views, &module->actions);
   }
-
-  if(darktable.gui && module->init_key_accels) module->init_key_accels(module);
 
   return 0;
 }
@@ -214,7 +211,7 @@ static void _remove_child(GtkWidget *child,GtkContainer *container)
     }
 }
 
-int dt_view_manager_switch(dt_view_manager_t *vm, const char *view_name)
+gboolean dt_view_manager_switch(dt_view_manager_t *vm, const char *view_name)
 {
   gboolean switching_to_none = *view_name == '\0';
   dt_view_t *new_view = NULL;
@@ -224,31 +221,25 @@ int dt_view_manager_switch(dt_view_manager_t *vm, const char *view_name)
     for(GList *iter = vm->views; iter; iter = g_list_next(iter))
     {
       dt_view_t *v = (dt_view_t *)iter->data;
-      if(!strcmp(v->module_name, view_name))
+      if(!g_ascii_strcasecmp(v->module_name, view_name))
       {
         new_view = v;
         break;
       }
     }
-    if(!new_view) return 1; // the requested view doesn't exist
+    if(!new_view) return TRUE; // the requested view doesn't exist
   }
 
   return dt_view_manager_switch_by_view(vm, new_view);
 }
 
-int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
+gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 {
   dt_view_t *old_view = vm->current_view;
   dt_view_t *new_view = (dt_view_t *)nv; // views belong to us, we can de-const them :-)
 
-  // Before switching views, restore accelerators if disabled
-  if(!darktable.control->key_accelerators_on) dt_control_key_accelerators_on(darktable.control);
-
   // reset the cursor to the default one
   dt_control_change_cursor(GDK_LEFT_PTR);
-
-  // also ignore what scrolling there was previously happening
-  memset(darktable.gui->scroll_to, 0, sizeof(darktable.gui->scroll_to));
 
   // destroy old module list
 
@@ -289,7 +280,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 
     /* remove sticky accels window */
     if(vm->accels_window.window) dt_view_accels_hide(vm);
-    return 0;
+    return FALSE;
   }
 
   // invariant: new_view != NULL after this point
@@ -297,7 +288,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 
   if(new_view->try_enter)
   {
-    const int error = new_view->try_enter(new_view);
+    const gboolean error = new_view->try_enter(new_view);
     if(error)
     {
       DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_VIEWMANAGER_VIEW_CANNOT_CHANGE, old_view, new_view);
@@ -341,40 +332,24 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
     dt_lib_module_t *plugin = (dt_lib_module_t *)(iter->data);
     if(dt_lib_is_visible_in_view(plugin, new_view))
     {
-
       /* try get the module expander  */
       GtkWidget *w = dt_lib_gui_get_expander(plugin);
-
-      if(plugin->connect_key_accels) plugin->connect_key_accels(plugin);
-      dt_lib_connect_common_accels(plugin);
 
       /* if we didn't get an expander let's add the widget */
       if(!w) w = plugin->widget;
 
-      dt_gui_add_help_link(w, dt_get_help_url(plugin->plugin_name));
+      dt_gui_add_help_link(w, plugin->plugin_name);
       // some plugins help links depend on the view
       if(!strcmp(plugin->plugin_name,"module_toolbox")
         || !strcmp(plugin->plugin_name,"view_toolbox"))
       {
         dt_view_type_flags_t view_type = new_view->view(new_view);
         if(view_type == DT_VIEW_LIGHTTABLE)
-          dt_gui_add_help_link(w, dt_get_help_url("lighttable_mode"));
+          dt_gui_add_help_link(w, "lighttable_mode");
         if(view_type == DT_VIEW_DARKROOM)
-          dt_gui_add_help_link(w, dt_get_help_url("darkroom_bottom_panel"));
+          dt_gui_add_help_link(w, "darkroom_bottom_panel");
       }
 
-
-      /* add module to its container */
-      dt_ui_container_add_widget(darktable.gui->ui, plugin->container(plugin), w);
-    }
-  }
-
-  /* hide/show modules as last config */
-  for(GList *iter = darktable.lib->plugins; iter; iter = g_list_next(iter))
-  {
-    dt_lib_module_t *plugin = (dt_lib_module_t *)(iter->data);
-    if(dt_lib_is_visible_in_view(plugin, new_view))
-    {
       /* set expanded if last mode was that */
       char var[1024];
       gboolean expanded = FALSE;
@@ -396,13 +371,17 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
           gtk_widget_hide(plugin->widget);
       }
       if(plugin->view_enter) plugin->view_enter(plugin, old_view, new_view);
+
+      /* add module to its container */
+      dt_ui_container_add_widget(darktable.gui->ui, plugin->container(plugin), w);
     }
   }
+
+  darktable.lib->gui_module = NULL;
 
   /* enter view. crucially, do this before initing the plugins below,
       as e.g. modulegroups requires the dr stuff to be inited. */
   if(new_view->enter) new_view->enter(new_view);
-  if(new_view->connect_key_accels) new_view->connect_key_accels(new_view);
 
   /* update the scrollbars */
   dt_ui_update_scrollbars(darktable.gui->ui);
@@ -420,7 +399,7 @@ int dt_view_manager_switch_by_view(dt_view_manager_t *vm, const dt_view_t *nv)
 
   // update toast visibility
   DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_CONTROL_TOAST_REDRAW);
-  return 0;
+  return FALSE;
 }
 
 const char *dt_view_manager_name(dt_view_manager_t *vm)
@@ -611,7 +590,7 @@ void dt_view_manager_scrollbar_changed(dt_view_manager_t *vm, double x, double y
 void dt_view_set_scrollbar(dt_view_t *view, float hpos, float hlower, float hsize, float hwinsize, float vpos,
                            float vlower, float vsize, float vwinsize)
 {
-  if (view->vscroll_pos == vpos
+  if(view->vscroll_pos == vpos
       && view->vscroll_lower == vlower
       && view->vscroll_size == vsize
       && view->vscroll_viewport_size == vwinsize
@@ -640,346 +619,11 @@ void dt_view_set_scrollbar(dt_view_t *view, float hpos, float hlower, float hsiz
   widget = darktable.gui->widgets.top_border;
   gtk_widget_queue_draw(widget);
 
-  if (!darktable.gui->scrollbars.dragging)
+  if(!darktable.gui->scrollbars.dragging)
     dt_ui_update_scrollbars(darktable.gui->ui);
 }
 
-static int _images_to_act_on_find_custom(gconstpointer a, gconstpointer b)
-{
-  return (GPOINTER_TO_INT(a) != GPOINTER_TO_INT(b));
-}
-static void _images_to_act_on_insert_in_list(GList **list, const int imgid, gboolean only_visible)
-{
-  if(only_visible)
-  {
-    if(!g_list_find_custom(*list, GINT_TO_POINTER(imgid), _images_to_act_on_find_custom))
-      *list = g_list_append(*list, GINT_TO_POINTER(imgid));
-    return;
-  }
-
-  const dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'r');
-  if(image)
-  {
-    const int img_group_id = image->group_id;
-    dt_image_cache_read_release(darktable.image_cache, image);
-
-    if(!darktable.gui
-       || !darktable.gui->grouping
-       || darktable.gui->expanded_group_id == img_group_id
-       || !dt_selection_get_collection(darktable.selection))
-    {
-      if(!g_list_find_custom(*list, GINT_TO_POINTER(imgid), _images_to_act_on_find_custom))
-        *list = g_list_append(*list, GINT_TO_POINTER(imgid));
-    }
-    else
-    {
-      sqlite3_stmt *stmt;
-      gchar *query = g_strdup_printf(
-          "SELECT id"
-          "  FROM main.images"
-          "  WHERE group_id = %d AND id IN (%s)",
-          img_group_id, dt_collection_get_query_no_group(dt_selection_get_collection(darktable.selection)));
-      DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
-      while(sqlite3_step(stmt) == SQLITE_ROW)
-      {
-        const int imgidg = sqlite3_column_int(stmt, 0);
-        if(!g_list_find_custom(*list, GINT_TO_POINTER(imgidg), _images_to_act_on_find_custom))
-          *list = g_list_append(*list, GINT_TO_POINTER(imgidg));
-      }
-      sqlite3_finalize(stmt);
-      g_free(query);
-    }
-  }
-}
-
-// get the list of images to act on during global changes (libs, accels)
-const GList *dt_view_get_images_to_act_on(const gboolean only_visible, const gboolean force,
-                                          const gboolean ordered)
-{
-  /** Here's how it works
-   *
-   *             mouse over| x | x | x |   |   |
-   *     mouse inside table| x | x |   |   |   |
-   * mouse inside selection| x |   |   |   |   |
-   *          active images| ? | ? | x |   | x |
-   *                       |   |   |   |   |   |
-   *                       | S | O | O | S | A |
-   *  S = selection ; O = mouseover ; A = active images
-   *  the mouse can be outside thumbtable in case of filmstrip + mouse in center widget
-   *
-   *  if only_visible is FALSE, then it will add also not visible images because of grouping
-   *  force define if we try to use cache or not
-   *  if ordered is TRUE, we return the list in the gui order. Otherwise the order is undefined (but quicker)
-   **/
-
-  const int mouseover = dt_control_get_mouse_over_id();
-
-  // if possible, we return the cached list
-  if(!force
-     && darktable.view_manager->act_on.ok
-     && darktable.view_manager->act_on.image_over == mouseover
-     && darktable.view_manager->act_on.ordered == ordered
-     && darktable.view_manager->act_on.inside_table
-            == dt_ui_thumbtable(darktable.gui->ui)->mouse_inside
-     && g_slist_length(darktable.view_manager->act_on.active_imgs)
-            == g_slist_length(darktable.view_manager->active_images))
-  {
-    // we test active images if mouse outside table
-    gboolean ok = TRUE;
-    if(!dt_ui_thumbtable(darktable.gui->ui)->mouse_inside
-       && darktable.view_manager->act_on.active_imgs)
-    {
-      GSList *l1 = darktable.view_manager->act_on.active_imgs;
-      GSList *l2 = darktable.view_manager->active_images;
-      while(l1 && l2)
-      {
-        if(GPOINTER_TO_INT(l1->data) != GPOINTER_TO_INT(l2->data))
-        {
-          ok = FALSE;
-          break;
-        }
-        l2 = g_slist_next(l2);
-        l1 = g_slist_next(l1);
-      }
-    }
-    if(ok) return darktable.view_manager->act_on.images;
-  }
-
-  GList *l = NULL;
-  gboolean inside_sel = FALSE;
-  if(mouseover > 0)
-  {
-    // column 1,2,3
-    if(dt_ui_thumbtable(darktable.gui->ui)->mouse_inside)
-    {
-      // column 1,2
-      sqlite3_stmt *stmt;
-      gchar *query = g_strdup_printf("SELECT imgid FROM main.selected_images WHERE imgid=%d", mouseover);
-      DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
-      if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
-      {
-        inside_sel = TRUE;
-        sqlite3_finalize(stmt);
-      }
-      g_free(query);
-
-      if(inside_sel)
-      {
-        // column 1
-
-        // first, we try to return cached list if we were already
-        // inside sel and the selection has not changed
-        if(!force
-           && darktable.view_manager->act_on.ok
-           && darktable.view_manager->act_on.image_over_inside_sel
-           && darktable.view_manager->act_on.inside_table
-           && darktable.view_manager->act_on.ordered == ordered)
-        {
-          return darktable.view_manager->act_on.images;
-        }
-
-        // we return the list of the selection
-        l = dt_selection_get_list(darktable.selection, only_visible, ordered);
-      }
-      else
-      {
-        // column 2
-        _images_to_act_on_insert_in_list(&l, mouseover, only_visible);
-      }
-    }
-    else
-    {
-      // column 3
-      _images_to_act_on_insert_in_list(&l, mouseover, only_visible);
-      // be absolutely sure we have the id in the list (in darkroom,
-      // the active image can be out of collection)
-      if(!only_visible) _images_to_act_on_insert_in_list(&l, mouseover, TRUE);
-    }
-  }
-  else
-  {
-    // column 4,5
-    if(darktable.view_manager->active_images)
-    {
-      // column 5
-      for(GSList *ll = darktable.view_manager->active_images; ll; ll = g_slist_next(ll))
-      {
-        const int id = GPOINTER_TO_INT(ll->data);
-        _images_to_act_on_insert_in_list(&l, id, only_visible);
-        // be absolutely sure we have the id in the list (in darkroom,
-        // the active image can be out of collection)
-        if(!only_visible) _images_to_act_on_insert_in_list(&l, id, TRUE);
-      }
-    }
-    else
-    {
-      // column 4
-      // we return the list of the selection
-      l = dt_selection_get_list(darktable.selection, only_visible, ordered);
-    }
-  }
-
-  // let's register the new list as cached
-  darktable.view_manager->act_on.image_over_inside_sel = inside_sel;
-  darktable.view_manager->act_on.ordered = ordered;
-  darktable.view_manager->act_on.image_over = mouseover;
-  g_list_free(darktable.view_manager->act_on.images);
-  darktable.view_manager->act_on.images = l;
-  g_slist_free(darktable.view_manager->act_on.active_imgs);
-  darktable.view_manager->act_on.active_imgs = g_slist_copy(darktable.view_manager->active_images);
-  darktable.view_manager->act_on.inside_table = dt_ui_thumbtable(darktable.gui->ui)->mouse_inside;
-  darktable.view_manager->act_on.ok = TRUE;
-
-  return darktable.view_manager->act_on.images;
-}
-
-// get the query to retrieve images to act on. this is useful to speedup actions if they already use sqlite queries
-gchar *dt_view_get_images_to_act_on_query(const gboolean only_visible)
-{
-  /** Here's how it works
-   *
-   *             mouse over| x | x | x |   |   |
-   *     mouse inside table| x | x |   |   |   |
-   * mouse inside selection| x |   |   |   |   |
-   *          active images| ? | ? | x |   | x |
-   *                       |   |   |   |   |   |
-   *                       | S | O | O | S | A |
-   *  S = selection ; O = mouseover ; A = active images
-   *  the mouse can be outside thumbtable in case of filmstrip + mouse in center widget
-   *
-   *  if only_visible is FALSE, then it will add also not visible images because of grouping
-   *  due to dt_selection_get_list_query limitation, order is always considered as undefined
-   **/
-
-  const int mouseover = dt_control_get_mouse_over_id();
-
-  GList *l = NULL;
-  gboolean inside_sel = FALSE;
-  if(mouseover > 0)
-  {
-    // column 1,2,3
-    if(dt_ui_thumbtable(darktable.gui->ui)->mouse_inside)
-    {
-      // column 1,2
-      sqlite3_stmt *stmt;
-      gchar *query = g_strdup_printf("SELECT imgid FROM main.selected_images WHERE imgid =%d", mouseover);
-      DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
-      if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
-      {
-        inside_sel = TRUE;
-        sqlite3_finalize(stmt);
-      }
-      g_free(query);
-
-      if(inside_sel)
-      {
-        // column 1
-        return dt_selection_get_list_query(darktable.selection, only_visible, FALSE);
-      }
-      else
-      {
-        // column 2
-        _images_to_act_on_insert_in_list(&l, mouseover, only_visible);
-      }
-    }
-    else
-    {
-      // column 3
-      _images_to_act_on_insert_in_list(&l, mouseover, only_visible);
-      // be absolutely sure we have the id in the list (in darkroom,
-      // the active image can be out of collection)
-      if(!only_visible) _images_to_act_on_insert_in_list(&l, mouseover, TRUE);
-    }
-  }
-  else
-  {
-    // column 4,5
-    if(darktable.view_manager->active_images)
-    {
-      // column 5
-      for(GSList *ll = darktable.view_manager->active_images;
-          ll;
-          ll = g_slist_next(ll))
-      {
-        const int id = GPOINTER_TO_INT(ll->data);
-        _images_to_act_on_insert_in_list(&l, id, only_visible);
-        // be absolutely sure we have the id in the list (in darkroom,
-        // the active image can be out of collection)
-        if(!only_visible) _images_to_act_on_insert_in_list(&l, id, TRUE);
-      }
-    }
-    else
-    {
-      // column 4
-      return dt_selection_get_list_query(darktable.selection, only_visible, FALSE);
-    }
-  }
-
-  // if we don't return the selection, we return the list of imgid separated by comma
-  // in the form it can be used inside queries
-  gchar *images = NULL;
-  for(; l; l = g_list_next(l))
-  {
-    images = dt_util_dstrcat(images, "%d,", GPOINTER_TO_INT(l->data));
-  }
-  if(images)
-  {
-    // remove trailing comma
-    images[strlen(images) - 1] = '\0';
-  }
-  else
-    images = g_strdup(" ");
-  return images;
-}
-
-// get the main image to act on during global changes (libs, accels)
-int dt_view_get_image_to_act_on()
-{
-  /** Here's how it works -- same as for list, except we don't care about mouse inside selection or table
-   *
-   *             mouse over| x |   |   |
-   *          active images| ? |   | x |
-   *                       |   |   |   |
-   *                       | O | S | A |
-   *  First image of ...
-   *  S = selection ; O = mouseover ; A = active images
-   **/
-
-  int ret = -1;
-  const int mouseover = dt_control_get_mouse_over_id();
-
-  if(mouseover > 0)
-  {
-    ret = mouseover;
-  }
-  else
-  {
-    if(darktable.view_manager->active_images)
-    {
-      ret = GPOINTER_TO_INT(darktable.view_manager->active_images->data);
-    }
-    else
-    {
-      sqlite3_stmt *stmt;
-      DT_DEBUG_SQLITE3_PREPARE_V2
-        (dt_database_get(darktable.db),
-         "SELECT s.imgid"
-         " FROM main.selected_images as s, memory.collected_images as c"
-         " WHERE s.imgid=c.imgid"
-         " ORDER BY c.rowid LIMIT 1",
-                                  -1, &stmt, NULL);
-      if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
-      {
-        ret = sqlite3_column_int(stmt, 0);
-      }
-      if(stmt) sqlite3_finalize(stmt);
-    }
-  }
-
-  return ret;
-}
-
-dt_view_surface_value_t dt_view_image_get_surface(int imgid, int width, int height, cairo_surface_t **surface,
+dt_view_surface_value_t dt_view_image_get_surface(dt_imgid_t imgid, int width, int height, cairo_surface_t **surface,
                                                   const gboolean quality)
 {
   double tt = 0;
@@ -1118,7 +762,7 @@ dt_view_surface_value_t dt_view_image_get_surface(int imgid, int width, int heig
        So we pass the raw data to be processed, this is more data but correct.
     */
     if(darktable.gui->show_focus_peaking && mip == buf.size)
-      dt_focuspeaking(cr, img_width, img_height, rgbbuf, buf_wd, buf_ht);
+      dt_focuspeaking(cr, buf_wd, buf_ht, rgbbuf);
 
     cairo_surface_destroy(tmp_surface);
     cairo_destroy(cr);
@@ -1202,7 +846,7 @@ char* dt_view_extend_modes_str(const char * name, const gboolean is_hdr, const g
  * \param[in] imgid The image id
  * \param[in] value The boolean value for the bit
  */
-void dt_view_set_selection(int imgid, int value)
+void dt_view_set_selection(dt_imgid_t imgid, int value)
 {
   /* clear and reset statement */
   DT_DEBUG_SQLITE3_CLEAR_BINDINGS(darktable.view_manager->statements.is_selected);
@@ -1244,7 +888,7 @@ void dt_view_set_selection(int imgid, int value)
  * \brief Toggle the selection bit in the database for the specified image
  * \param[in] imgid The image id
  */
-void dt_view_toggle_selection(int imgid)
+void dt_view_toggle_selection(dt_imgid_t imgid)
 {
   /* clear and reset statement */
   DT_DEBUG_SQLITE3_CLEAR_BINDINGS(darktable.view_manager->statements.is_selected);
@@ -1277,10 +921,36 @@ void dt_view_toggle_selection(int imgid)
 /**
  * \brief Reset filter
  */
-void dt_view_filter_reset(const dt_view_manager_t *vm, gboolean smart_filter)
+void dt_view_filtering_reset(const dt_view_manager_t *vm, gboolean smart_filter)
 {
-  if(vm->proxy.filter.module && vm->proxy.filter.reset_filter)
-    vm->proxy.filter.reset_filter(vm->proxy.filter.module, smart_filter);
+  if(vm->proxy.module_filtering.module && vm->proxy.module_filtering.reset_filter)
+    vm->proxy.module_filtering.reset_filter(vm->proxy.module_filtering.module, smart_filter);
+}
+
+void dt_view_filtering_show_pref_menu(const dt_view_manager_t *vm, GtkWidget *bt)
+{
+  if(vm->proxy.module_filtering.module && vm->proxy.module_filtering.show_pref_menu)
+    vm->proxy.module_filtering.show_pref_menu(vm->proxy.module_filtering.module, bt);
+}
+
+GtkWidget *dt_view_filter_get_filters_box(const dt_view_manager_t *vm)
+{
+  if(vm->proxy.filter.module && vm->proxy.filter.get_filter_box)
+    return vm->proxy.filter.get_filter_box(vm->proxy.filter.module);
+  return NULL;
+}
+GtkWidget *dt_view_filter_get_sort_box(const dt_view_manager_t *vm)
+{
+  if(vm->proxy.filter.module && vm->proxy.filter.get_sort_box)
+    return vm->proxy.filter.get_sort_box(vm->proxy.filter.module);
+  return NULL;
+}
+
+GtkWidget *dt_view_filter_get_count(const dt_view_manager_t *vm)
+{
+  if(vm->proxy.filter.module && vm->proxy.filter.get_count)
+    return vm->proxy.filter.get_count(vm->proxy.filter.module);
+  return NULL;
 }
 
 void dt_view_active_images_reset(gboolean raise)
@@ -1291,7 +961,7 @@ void dt_view_active_images_reset(gboolean raise)
 
   if(raise) DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_ACTIVE_IMAGES_CHANGE);
 }
-void dt_view_active_images_add(int imgid, gboolean raise)
+void dt_view_active_images_add(dt_imgid_t imgid, gboolean raise)
 {
   darktable.view_manager->active_images
       = g_slist_append(darktable.view_manager->active_images, GINT_TO_POINTER(imgid));
@@ -1370,13 +1040,13 @@ gboolean dt_view_lighttable_preview_state(dt_view_manager_t *vm)
     return FALSE;
 }
 
-void dt_view_lighttable_set_preview_state(dt_view_manager_t *vm, gboolean state, gboolean focus)
+void dt_view_lighttable_set_preview_state(dt_view_manager_t *vm, gboolean state, gboolean sticky, gboolean focus)
 {
   if(vm->proxy.lighttable.module)
-    vm->proxy.lighttable.set_preview_state(vm->proxy.lighttable.view, state, focus);
+    vm->proxy.lighttable.set_preview_state(vm->proxy.lighttable.view, state, sticky, focus);
 }
 
-void dt_view_lighttable_change_offset(dt_view_manager_t *vm, gboolean reset, gint imgid)
+void dt_view_lighttable_change_offset(dt_view_manager_t *vm, gboolean reset, dt_imgid_t imgid)
 {
   if(vm->proxy.lighttable.module)
     vm->proxy.lighttable.change_offset(vm->proxy.lighttable.view, reset, imgid);
@@ -1384,10 +1054,24 @@ void dt_view_lighttable_change_offset(dt_view_manager_t *vm, gboolean reset, gin
 
 void dt_view_collection_update(const dt_view_manager_t *vm)
 {
+  if(vm->proxy.module_filtering.module) vm->proxy.module_filtering.update(vm->proxy.module_filtering.module);
   if(vm->proxy.module_collect.module)
     vm->proxy.module_collect.update(vm->proxy.module_collect.module);
 }
 
+void dt_view_collection_update_history_state(const dt_view_manager_t *vm)
+{
+  if(vm->proxy.module_recentcollect.module)
+    vm->proxy.module_recentcollect.update_visibility(vm->proxy.module_recentcollect.module);
+  if(vm->proxy.module_collect.module)
+    vm->proxy.module_collect.update_history_visibility(vm->proxy.module_collect.module);
+}
+
+void dt_view_filtering_set_sort(const dt_view_manager_t *vm, int sort, gboolean asc)
+{
+  if(vm->proxy.module_filtering.module)
+    vm->proxy.module_filtering.set_sort(vm->proxy.module_filtering.module, sort, asc);
+}
 
 int32_t dt_view_tethering_get_selected_imgid(const dt_view_manager_t *vm)
 {
@@ -1460,7 +1144,7 @@ void dt_view_map_location_action(const dt_view_manager_t *vm, const int action)
     vm->proxy.map.location_action(vm->proxy.map.view, action);
 }
 
-void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *context, const int imgid, const int count)
+void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *context, const dt_imgid_t imgid, const int count)
 {
   if(vm->proxy.map.view)
     vm->proxy.map.drag_set_icon(vm->proxy.map.view, context, imgid, count);
@@ -1471,7 +1155,7 @@ void dt_view_map_drag_set_icon(const dt_view_manager_t *vm, GdkDragContext *cont
 #ifdef HAVE_PRINT
 void dt_view_print_settings(const dt_view_manager_t *vm, dt_print_info_t *pinfo, dt_images_box *imgs)
 {
-  if (vm->proxy.print.view)
+  if(vm->proxy.print.view)
     vm->proxy.print.print_settings(vm->proxy.print.view, pinfo, imgs);
 }
 #endif
@@ -1481,7 +1165,7 @@ GSList *dt_mouse_action_create_simple(GSList *actions, dt_mouse_action_type_t ty
 {
   dt_mouse_action_t *a = (dt_mouse_action_t *)calloc(1, sizeof(dt_mouse_action_t));
   a->action = type;
-  a->key.accel_mods = accel;
+  a->mods = accel;
   g_strlcpy(a->name, description, sizeof(a->name));
   return g_slist_append(actions, a);
 }
@@ -1491,16 +1175,17 @@ GSList *dt_mouse_action_create_format(GSList *actions, dt_mouse_action_type_t ty
 {
   dt_mouse_action_t *a = (dt_mouse_action_t *)calloc(1, sizeof(dt_mouse_action_t));
   a->action = type;
-  a->key.accel_mods = accel;
+  a->mods = accel;
   g_snprintf(a->name, sizeof(a->name), format_string, replacement);
   return g_slist_append(actions, a);
 }
 
 static gchar *_mouse_action_get_string(dt_mouse_action_t *ma)
 {
-  gchar *atxt = gtk_accelerator_get_label(ma->key.accel_key, ma->key.accel_mods);
-  if(strcmp(atxt, ""))
-    atxt = dt_util_dstrcat(atxt, "+");
+  gchar *atxt = NULL;
+  if(ma->mods & GDK_SHIFT_MASK  ) atxt = dt_util_dstrcat(atxt, "%s+", _("shift"));
+  if(ma->mods & GDK_CONTROL_MASK) atxt = dt_util_dstrcat(atxt, "%s+", _("ctrl"));
+  if(ma->mods & GDK_MOD1_MASK   ) atxt = dt_util_dstrcat(atxt, "%s+", _("alt"));
 
   switch(ma->action)
   {
@@ -1548,8 +1233,7 @@ static void _accels_window_sticky(GtkWidget *widget, GdkEventButton *event, dt_v
 
   // creating new window
   GtkWindow *win = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
-  GtkStyleContext *context = gtk_widget_get_style_context(GTK_WIDGET(win));
-  gtk_style_context_add_class(context, "accels_window");
+  dt_gui_add_class(GTK_WIDGET(win), "dt_accels_window");
   gtk_window_set_title(win, _("darktable - accels window"));
   GtkAllocation alloc;
   gtk_widget_get_allocation(dt_ui_main_window(darktable.gui->ui), &alloc);
@@ -1579,37 +1263,29 @@ void dt_view_accels_show(dt_view_manager_t *vm)
 
   vm->accels_window.sticky = FALSE;
   vm->accels_window.prevent_refresh = FALSE;
-
-  GtkStyleContext *context;
   vm->accels_window.window = gtk_window_new(GTK_WINDOW_POPUP);
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(vm->accels_window.window);
 #endif
-  context = gtk_widget_get_style_context(vm->accels_window.window);
-  gtk_style_context_add_class(context, "accels_window");
+  dt_gui_add_class(vm->accels_window.window, "dt_accels_window");
 
   GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
-  context = gtk_widget_get_style_context(sw);
-  gtk_style_context_add_class(context, "accels_window_scroll");
 
   GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
 
   vm->accels_window.flow_box = gtk_flow_box_new();
-  context = gtk_widget_get_style_context(vm->accels_window.flow_box);
-  gtk_style_context_add_class(context, "accels_window_box");
+  dt_gui_add_class(vm->accels_window.flow_box, "dt_accels_box");
   gtk_orientable_set_orientation(GTK_ORIENTABLE(vm->accels_window.flow_box), GTK_ORIENTATION_HORIZONTAL);
 
   gtk_box_pack_start(GTK_BOX(hb), vm->accels_window.flow_box, TRUE, TRUE, 0);
 
   GtkWidget *vb = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  vm->accels_window.sticky_btn
-      = dtgtk_button_new(dtgtk_cairo_paint_multiinstance, CPF_STYLE_FLAT, NULL);
+  vm->accels_window.sticky_btn = dtgtk_button_new(dtgtk_cairo_paint_multiinstance, 0, NULL);
   g_object_set(G_OBJECT(vm->accels_window.sticky_btn), "tooltip-text",
                _("switch to a classic window which will stay open after key release"), (char *)NULL);
   g_signal_connect(G_OBJECT(vm->accels_window.sticky_btn), "button-press-event", G_CALLBACK(_accels_window_sticky),
                    vm);
-  context = gtk_widget_get_style_context(vm->accels_window.sticky_btn);
-  gtk_style_context_add_class(context, "accels_window_stick");
+  dt_gui_add_class(vm->accels_window.sticky_btn, "dt_accels_stick");
   gtk_box_pack_start(GTK_BOX(vb), vm->accels_window.sticky_btn, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(hb), vb, FALSE, FALSE, 0);
 
@@ -1694,8 +1370,7 @@ void dt_view_accels_refresh(dt_view_manager_t *vm)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     // the title
     GtkWidget *lb = gtk_label_new(category->label);
-    GtkStyleContext *context = gtk_widget_get_style_context(lb);
-    gtk_style_context_add_class(context, "accels_window_cat_title");
+    dt_gui_add_class(lb, "dt_accels_cat_title");
     gtk_box_pack_start(GTK_BOX(box), lb, FALSE, FALSE, 0);
 
     // the list of accels
@@ -1704,8 +1379,6 @@ void dt_view_accels_refresh(dt_view_manager_t *vm)
     {
       GtkWidget *list = gtk_tree_view_new_with_model(model);
       g_object_unref(model);
-      context = gtk_widget_get_style_context(list);
-      gtk_style_context_add_class(context, "accels_window_list");
       GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
       GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes(_("shortcut"), renderer, "text", 0, NULL);
       gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
@@ -1730,7 +1403,7 @@ static void _audio_child_watch(GPid pid, gint status, gpointer data)
   g_spawn_close_pid(pid);
 }
 
-void dt_view_audio_start(dt_view_manager_t *vm, int imgid)
+void dt_view_audio_start(dt_view_manager_t *vm, dt_imgid_t imgid)
 {
   char *player = dt_conf_get_string("plugins/lighttable/audio_player");
   if(player && *player)
@@ -1784,6 +1457,217 @@ void dt_view_audio_stop(dt_view_manager_t *vm)
   g_spawn_close_pid(vm->audio.audio_player_pid);
   vm->audio.audio_player_id = -1;
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+
+void dt_view_paint_surface(
+  cairo_t *cr,
+  const size_t width,
+  const size_t height,
+  cairo_surface_t *surface,
+  const size_t processed_width,
+  const size_t processed_height,
+  const dt_window_t window)
+{
+  dt_develop_t *dev = darktable.develop;
+
+  const dt_dev_zoom_t zoom =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_control_get_dev_zoom()
+    : dt_second_window_get_dev_zoom(dev);
+  const int closeup =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_control_get_dev_closeup()
+    : dt_second_window_get_dev_closeup(dev);
+  const float zoom_scale =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1)
+    : dt_second_window_get_zoom_scale(dev, zoom, 1<<closeup, 1);
+  const float ppd =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? darktable.gui->ppd
+    : dev->second_window.ppd;
+
+  const float sw = (float)processed_width / ppd;
+  const float sh = (float)processed_height / ppd;
+
+  cairo_save(cr);
+
+  cairo_translate(cr, ceilf(.5f * (width - sw)), ceilf(.5f * (height - sh)));
+  if(closeup)
+  {
+    const double scale = 1<<closeup;
+    cairo_scale(cr, scale, scale);
+    cairo_translate(cr, -(.5 - 0.5/scale) * sw, -(.5 - 0.5/scale) * sh);
+  }
+
+  if(dev->iso_12646.enabled
+     && window != DT_WINDOW_SLIDESHOW)
+  {
+    // draw the white frame around picture
+    const int bs = dev->border_size;
+    const double ratio = dt_conf_get_float("darkroom/ui/iso12464_ratio");
+    const double tbw = bs * ratio;
+    cairo_rectangle(cr, -tbw, -tbw, sw + 2.0 * tbw, sh + 2.0 * tbw);
+    dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_ISO12646_FG);
+    cairo_fill(cr);
+  }
+
+  cairo_surface_set_device_scale(surface, ppd, ppd);
+
+  cairo_set_source_surface (cr, surface, 0, 0);
+  cairo_pattern_set_filter
+    (cairo_get_source(cr),
+     zoom_scale >= 0.9999f ? CAIRO_FILTER_FAST : darktable.gui->dr_filter_image);
+  cairo_paint(cr);
+
+  if(darktable.gui->show_focus_peaking
+     && window != DT_WINDOW_SLIDESHOW)
+  {
+    cairo_scale(cr, 1. / ppd, 1. / ppd);
+    dt_focuspeaking(cr, processed_width, processed_height, cairo_image_surface_get_data(surface));
+  }
+
+  cairo_restore(cr);
+}
+
+cairo_surface_t *dt_view_create_surface(
+  uint8_t *buffer,
+  const size_t processed_width,
+  const size_t processed_height)
+{
+  const int32_t stride =
+    cairo_format_stride_for_width(CAIRO_FORMAT_RGB24, processed_width);
+  return cairo_image_surface_create_for_data
+    (buffer, CAIRO_FORMAT_RGB24, processed_width, processed_height, stride);
+}
+
+void dt_view_paint_buffer(
+  cairo_t *cr,
+  const size_t width,
+  const size_t height,
+  uint8_t *buffer,
+  const size_t processed_width,
+  const size_t processed_height,
+  const dt_window_t window)
+{
+  cairo_surface_t *surface = dt_view_create_surface(buffer, processed_width, processed_height);
+  dt_view_paint_surface(cr, width, height, surface, processed_width, processed_height, window);
+  cairo_surface_destroy(surface);
+}
+
+void dt_view_paint_pixbuf(
+  cairo_t *cr,
+  const size_t width,
+  const size_t height,
+  uint8_t *buffer,
+  const size_t processed_width,
+  const size_t processed_height,
+  const dt_window_t window)
+{
+  dt_develop_t *dev = darktable.develop;
+
+  const dt_dev_zoom_t zoom =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_control_get_dev_zoom()
+    : dt_second_window_get_dev_zoom(dev);
+  const int closeup =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_control_get_dev_closeup()
+    : dt_second_window_get_dev_closeup(dev);
+  const float zoom_scale =
+    (window == DT_WINDOW_MAIN || window == DT_WINDOW_SLIDESHOW)
+    ? dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1)
+    : dt_second_window_get_zoom_scale(dev, zoom, 1<<closeup, 1);
+
+  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_data
+    (buffer, GDK_COLORSPACE_RGB, TRUE, 8, processed_width, processed_height,
+     processed_width * 4, NULL, NULL);
+
+  int32_t w = 0, h = 0;
+  if(processed_width < processed_height)
+  {
+    // portrait
+    h = height;
+    w = processed_width * ((float)h / (float)processed_height);
+  }
+  else
+  {
+    // landscape
+    w = width;
+    h = processed_height * ((float)w / (float)processed_width);
+  }
+
+  // adjust dimention if needed
+  if(w > width)
+  {
+    const int32_t ow = w;
+    w = width;
+    h = h * ((float)w / (float)ow);
+  }
+  if(h > height)
+  {
+    const int32_t oh = h;
+    h = height;
+    w = w * ((float)h / (float)oh);
+  }
+
+  GdkPixbuf *scaled = gdk_pixbuf_scale_simple(pixbuf, w, h, GDK_INTERP_HYPER);
+
+  cairo_save(cr);
+
+  cairo_translate(cr, ceilf(.5f * (width - w)), ceilf(.5f * (height - h)));
+
+  cairo_pattern_set_filter
+    (cairo_get_source(cr),
+     zoom_scale >= 0.9999f ? CAIRO_FILTER_FAST : darktable.gui->dr_filter_image);
+  gdk_cairo_set_source_pixbuf(cr, scaled, 0, 0);
+
+  cairo_paint(cr);
+
+  if(pixbuf) g_object_unref(pixbuf);
+  if(scaled) g_object_unref(scaled);
+}
+
+#define ADD_TO_CONTEXT(v) ctx = ((ctx << 5) + ctx) ^ (dt_view_context_t)(v);
+
+dt_view_context_t dt_view_get_view_context(void)
+{
+  dt_develop_t *dev = darktable.develop;
+  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+  const int closeup = dt_control_get_dev_closeup();
+  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1);
+  const float zoom_y = dt_control_get_dev_zoom_y();
+  const float zoom_x = dt_control_get_dev_zoom_x();
+  const gboolean iso_12646 = dev->iso_12646.enabled;
+  const gboolean focus_peaking = darktable.gui->show_focus_peaking;
+  const float flt_prec = 1.e6;
+
+  dt_view_context_t ctx = 0;
+  ADD_TO_CONTEXT(closeup);
+  ADD_TO_CONTEXT(zoom_scale * flt_prec);
+  ADD_TO_CONTEXT(zoom_x * flt_prec);
+  ADD_TO_CONTEXT(zoom_y * flt_prec);
+  ADD_TO_CONTEXT(iso_12646);
+  ADD_TO_CONTEXT(focus_peaking);
+
+  return ctx;
+}
+
+gboolean dt_view_check_view_context(dt_view_context_t *ctx)
+{
+  const dt_view_context_t curctx = dt_view_get_view_context();
+  if(curctx == *ctx)
+  {
+    return TRUE;
+  }
+  else
+  {
+    *ctx = curctx;
+    return FALSE;
+  }
+}
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

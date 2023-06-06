@@ -86,7 +86,7 @@ const char *name()
   return _("lowlight vision");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("simulate human night vision"),
                                       _("creative"),
@@ -107,7 +107,7 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
 static float lookup(const float *lut, const float i)
@@ -118,14 +118,20 @@ static float lookup(const float *lut, const float i)
   return lut[bin1] * f + lut[bin0] * (1. - f);
 }
 
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const i, void *const o,
-             const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void process(struct dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const restrict i,
+             void *const restrict o,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                         i, o, roi_in, roi_out))
+    return;
   dt_iop_lowlight_data_t *d = (dt_iop_lowlight_data_t *)(piece->data);
-  const int ch = piece->colors;
 
   // empiric coefficient
-  const float c = 0.5f;
+  const float coeff = 0.5f;
   const float threshold = 0.01f;
 
   // scotopic white, blue saturated
@@ -134,19 +140,20 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   dt_Lab_to_XYZ(Lab_sw, XYZ_sw);
 
+  const float *lut = d->lut;
+  const size_t npixels = (size_t)roi_out->height * roi_out->width;
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, i, o, roi_out, threshold, c) \
-  shared(d, XYZ_sw) \
+  dt_omp_firstprivate(i, o, npixels, threshold, coeff, lut, XYZ_sw)        \
   schedule(static)
 #endif
-  for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
+  for(size_t k = 0; k < (size_t)npixels; k++)
   {
-    float *in = (float *)i + ch * k;
-    float *out = (float *)o + ch * k;
+    const float *const in = (float *)i + 4 * k;
+    float *const out = (float *)o + 4 * k;
     dt_aligned_pixel_t XYZ, XYZ_s;
     float V;
-    float w;
 
     dt_Lab_to_XYZ(in, XYZ);
 
@@ -163,22 +170,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
 
     // scale using empiric coefficient and fit inside limits
-    V = fminf(1.0f, fmaxf(0.0f, c * V));
+//    V = fminf(1.0f, fmaxf(0.0f, coeff * V));
+    V = CLIP(coeff * V);
 
     // blending coefficient from curve
-    w = lookup(d->lut, in[0] / 100.f);
+    const float w = lookup(lut, in[0] / 100.f);
 
-    XYZ_s[0] = V * XYZ_sw[0];
-    XYZ_s[1] = V * XYZ_sw[1];
-    XYZ_s[2] = V * XYZ_sw[2];
+    for_each_channel(c)
+      XYZ_s[c] = V * XYZ_sw[c];
 
-    XYZ[0] = w * XYZ[0] + (1.0f - w) * XYZ_s[0];
-    XYZ[1] = w * XYZ[1] + (1.0f - w) * XYZ_s[1];
-    XYZ[2] = w * XYZ[2] + (1.0f - w) * XYZ_s[2];
+    for_each_channel(c)
+      XYZ[c] = w * XYZ[c] + (1.0f - w) * XYZ_s[c];
 
-    dt_XYZ_to_Lab(XYZ, out);
-
-    out[3] = in[3];
+    dt_aligned_pixel_t res;
+    dt_XYZ_to_Lab(XYZ, res);
+    copy_pixel_nontemporal(out, res);
   }
 }
 
@@ -190,7 +196,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_lowlight_global_data_t *gd = (dt_iop_lowlight_global_data_t *)self->global_data;
 
   cl_mem dev_m = NULL;
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
 
   const int width = roi_out->width;
@@ -205,14 +211,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_m = dt_opencl_copy_host_to_device(devid, d->lut, 256, 256, sizeof(float));
   if(dev_m == NULL) goto error;
 
-  size_t sizes[2] = { ROUNDUPWD(width), ROUNDUPHT(height) };
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 0, sizeof(cl_mem), &dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 1, sizeof(cl_mem), &dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 2, sizeof(int), &width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 3, sizeof(int), &height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 4, 4 * sizeof(float), &XYZ_sw);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowlight, 5, sizeof(cl_mem), &dev_m);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_lowlight, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_lowlight, width, height,
+    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(XYZ_sw), CLARG(dev_m));
   if(err != CL_SUCCESS) goto error;
 
   dt_opencl_release_mem_object(dev_m);
@@ -220,7 +220,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
 error:
   dt_opencl_release_mem_object(dev_m);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_lowlight] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_lowlight] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -287,7 +287,6 @@ void gui_update(struct dt_iop_module_t *self)
   dt_iop_lowlight_gui_data_t *g = (dt_iop_lowlight_gui_data_t *)self->gui_data;
   dt_iop_lowlight_params_t *p = (dt_iop_lowlight_params_t *)self->params;
   dt_bauhaus_slider_set(g->scale_blueness, p->blueness);
-  dt_iop_cancel_history_update(self);
   gtk_widget_queue_draw(self->widget);
 }
 
@@ -304,7 +303,7 @@ void init_presets(dt_iop_module_so_t *self)
 {
   dt_iop_lowlight_params_t p;
 
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "BEGIN", NULL, NULL, NULL);
+  dt_database_start_transaction(darktable.db);
 
   p.transition_x[0] = 0.000000;
   p.transition_x[1] = 0.200000;
@@ -469,7 +468,7 @@ void init_presets(dt_iop_module_so_t *self)
   dt_gui_presets_add_generic(_("night"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "COMMIT", NULL, NULL, NULL);
+  dt_database_release_transaction(darktable.db);
 }
 
 // fills in new parameters based on mouse position (in 0,1)
@@ -704,7 +703,7 @@ static gboolean lowlight_motion_notify(GtkWidget *widget, GdkEventMotion *event,
       dt_iop_lowlight_get_params(p, c->mouse_x, c->mouse_y + c->mouse_pick, c->mouse_radius);
     }
     gtk_widget_queue_draw(widget);
-    dt_iop_queue_history_update(self, FALSE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget);
   }
   else if(event->y > height)
   {
@@ -742,7 +741,7 @@ static gboolean lowlight_button_press(GtkWidget *widget, GdkEventButton *event, 
       p->transition_x[k] = d->transition_x[k];
       p->transition_y[k] = d->transition_y[k];
     }
-    dt_dev_add_history_item(darktable.develop, self, TRUE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget);
     gtk_widget_queue_draw(self->widget);
   }
   else if(event->button == 1)
@@ -793,18 +792,8 @@ static gboolean lowlight_scrolled(GtkWidget *widget, GdkEventScroll *event, gpoi
   int delta_y;
   if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
   {
-    if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
-    {
-      //adjust aspect
-      const int aspect = dt_conf_get_int("plugins/darkroom/lowlight/aspect_percent");
-      dt_conf_set_int("plugins/darkroom/lowlight/aspect_percent", aspect + delta_y);
-      dtgtk_drawing_area_set_aspect_ratio(widget, aspect / 100.0);
-    }
-    else
-    {
-      c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.2 / DT_IOP_LOWLIGHT_BANDS, 1.0);
-      gtk_widget_queue_draw(widget);
-    }
+    c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.2 / DT_IOP_LOWLIGHT_BANDS, 1.0);
+    gtk_widget_queue_draw(widget);
   }
 
   return TRUE;
@@ -825,20 +814,15 @@ void gui_init(struct dt_iop_module_t *self)
   c->mouse_x = c->mouse_y = c->mouse_pick = -1.0;
   c->dragging = 0;
   c->x_move = -1;
-  self->timeout_handle = 0;
   c->mouse_radius = 1.0 / DT_IOP_LOWLIGHT_BANDS;
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
-  const float aspect = dt_conf_get_int("plugins/darkroom/lowlight/aspect_percent") / 100.0;
-  c->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(aspect));
+  c->area = GTK_DRAWING_AREA(dt_ui_resize_wrap(NULL, 0, "plugins/darkroom/lowlight/aspect_percent"));
   g_object_set_data(G_OBJECT(c->area), "iop-instance", self);
   dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(c->area), NULL);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->area), FALSE, FALSE, 0);
 
-  gtk_widget_add_events(GTK_WIDGET(c->area), GDK_POINTER_MOTION_MASK | darktable.gui->scroll_mask
-                                           | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
-                                           | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
   g_signal_connect(G_OBJECT(c->area), "draw", G_CALLBACK(lowlight_draw), self);
   g_signal_connect(G_OBJECT(c->area), "button-press-event", G_CALLBACK(lowlight_button_press), self);
   g_signal_connect(G_OBJECT(c->area), "button-release-event", G_CALLBACK(lowlight_button_release), self);
@@ -847,7 +831,7 @@ void gui_init(struct dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(c->area), "scroll-event", G_CALLBACK(lowlight_scrolled), self);
 
   c->scale_blueness = dt_bauhaus_slider_from_params(self, "blueness");
-  dt_bauhaus_slider_set_format(c->scale_blueness, "%0.2f%%");
+  dt_bauhaus_slider_set_format(c->scale_blueness, "%");
   gtk_widget_set_tooltip_text(c->scale_blueness, _("blueness in shadows"));
 }
 
@@ -855,11 +839,13 @@ void gui_cleanup(struct dt_iop_module_t *self)
 {
   dt_iop_lowlight_gui_data_t *c = (dt_iop_lowlight_gui_data_t *)self->gui_data;
   dt_draw_curve_destroy(c->transition_curve);
-  dt_iop_cancel_history_update(self);
 
   IOP_GUI_FREE;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

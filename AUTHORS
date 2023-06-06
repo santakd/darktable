@@ -1,102 +1,88 @@
 * developers:
 Pascal Obry
 Aldric Renaudin
-Aurélien PIERRE
 Roman Lebedev
 parafin
-Peter Budai
+Edouard Gomez
 
 * translators:
 Pascal Obry
+Victor Forsiuk
 Jeronimo Pellegrini
 Martin Straeten
+Kang-Wei Hsu
 EdgarLux
-Matt Maguire
-Kevin Vermassen
-Victor Forsiuk
+Besmir Godolja
+Ryo Shinozaki
+Serkan ÖNDER
+mmardegan
+Luca Cignoni
+Marko Vertainen
+Maurizio Paglia
+Marcus Gama
 Nicolas Auffray
-Matteo Mardegan
-Nameless-J
-Timur Davletshin
-chrisaga
 Báthory Péter
 Matjaž Jeran
-thisnamewasnottaken
-Arch Ont
-Aurélien PIERRE
-Bernhard
-Danilo Bargen
-Mik-
-Miloš Komarčević
-Miroslav Fikar
-Shlomi Alon-Braitbart
-jpellegrini
-quovadit
+Matt Maguire
+Petr Stasiak
+Stephan Hoek
+bajdero
+Matteo Mardegan
+alex
+alexbora
+Яна Тунгушпаева
 
 * contributors (at least 4 commits):
-ralfbrown
-Philippe Weyland
-hanno@schwalm-bremen.de
-Hubert Kowalski
-Dan Torop
-Chris.Elston
-Jeronimo Pellegrini
-rawfiner
-Martin Straeten
-Miloš Komarčević
-Diederik ter Rahe
-Nicolas Auffray
-Sakari Kapanen
-Victor Forsiuk
-lhietal
-EdgarLux
-Matt Maguire
-wpferguson
-Ralf Brown
-Kevin Vermassen
-Vincent THOMAS
-Daniel Vogelbacher
-Bill Ferguson
-Harold le Clément de Saint-Marcq
-quovadit
-Andreas Schneider
-Fabio Heer
 Hanno Schwalm
-HansBull
-Heiko Bauke
-Marco
-Marco Carrarini
-Mark-64
-vrnhgd
-Roman Khatko
-Philipp Lutz
-Harald
-Wolfgang Goetz
-Jim Robinson
-dterrahe
+Victor Forsiuk
+Diederik ter Rahe
+Miloš Komarčević
+jandren
+Jeronimo Pellegrini
+Nicolas Auffray
+Martin Straeten
+Kang-Wei Hsu
+Simone Gotti
+Sakari Kapanen
+EdgarLux
+rawfiner
+Besmir Godolja
+cyruscook
+quovadit
+Ryo Shinozaki
+Philippe Weyland
+Ralf Brown
+Chris Elston
+Serkan ÖNDER
+mmardegan
+Luca Cignoni
+Apfelkraut
+Marcus Gama
+Marko Vertainen
+Maurizio Paglia
+Simon Raffeiner
 
 * Sub-module rawspeed contributors (at least 1 commit):
 Roman Lebedev
 Miloš Komarčević
-Hubert Kowalski
-Dan Torop
 Daniel Vogelbacher
-Elizeu Santos
-Frank Loemker
-Matt Maguire
-hanno@schwalm-bremen.de
-jas01
-
-* Sub-module OpenCL contributors (at least 1 commit):
-
-* Sub-module libxcf contributors (at least 1 commit):
-
-* Sub-module whereami contributors (at least 1 commit):
+maruncz
+Alex Tutubalin
+Artemis Tosini
+Georg Lukas
+Georg Niedrist
+LibRaw LLC
+Marko Toplak
+Milos Komarcevic
+Pascal Obry
+PeterWem
+Simon Raffeiner
+Sprite
+luz paz
+squid-f
+ubergeek801
 
 * Sub-module integration contributors (at least 1 commit):
 Pascal Obry
-Miloš Komarčević
-hanno@schwalm-bremen.de
-Aurélien PIERRE
 
 And all those of you that made previous releases possible

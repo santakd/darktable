@@ -46,10 +46,9 @@ const char *name(dt_lib_module_t *self)
   return _("view toolbox");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  static const char *v[] = {"darkroom", "lighttable", "tethering", NULL};
-  return v;
+  return DT_VIEW_DARKROOM | DT_VIEW_LIGHTTABLE | DT_VIEW_TETHERING;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -62,7 +61,7 @@ int expandable(dt_lib_module_t *self)
   return 0;
 }
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 100;
 }
@@ -120,6 +119,8 @@ static void _lib_view_toolbox_add(dt_lib_module_t *self, GtkWidget *widget, dt_v
   d->child_views = g_list_prepend(d->child_views,child_data);
 
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

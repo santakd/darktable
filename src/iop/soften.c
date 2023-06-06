@@ -41,10 +41,6 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
-
 #define MAX_RADIUS 32
 
 DT_MODULE_INTROSPECTION(1, dt_iop_soften_params_t)
@@ -96,10 +92,10 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("create a softened image using the Orton effect"),
                                       _("creative"),
@@ -113,7 +109,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 {
   const dt_iop_soften_data_t *const d = (const dt_iop_soften_data_t *const)piece->data;
 
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
                                          ivoid, ovoid, roi_in, roi_out))
     return; // image has been copied through to output and module's trouble flag has been updated
 
@@ -142,8 +138,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const float w = piece->iwidth * piece->iscale;
   const float h = piece->iheight * piece->iscale;
-  int mrad = sqrt(w * w + h * h) * 0.01;
-  int rad = mrad * (fmin(100.0, d->size + 1) / 100.0);
+  const int mrad = sqrt(w * w + h * h) * 0.01;
+  const int rad = mrad * (fmin(100.0, d->size + 1) / 100.0);
   const int radius = MIN(mrad, ceilf(rad * roi_in->scale / piece->iscale));
 
   dt_box_mean(out, roi_out->height, roi_out->width, 4, radius, BOX_ITERATIONS);
@@ -160,7 +156,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_soften_data_t *d = (dt_iop_soften_data_t *)piece->data;
   dt_iop_soften_global_data_t *gd = (dt_iop_soften_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   cl_mem dev_tmp = NULL;
   cl_mem dev_m = NULL;
 
@@ -174,9 +170,9 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   const float w = piece->iwidth * piece->iscale;
   const float h = piece->iheight * piece->iscale;
-  int mrad = sqrt(w * w + h * h) * 0.01f;
+  const int mrad = sqrt(w * w + h * h) * 0.01f;
 
-  int rad = mrad * (fmin(100.0f, d->size + 1) / 100.0f);
+  const int rad = mrad * (fmin(100.0f, d->size + 1) / 100.0f);
   const int radius = MIN(mrad, ceilf(rad * roi_in->scale / piece->iscale));
 
   /* sigma-radius correlation to match opencl vs. non-opencl. identified by numerical experiments but
@@ -232,15 +228,11 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   if(dev_m == NULL) goto error;
 
   /* overexpose image */
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPHT(height);
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
   sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 1, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 4, sizeof(float), (void *)&saturation);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_overexposed, 5, sizeof(float), (void *)&brightness);
+  dt_opencl_set_kernel_args(devid, gd->kernel_soften_overexposed, 0, CLARG(dev_in), CLARG(dev_tmp),
+    CLARG(width), CLARG(height), CLARG(saturation), CLARG(brightness));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_soften_overexposed, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -248,54 +240,36 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   {
     /* horizontal blur */
     sizes[0] = bwidth;
-    sizes[1] = ROUNDUPHT(height);
+    sizes[1] = ROUNDUPDHT(height, devid);
     sizes[2] = 1;
     local[0] = hblocksize;
     local[1] = 1;
     local[2] = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 0, sizeof(cl_mem), (void *)&dev_tmp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 1, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 2, sizeof(cl_mem), (void *)&dev_m);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 3, sizeof(int), (void *)&wdh);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 4, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 5, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 6, sizeof(int), (void *)&hblocksize);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_hblur, 7, (hblocksize + 2 * wdh) * 4 * sizeof(float),
-                             NULL);
+    dt_opencl_set_kernel_args(devid, gd->kernel_soften_hblur, 0, CLARG(dev_tmp), CLARG(dev_out), CLARG(dev_m),
+      CLARG(wdh), CLARG(width), CLARG(height), CLARG(hblocksize), CLLOCAL((hblocksize + 2 * wdh) * 4 * sizeof(float)));
     err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_soften_hblur, sizes, local);
     if(err != CL_SUCCESS) goto error;
 
 
     /* vertical blur */
-    sizes[0] = ROUNDUPWD(width);
+    sizes[0] = ROUNDUPDWD(width, devid);
     sizes[1] = bheight;
     sizes[2] = 1;
     local[0] = 1;
     local[1] = vblocksize;
     local[2] = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 0, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 1, sizeof(cl_mem), (void *)&dev_tmp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 2, sizeof(cl_mem), (void *)&dev_m);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 3, sizeof(int), (void *)&wdh);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 4, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 5, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 6, sizeof(int), (void *)&vblocksize);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_soften_vblur, 7, (vblocksize + 2 * wdh) * 4 * sizeof(float),
-                             NULL);
+    dt_opencl_set_kernel_args(devid, gd->kernel_soften_vblur, 0, CLARG(dev_out), CLARG(dev_tmp), CLARG(dev_m),
+      CLARG(wdh), CLARG(width), CLARG(height), CLARG(vblocksize), CLLOCAL((vblocksize + 2 * wdh) * 4 * sizeof(float)));
     err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_soften_vblur, sizes, local);
     if(err != CL_SUCCESS) goto error;
   }
 
   /* mixing tmp and in -> out */
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPHT(height);
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
   sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 1, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 2, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 3, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 4, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_soften_mix, 5, sizeof(float), (void *)&amount);
+  dt_opencl_set_kernel_args(devid, gd->kernel_soften_mix, 0, CLARG(dev_in), CLARG(dev_tmp), CLARG(dev_out),
+    CLARG(width), CLARG(height), CLARG(amount));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_soften_mix, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -308,7 +282,7 @@ error:
   dt_opencl_release_mem_object(dev_m);
   dt_opencl_release_mem_object(dev_tmp);
   free(mat);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_soften] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_soften] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -321,9 +295,9 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
   const float w = piece->iwidth * piece->iscale;
   const float h = piece->iheight * piece->iscale;
-  int mrad = sqrt(w * w + h * h) * 0.01f;
+  const int mrad = sqrt(w * w + h * h) * 0.01f;
 
-  int rad = mrad * (fmin(100.0f, d->size + 1) / 100.0f);
+  const int rad = mrad * (fmin(100.0f, d->size + 1) / 100.0f);
   const int radius = MIN(mrad, ceilf(rad * roi_in->scale / piece->iscale));
 
   /* sigma-radius correlation to match opencl vs. non-opencl. identified by numerical experiments but
@@ -388,38 +362,30 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
   piece->data = NULL;
 }
 
-void gui_update(struct dt_iop_module_t *self)
-{
-  dt_iop_soften_gui_data_t *g = (dt_iop_soften_gui_data_t *)self->gui_data;
-  dt_iop_soften_params_t *p = (dt_iop_soften_params_t *)self->params;
-  dt_bauhaus_slider_set(g->size, p->size);
-  dt_bauhaus_slider_set(g->saturation, p->saturation);
-  dt_bauhaus_slider_set(g->brightness, p->brightness);
-  dt_bauhaus_slider_set(g->amount, p->amount);
-}
-
-
 void gui_init(struct dt_iop_module_t *self)
 {
   dt_iop_soften_gui_data_t *g = IOP_GUI_ALLOC(soften);
 
   g->size = dt_bauhaus_slider_from_params(self, N_("size"));
-  dt_bauhaus_slider_set_format(g->size, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->size, "%");
   gtk_widget_set_tooltip_text(g->size, _("the size of blur"));
 
   g->saturation = dt_bauhaus_slider_from_params(self, N_("saturation"));
-  dt_bauhaus_slider_set_format(g->saturation, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->saturation, "%");
   gtk_widget_set_tooltip_text(g->saturation, _("the saturation of blur"));
 
   g->brightness = dt_bauhaus_slider_from_params(self, N_("brightness"));
-  dt_bauhaus_slider_set_format(g->brightness, _("%.2f EV"));
+  dt_bauhaus_slider_set_format(g->brightness, _(" EV"));
   gtk_widget_set_tooltip_text(g->brightness, _("the brightness of blur"));
 
   g->amount = dt_bauhaus_slider_from_params(self, "amount");
-  dt_bauhaus_slider_set_format(g->amount, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->amount, "%");
   gtk_widget_set_tooltip_text(g->amount, _("the mix of effect"));
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

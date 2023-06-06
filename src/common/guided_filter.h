@@ -18,20 +18,6 @@
 
 #pragma once
 
-#if defined(__SSE__)
-#ifdef __PPC64__
-#ifdef NO_WARN_X86_INTRINSICS
-#include <xmmintrin.h>
-#else
-#define NO_WARN_X86_INTRINSICS 1
-#include <xmmintrin.h>
-#undef NO_WARN_X86_INTRINSICS
-#endif // NO_WARN_X86_INTRINSICS
-#else
-#include <xmmintrin.h>
-#endif // __PPC64__
-#endif
-
 #include "common/darktable.h"
 #include "common/opencl.h"
 
@@ -106,3 +92,9 @@ void guided_filter_cl(int devid, cl_mem guide, cl_mem in, cl_mem out, int width,
                       float sqrt_eps, float guide_weight, float min, float max);
 
 #endif
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
+// vim: shiftwidth=2 expandtab tabstop=2 cindent
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

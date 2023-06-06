@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2021 darktable developers.
+    Copyright (C) 2009-2022 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,6 +23,10 @@
 
 #include <gtk/gtk.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
 
 #define DT_GUI_IOP_MODULE_CONTROL_SPACING 0
 
@@ -70,6 +74,7 @@ typedef enum dt_gui_color_t
   DT_GUI_COLOR_PRINT_BG,
   DT_GUI_COLOR_BRUSH_CURSOR,
   DT_GUI_COLOR_BRUSH_TRACE,
+  DT_GUI_COLOR_BUTTON_FG,
   DT_GUI_COLOR_THUMBNAIL_BG,
   DT_GUI_COLOR_THUMBNAIL_SELECTED_BG,
   DT_GUI_COLOR_THUMBNAIL_HOVER_BG,
@@ -97,12 +102,13 @@ typedef enum dt_gui_color_t
   DT_GUI_COLOR_MAP_LOC_SHAPE_HIGH,
   DT_GUI_COLOR_MAP_LOC_SHAPE_LOW,
   DT_GUI_COLOR_MAP_LOC_SHAPE_DEF,
+  DT_GUI_COLOR_ISO12646_BG,
+  DT_GUI_COLOR_ISO12646_FG,
   DT_GUI_COLOR_LAST
 } dt_gui_color_t;
 
 typedef struct dt_gui_gtk_t
 {
-
   struct dt_ui_t *ui;
 
   dt_gui_widgets_t widgets;
@@ -123,16 +129,16 @@ typedef struct dt_gui_gtk_t
 
   gboolean show_overlays;
   gboolean show_focus_peaking;
+  double overlay_red, overlay_blue, overlay_green, overlay_contrast;
   GtkWidget *focus_peaking_button;
 
   double dpi, dpi_factor, ppd, ppd_thb;
+  gboolean have_pen_pressure;
 
   int icon_size; // size of top panel icons
 
   // store which gtkrc we loaded:
   char gtkrc[PATH_MAX];
-
-  GtkWidget *scroll_to[2]; // one for left, one for right
 
   gint scroll_mask;
   guint sidebar_scroll_mask;
@@ -142,6 +148,16 @@ typedef struct dt_gui_gtk_t
 
   dt_pthread_mutex_t mutex;
 } dt_gui_gtk_t;
+
+typedef struct _gui_collapsible_section_t
+{
+  GtkBox *parent;       // the parent widget
+  gchar *confname;      // configuration name for the toggle status
+  GtkWidget *toggle;    // toggle button
+  GtkWidget *expander;  // the expanded
+  GtkBox *container;    // the container for all widgets into the section
+  struct dt_action_t *module; // the lib or iop module that contains this section
+} dt_gui_collapsible_section_t;
 
 static inline cairo_surface_t *dt_cairo_image_surface_create(cairo_format_t format, int width, int height) {
   cairo_surface_t *cst = cairo_image_surface_create(format, width * darktable.gui->ppd, height * darktable.gui->ppd);
@@ -178,6 +194,10 @@ static inline cairo_surface_t *dt_gdk_cairo_surface_create_from_pixbuf(const Gdk
 static inline GdkPixbuf *dt_gdk_pixbuf_new_from_file_at_size(const char *filename, int width, int height, GError **error) {
   return gdk_pixbuf_new_from_file_at_size(filename, width * darktable.gui->ppd, height * darktable.gui->ppd, error);
 }
+
+// call class function to add or remove CSS classes (need to be set on top of this file as first function is used in this file)
+void dt_gui_add_class(GtkWidget *widget, const gchar *class_name);
+void dt_gui_remove_class(GtkWidget *widget, const gchar *class_name);
 
 int dt_gui_gtk_init(dt_gui_gtk_t *gui);
 void dt_gui_gtk_run(dt_gui_gtk_t *gui);
@@ -318,7 +338,7 @@ void dt_ui_restore_panels(struct dt_ui_t *ui);
 void dt_ui_update_scrollbars(struct dt_ui_t *ui);
 /** show or hide scrollbars */
 void dt_ui_scrollbars_show(struct dt_ui_t *ui, gboolean show);
-/** \brief toggle view of panels eg. collaps/expands to previous view state */
+/** \brief toggle view of panels eg. collapse/expands to previous view state */
 void dt_ui_toggle_panels_visibility(struct dt_ui_t *ui);
 /** \brief draw user's attention */
 void dt_ui_notify_user();
@@ -352,7 +372,7 @@ static inline void dt_ui_section_label_set(GtkWidget *label)
   gtk_widget_set_halign(label, GTK_ALIGN_FILL); // make it span the whole available width
   gtk_label_set_xalign (GTK_LABEL(label), 0.5f);
   gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END); // ellipsize labels
-  gtk_widget_set_name(label, "section_label"); // make sure that we can style these easily
+  dt_gui_add_class(label, "dt_section_label"); // make sure that we can style these easily
 }
 
 static inline GtkWidget *dt_ui_section_label_new(const gchar *str)
@@ -388,10 +408,13 @@ gboolean dt_gui_show_standalone_yes_no_dialog(const char *title, const char *mar
 char *dt_gui_show_standalone_string_dialog(const char *title, const char *markup, const char *placeholder,
                                            const char *no_text, const char *yes_text);
 
-void *dt_gui_show_splashscreen();
-void dt_gui_close_splashscreen(void *splashscreen);
+// returns TRUE if YES was answered, FALSE otherwise
+gboolean dt_gui_show_yes_no_dialog(const char *title, const char *format, ...);
 
 void dt_gui_add_help_link(GtkWidget *widget, const char *link);
+char *dt_gui_get_help_url(GtkWidget *widget);
+void dt_gui_dialog_add_help(GtkDialog *dialog, const char *topic);
+void dt_gui_show_help(GtkWidget *widget);
 
 // load a CSS theme
 void dt_gui_load_theme(const char *theme);
@@ -406,17 +429,7 @@ guint dt_gui_translated_key_state(GdkEventKey *event);
 // return modifier keys currently pressed, independent of any key event
 GdkModifierType dt_key_modifier_state();
 
-// create an ellipsized button with label, tooltip and help link
-static inline GtkWidget *dt_ui_button_new(const gchar *label, const gchar *tooltip, const gchar *help)
-{
-  GtkWidget *button = gtk_button_new_with_label(label);
-  gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(button))), PANGO_ELLIPSIZE_END);
-  if(tooltip) gtk_widget_set_tooltip_text(button, tooltip);
-  if(help) dt_gui_add_help_link(button, help);
-  return button;
-};
-
-GtkWidget *dt_ui_scroll_wrap(GtkWidget *w, gint min_size, char *config_str);
+GtkWidget *dt_ui_resize_wrap(GtkWidget *w, gint min_size, char *config_str);
 
 // check whether the given container has any user-added children
 gboolean dt_gui_container_has_children(GtkContainer *container);
@@ -440,12 +453,35 @@ void dt_gui_menu_popup(GtkMenu *menu, GtkWidget *button, GdkGravity widget_ancho
 
 void dt_gui_draw_rounded_rectangle(cairo_t *cr, float width, float height, float x, float y);
 
+void dt_gui_widget_reallocate_now(GtkWidget *widget);
+
 // event handler for "key-press-event" of GtkTreeView to decide if focus switches to GtkSearchEntry
 gboolean dt_gui_search_start(GtkWidget *widget, GdkEventKey *event, GtkSearchEntry *entry);
 
 // event handler for "stop-search" of GtkSearchEntry
 void dt_gui_search_stop(GtkSearchEntry *entry, GtkWidget *widget);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// create a collapsible section, insert in parent, return the container
+void dt_gui_new_collapsible_section(dt_gui_collapsible_section_t *cs,
+                                    const char *confname,
+                                    const char *label,
+                                    GtkBox *parent,
+                                    struct dt_action_t *module);
+// routine to be called from gui_update
+void dt_gui_update_collapsible_section(dt_gui_collapsible_section_t *cs);
+
+// routine to hide the collapsible section
+void dt_gui_hide_collapsible_section(dt_gui_collapsible_section_t *cs);
+
+// is delay between first and second click/press longer than double-click time?
+gboolean dt_gui_long_click(const int second, const int first);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif /* __cplusplus */
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

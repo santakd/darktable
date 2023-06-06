@@ -58,7 +58,7 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -86,7 +86,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
                const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
@@ -99,7 +99,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   return TRUE;
 
 error:
-  dt_print(DT_DEBUG_OPENCL, "[opencl_mask_manage] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_mask_manage] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -122,6 +122,9 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
 }
 
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

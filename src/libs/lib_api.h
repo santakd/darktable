@@ -43,7 +43,7 @@ struct dt_view_t;
 REQUIRED(const char *, name, struct dt_lib_module_t *self);
 
 /** get the views which the module should be loaded in. */
-REQUIRED(const char **, views, struct dt_lib_module_t *self);
+REQUIRED(enum dt_view_type_flags_t, views, struct dt_lib_module_t *self);
 /** get the container which the module should be placed in */
 REQUIRED(uint32_t, container, struct dt_lib_module_t *self);
 /** check if module should use a expander or not, default implementation
@@ -60,6 +60,10 @@ REQUIRED(void, gui_init, struct dt_lib_module_t *self);
 REQUIRED(void, gui_cleanup, struct dt_lib_module_t *self);
 /** reset to defaults. */
 OPTIONAL(void, gui_reset, struct dt_lib_module_t *self);
+/** update libs gui when visible
+    triggered by dt_lib_gui_queue_update.
+    don't use for widgets accessible via actions when hidden. */
+OPTIONAL(void, gui_update, struct dt_lib_module_t *self);
 
 /** entering a view, only called if lib is displayed on the new view */
 OPTIONAL(void, view_enter, struct dt_lib_module_t *self, struct dt_view_t *old_view, struct dt_view_t *new_view);
@@ -70,6 +74,7 @@ OPTIONAL(void, view_leave, struct dt_lib_module_t *self, struct dt_view_t *old_v
 /** optional method called after lighttable expose. */
 OPTIONAL(void, gui_post_expose, struct dt_lib_module_t *self, cairo_t *cr, int32_t width, int32_t height,
                      int32_t pointerx, int32_t pointery);
+/** mouse_leave called when mouse is leaving the center canvas */
 OPTIONAL(int, mouse_leave, struct dt_lib_module_t *self);
 OPTIONAL(int, mouse_moved, struct dt_lib_module_t *self, double x, double y, double pressure, int which);
 OPTIONAL(int, button_released, struct dt_lib_module_t *self, double x, double y, int which, uint32_t state);
@@ -77,7 +82,7 @@ OPTIONAL(int, button_pressed, struct dt_lib_module_t *self, double x, double y, 
                    uint32_t state);
 OPTIONAL(int, scrolled, struct dt_lib_module_t *self, double x, double y, int up);
 OPTIONAL(void, configure, struct dt_lib_module_t *self, int width, int height);
-OPTIONAL(int, position, );
+OPTIONAL(int, position, const struct dt_lib_module_t *self);
 
 /** implement these three if you want customizable presets to be stored in db. */
 /** legacy_params can run in iterations, just return to what version you updated the preset. */
@@ -91,10 +96,6 @@ OPTIONAL(void, set_preferences, void *menu, struct dt_lib_module_t *self);
 /** check if the module can autoapply presets. Default is FALSE */
 DEFAULT(gboolean, preset_autoapply, struct dt_lib_module_t *self);
 
-/** Optional callbacks for keyboard accelerators */
-OPTIONAL(void, init_key_accels, struct dt_lib_module_t *self);
-OPTIONAL(void, connect_key_accels, struct dt_lib_module_t *self);
-
 #ifdef FULL_API_H
 
 #pragma GCC visibility pop
@@ -105,6 +106,8 @@ OPTIONAL(void, connect_key_accels, struct dt_lib_module_t *self);
 
 #endif // FULL_API_H
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

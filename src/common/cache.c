@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2021 darktable developers.
+    Copyright (C) 2011-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -88,7 +88,7 @@ int dt_cache_for_all(
   gpointer key, value;
 
   g_hash_table_iter_init (&iter, cache->hashtable);
-  while (g_hash_table_iter_next (&iter, &key, &value))
+  while(g_hash_table_iter_next (&iter, &key, &value))
   {
     dt_cache_entry_t *entry = (dt_cache_entry_t *)value;
     const int err = process(GPOINTER_TO_INT(key), entry->data, user_data);
@@ -130,7 +130,7 @@ dt_cache_entry_t *dt_cache_testget(dt_cache_t *cache, const uint32_t key, char m
     dt_pthread_mutex_unlock(&cache->lock);
     double end = dt_get_wtime();
     if(end - start > 0.1)
-      fprintf(stderr, "try+ wait time %.06fs mode %c \n", end - start, mode);
+      dt_print(DT_DEBUG_ALWAYS, "try+ wait time %.06fs mode %c \n", end - start, mode);
 
     if(mode == 'w')
     {
@@ -145,7 +145,7 @@ dt_cache_entry_t *dt_cache_testget(dt_cache_t *cache, const uint32_t key, char m
   dt_pthread_mutex_unlock(&cache->lock);
   double end = dt_get_wtime();
   if(end - start > 0.1)
-    fprintf(stderr, "try- wait time %.06fs\n", end - start);
+    dt_print(DT_DEBUG_ALWAYS, "try- wait time %.06fs\n", end - start);
   return 0;
 }
 
@@ -215,7 +215,7 @@ restart:
   // here dies your 32-bit system:
   dt_cache_entry_t *entry = (dt_cache_entry_t *)g_slice_alloc(sizeof(dt_cache_entry_t));
   int ret = dt_pthread_rwlock_init(&entry->lock, 0);
-  if(ret) fprintf(stderr, "rwlock init: %d\n", ret);
+  if(ret) dt_print(DT_DEBUG_ALWAYS, "rwlock init: %d\n", ret);
   entry->data = 0;
   entry->data_size = cache->entry_size;
   entry->cost = 1;
@@ -250,7 +250,7 @@ restart:
   dt_pthread_mutex_unlock(&cache->lock);
   double end = dt_get_wtime();
   if(end - start > 0.1)
-    fprintf(stderr, "wait time %.06fs\n", end - start);
+    dt_print(DT_DEBUG_ALWAYS, "wait time %.06fs\n", end - start);
 
   // WARNING: do *NOT* unpoison here. it must be done by the caller!
 
@@ -320,10 +320,8 @@ restart:
 void dt_cache_gc(dt_cache_t *cache, const float fill_ratio)
 {
   GList *l = cache->lru;
-  int cnt = 0;
   while(l)
   {
-    cnt++;
     dt_cache_entry_t *entry = (dt_cache_entry_t *)l->data;
     assert(entry->link->data == entry);
     l = g_list_next(l); // we might remove this element, so walk to the next one while we still have the pointer..
@@ -367,9 +365,9 @@ void dt_cache_release_with_caller(dt_cache_t *cache, dt_cache_entry_t *entry, co
 #ifdef _DEBUG
 
 # if defined(HAVE_THREAD_RWLOCK_ARCH_T_READERS)
-  if (entry->lock.lock.__data.__readers <= 1)
+  if(entry->lock.lock.__data.__readers <= 1)
 # elif defined(HAVE_THREAD_RWLOCK_ARCH_T_NR_READERS)
-  if (entry->lock.lock.__data.__nr_readers <= 1)
+  if(entry->lock.lock.__data.__nr_readers <= 1)
 # else /* HAVE_THREAD_RWLOCK_ARCH_T_(NR_)READERS */
 #  error "No valid reader member"
 # endif /* HAVE_THREAD_RWLOCK_ARCH_T_(NR_)READERS */
@@ -377,7 +375,7 @@ void dt_cache_release_with_caller(dt_cache_t *cache, dt_cache_entry_t *entry, co
 #else /* _DEBUG */
 
 # if defined(HAVE_THREAD_RWLOCK_ARCH_T_READERS)
-  if (entry->lock.__data.__readers <= 1)
+  if(entry->lock.__data.__readers <= 1)
 # elif defined(HAVE_THREAD_RWLOCK_ARCH_T_NR_READERS)
   if(entry->lock.__data.__nr_readers <= 1)
 # else /* HAVE_THREAD_RWLOCK_ARCH_T_(NR_)READERS */
@@ -395,6 +393,9 @@ void dt_cache_release_with_caller(dt_cache_t *cache, dt_cache_entry_t *entry, co
   dt_pthread_rwlock_unlock(&entry->lock);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

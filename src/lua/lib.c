@@ -86,14 +86,14 @@ static int on_screen_member(lua_State *L)
   return 1;
 }
 
-static int position_member(lua_State*L) 
+static int position_member(lua_State*L)
 {
   dt_lib_module_t * module = *(dt_lib_module_t**)lua_touserdata(L, 1);
   lua_pushinteger(L, module->position(module));
   return 1;
 }
 
-static int container_member(lua_State*L) 
+static int container_member(lua_State*L)
 {
   dt_lib_module_t * module = *(dt_lib_module_t**)lua_touserdata(L, 1);
   dt_ui_container_t container;
@@ -103,7 +103,7 @@ static int container_member(lua_State*L)
 }
 
 
-static int views_member(lua_State*L) 
+static int views_member(lua_State*L)
 {
   dt_lib_module_t * module = *(dt_lib_module_t**)lua_touserdata(L, 1);
   lua_newtable(L);
@@ -198,6 +198,9 @@ int dt_lua_init_early_lib(lua_State *L)
   dt_lua_module_new(L, "lib"); // special case : will be attached to dt.gui in lua/gui.c:dt_lua_init_gui
   return 0;
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

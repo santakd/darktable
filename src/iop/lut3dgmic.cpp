@@ -1,5 +1,6 @@
 /*
     This file is part of darktable,
+    Copyright (C) 2019-2022 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -76,7 +77,7 @@ void lut3d_decompress_clut(const unsigned char *const input_keypoints, const uns
   }
   catch(...)
   {
-    std::fprintf(stderr, "[lut3d gmic] error - saving cache lut (does the cache folder exist ?)\n");
+    std::fprintf(stderr, "[lut3d gmic] error - saving cache LUT (does the cache folder exist?)\n");
   }
   // format for dt
   try

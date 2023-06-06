@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2021 darktable developers.
+   Copyright (C) 2013-2023 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,8 @@
 
    You should have received a copy of the GNU General Public License
    along with darktable.  If not, see <http://www.gnu.org/licenses/>.
- */
+*/
+
 #include "lua/preferences.h"
 #include "control/conf.h"
 #include "gui/gtk.h"
@@ -167,7 +168,7 @@ static int get_keys(lua_State *L)
   g_list_free(keys);
   return 1;
 }
-  
+
 static void get_pref_name(char *tgt, size_t size, const char *script, const char *name)
 {
   snprintf(tgt, size, "lua/%s/%s", script, name);
@@ -184,7 +185,7 @@ static int read_pref(lua_State *L)
   char pref_name[1024];
   if(strcmp(script, "darktable") != 0)
     get_pref_name(pref_name, sizeof(pref_name), script, name);
-  else 
+  else
     snprintf(pref_name, sizeof(pref_name), "%s", name);
   switch(i)
   {
@@ -636,6 +637,8 @@ static int register_pref_sub(lua_State *L)
 
       int value = 0;
       built_elt->type_data.enum_data.default_value = strdup(luaL_checkstring(L, cur_param));
+      cur_param++;
+      
       while(!lua_isnoneornil(L, cur_param))
       {
         luaA_enum_value_type(L, enum_type, &value, luaL_checkstring(L, cur_param));
@@ -650,7 +653,7 @@ static int register_pref_sub(lua_State *L)
 
 
       g_object_ref_sink(G_OBJECT(built_elt->widget));
-      built_elt->tooltip_reset = g_strdup_printf(  _("double click to reset to `%s'"),
+      built_elt->tooltip_reset = g_strdup_printf(  _("double-click to reset to `%s'"),
           built_elt->type_data.enum_data.default_value);
       built_elt->update_widget = update_widget_enum;
       break;
@@ -665,7 +668,7 @@ static int register_pref_sub(lua_State *L)
       built_elt->widget = gtk_file_chooser_button_new(_("select directory"), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER);
       gtk_file_chooser_button_set_width_chars(GTK_FILE_CHOOSER_BUTTON(built_elt->widget), 20);
       g_object_ref_sink(G_OBJECT(built_elt->widget));
-      built_elt->tooltip_reset = g_strdup_printf( _("double click to reset to `%s'"), built_elt->type_data.dir_data.default_value);
+      built_elt->tooltip_reset = g_strdup_printf( _("double-click to reset to `%s'"), built_elt->type_data.dir_data.default_value);
       built_elt->update_widget = update_widget_dir;
       break;
     case pref_file:
@@ -677,7 +680,7 @@ static int register_pref_sub(lua_State *L)
 
       built_elt->widget = gtk_file_chooser_button_new(_("select file"), GTK_FILE_CHOOSER_ACTION_OPEN);
       gtk_file_chooser_button_set_width_chars(GTK_FILE_CHOOSER_BUTTON(built_elt->widget), 20);
-      built_elt->tooltip_reset= g_strdup_printf( _("double click to reset to `%s'"), built_elt->type_data.file_data.default_value);
+      built_elt->tooltip_reset= g_strdup_printf( _("double-click to reset to `%s'"), built_elt->type_data.file_data.default_value);
       g_object_ref_sink(G_OBJECT(built_elt->widget));
       built_elt->update_widget = update_widget_file;
       break;
@@ -689,7 +692,7 @@ static int register_pref_sub(lua_State *L)
         dt_conf_set_string(pref_name, built_elt->type_data.string_data.default_value);
 
       built_elt->widget = gtk_entry_new();
-      built_elt->tooltip_reset= g_strdup_printf( _("double click to reset to `%s'"),
+      built_elt->tooltip_reset= g_strdup_printf( _("double-click to reset to `%s'"),
           built_elt->type_data.string_data.default_value);
       g_object_ref_sink(G_OBJECT(built_elt->widget));
       built_elt->update_widget = update_widget_string;
@@ -705,7 +708,7 @@ static int register_pref_sub(lua_State *L)
       built_elt->widget = gtk_check_button_new();
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(built_elt->widget), dt_conf_get_bool(pref_name));
       g_object_ref_sink(G_OBJECT(built_elt->widget));
-      built_elt->tooltip_reset = g_strdup_printf(  _("double click to reset to `%s'"),
+      built_elt->tooltip_reset = g_strdup_printf(  _("double-click to reset to `%s'"),
           built_elt->type_data.bool_data.default_value ? "true" : "false");
       built_elt->update_widget = update_widget_bool;
       break;
@@ -728,7 +731,7 @@ static int register_pref_sub(lua_State *L)
         built_elt->widget = gtk_spin_button_new_with_range(min, max, 1);
         gtk_spin_button_set_digits(GTK_SPIN_BUTTON(built_elt->widget), 0);
         g_object_ref_sink(G_OBJECT(built_elt->widget));
-        built_elt->tooltip_reset = g_strdup_printf( _("double click to reset to `%d'"),
+        built_elt->tooltip_reset = g_strdup_printf( _("double-click to reset to `%d'"),
             built_elt->type_data.int_data.default_value);
         built_elt->update_widget = update_widget_int;
         break;
@@ -755,7 +758,7 @@ static int register_pref_sub(lua_State *L)
           dt_conf_set_float(pref_name, built_elt->type_data.float_data.default_value);
 
         built_elt->widget = gtk_spin_button_new_with_range(min, max, step);
-        built_elt->tooltip_reset = g_strdup_printf( _("double click to reset to `%f'"),
+        built_elt->tooltip_reset = g_strdup_printf( _("double-click to reset to `%f'"),
             built_elt->type_data.float_data.default_value);
         g_object_ref_sink(G_OBJECT(built_elt->widget));
         built_elt->update_widget = update_widget_float;
@@ -769,7 +772,7 @@ static int register_pref_sub(lua_State *L)
         if(!dt_conf_key_exists(pref_name))
           dt_conf_set_string(pref_name, built_elt->type_data.lua_data.default_value);
 
-        built_elt->tooltip_reset= g_strdup_printf( _("double click to reset to `%s'"),
+        built_elt->tooltip_reset= g_strdup_printf( _("double-click to reset to `%s'"),
             built_elt->type_data.lua_data.default_value);
 
         lua_widget widget;
@@ -831,7 +834,7 @@ GtkGrid* init_tab_lua(GtkWidget *dialog, GtkWidget *stack)
   gtk_viewport_set_shadow_type(GTK_VIEWPORT(viewport), GTK_SHADOW_NONE); // doesn't seem to work from gtkrc
   gtk_container_add(GTK_CONTAINER(scroll), viewport);
   gtk_container_add(GTK_CONTAINER(viewport), grid);
-  gtk_stack_add_titled(GTK_STACK(stack), scroll, _("lua options"), _("lua options"));
+  gtk_stack_add_titled(GTK_STACK(stack), scroll, _("Lua options"), _("Lua options"));
 
   for(pref_element *cur_elt = pref_list; cur_elt; cur_elt = cur_elt->next)
   {
@@ -895,6 +898,8 @@ int dt_lua_init_preferences(lua_State *L)
   return 0;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

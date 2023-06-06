@@ -757,7 +757,8 @@ static void add_patches_to_array(dt_lut_t *self, GList *patch_names, int *N, int
     get_Lab_from_box(source_patch, source_Lab);
     get_Lab_from_box(reference_patch, reference_Lab);
 
-    for(int j = 0; j < 3; j++) colorchecker_Lab[3 * (*i) + j] = source_Lab[j];
+    for_three_channels(j)
+      colorchecker_Lab[3 * (*i) + j] = source_Lab[j];
     target_L[*i] = reference_Lab[0];
     target_a[*i] = reference_Lab[1];
     target_b[*i] = reference_Lab[2];
@@ -1057,7 +1058,7 @@ static void process_data(dt_lut_t *self, double *target_L, double *target_a, dou
   double avgerr, maxerr;
   sparsity = thinplate_match(&tonecurve, 3, N, colorchecker_Lab, target, sparsity, perm, coeff, &avgerr, &maxerr);
 
-  if (self->result_label != NULL)
+  if(self->result_label != NULL)
   {
     // TODO: is the rank interesting, too?
     char *result_string = g_strdup_printf(_("average dE: %.02f\nmax dE: %.02f"), avgerr, maxerr);
@@ -1421,12 +1422,13 @@ static void get_Lab_from_box(box_t *box, float *Lab)
     case DT_COLORSPACE_XYZ:
     {
       dt_aligned_pixel_t XYZ;
-      for(int i = 0; i < 3; i++) XYZ[i] = box->color[i] * 0.01;
+      for_each_channel(i)
+        XYZ[i] = box->color[i] * 0.01;
       dt_XYZ_to_Lab(XYZ, Lab);
       break;
     }
     case DT_COLORSPACE_LAB:
-      for(int i = 0; i < 3; i++) Lab[i] = box->color[i];
+      for_each_channel(i) Lab[i] = box->color[i];
       break;
     default:
       break;
@@ -1658,8 +1660,15 @@ static void image_lab_to_xyz(float *image, const int width, const int height)
   for(int y = 0; y < height; y++)
     for(int x = 0; x < width; x++)
     {
-      float *pixel = &image[(x + y * width) * 3];
-      dt_Lab_to_XYZ(pixel, pixel);
+      const int i0 = (x + y * width) * 3 + 0;
+      const int i1 = (x + y * width) * 3 + 1;
+      const int i2 = (x + y * width) * 3 + 2;
+      dt_aligned_pixel_t pixel_lab = { image[i0], image[i1], image[i2], 0.0f };
+      dt_aligned_pixel_t pixel_xyz = { 0.0 };
+      dt_Lab_to_XYZ(pixel_lab, pixel_xyz);
+      image[i0] = pixel_xyz[0];
+      image[i1] = pixel_xyz[1];
+      image[i2] = pixel_xyz[2];
     }
 }
 
@@ -1935,6 +1944,9 @@ int main(int argc, char *argv[])
   return res;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

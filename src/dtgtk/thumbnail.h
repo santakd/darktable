@@ -23,6 +23,8 @@
 #include <glib.h>
 #include <gtk/gtk.h>
 
+#include "common/darktable.h"
+
 #define MAX_STARS 5
 #define IMG_TO_FIT 0.0f
 
@@ -62,7 +64,7 @@ typedef enum dt_thumbnail_selection_mode_t
 
 typedef struct
 {
-  int imgid, rowid;
+  dt_imgid_t imgid, rowid;
   int width, height;         // current thumb size (with the background and the border)
   int x, y;                  // current position at screen
   int img_width, img_height; // current image size (can be greater than the image box in case of zoom)
@@ -99,7 +101,7 @@ typedef struct
 
   GtkWidget *w_cursor;    // GtkDrawingArea -- triangle to show current image(s) in filmstrip
   GtkWidget *w_bottom_eb; // GtkEventBox -- background of the bottom infos area (contains w_bottom)
-  GtkWidget *w_bottom;    // GtkLabel -- text of the bottom infos area, just with #thumb_bottom_ext
+  GtkWidget *w_bottom;    // GtkLabel -- text of the bottom infos area, just with #thumb-bottom
   GtkWidget *w_reject;    // GtkDarktableThumbnailBtn -- Reject icon
   GtkWidget *w_stars[MAX_STARS];  // GtkDarktableThumbnailBtn -- Stars icons
   GtkWidget *w_color;     // GtkDarktableThumbnailBtn -- Colorlabels "flower" icon
@@ -144,7 +146,7 @@ typedef struct
   gboolean busy; // should we show the busy message ?
 } dt_thumbnail_t;
 
-dt_thumbnail_t *dt_thumbnail_new(int width, int height, float zoom_ratio, int imgid, int rowid, dt_thumbnail_overlay_t over,
+dt_thumbnail_t *dt_thumbnail_new(int width, int height, float zoom_ratio, dt_imgid_t imgid, int rowid, dt_thumbnail_overlay_t over,
                                  dt_thumbnail_container_t container, gboolean tooltip);
 void dt_thumbnail_destroy(dt_thumbnail_t *thumb);
 GtkWidget *dt_thumbnail_create_widget(dt_thumbnail_t *thumb, float zoom_ratio);
@@ -179,6 +181,8 @@ float dt_thumbnail_get_zoom100(dt_thumbnail_t *thumb);
 float dt_thumbnail_get_zoom_ratio(dt_thumbnail_t *thumb);
 
 #endif
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

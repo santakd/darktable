@@ -28,12 +28,17 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 typedef enum dt_confgen_type_t
 {
   DT_INT,
   DT_INT64,
   DT_FLOAT,
   DT_BOOL,
+  DT_PATH,
   DT_STRING,
   DT_ENUM
 } dt_confgen_type_t;
@@ -88,16 +93,20 @@ int dt_conf_get_and_sanitize_int(const char *name, int min, int max);
 int64_t dt_conf_get_and_sanitize_int64(const char *name, int64_t min, int64_t max);
 float dt_conf_get_and_sanitize_float(const char *name, float min, float max);
 int dt_conf_get_bool(const char *name);
-// get the configuration string without duplicating it; the returned string will be invalidated by any
-// subsequent dt_conf_set_string call
+// get the configuration string without duplicating it; the returned
+// string will be invalidated by any subsequent dt_conf_set_string
+// call
 const char *dt_conf_get_string_const(const char *name);
-// get a freshly-allocated duplicate of the configuration string; safe to use even if calling dt_conf_set_string
+// get a freshly-allocated duplicate of the configuration string; safe
+// to use even if calling dt_conf_set_string
 gchar *dt_conf_get_string(const char *name);
 gboolean dt_conf_get_folder_to_file_chooser(const char *name, GtkFileChooser *chooser);
 gboolean dt_conf_is_equal(const char *name, const char *value);
 void dt_conf_init(dt_conf_t *cf, const char *filename, GSList *override_entries);
 void dt_conf_cleanup(dt_conf_t *cf);
+void dt_conf_save(dt_conf_t *cf);
 int dt_conf_key_exists(const char *key);
+gboolean dt_conf_key_not_empty(const char *key);
 GSList *dt_conf_all_string_entries(const char *dir);
 void dt_conf_string_entry_free(gpointer data);
 
@@ -122,7 +131,20 @@ const char *dt_confgen_get_label(const char *name);
 const char *dt_confgen_get_tooltip(const char *name);
 
 gboolean dt_conf_is_default(const char *name);
+gchar* dt_conf_expand_default_dir(const char *dir);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+/** read filename and call callback() for every key/valye pair. if callback() returns non
+    NULL, the value is returned by dt_conf_read_values. This may be used to look for a
+    a specific value in filename */
+gchar *dt_conf_read_values(const char *filename,
+                           gchar* (*callback)(const gchar *key, const gchar *value));
+
+#ifdef __cplusplus
+} // extern "C"
+#endif /* __cplusplus */
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2020 darktable developers.
+    Copyright (C) 2012-2023x darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -48,7 +48,7 @@ void dt_loc_init(const char *datadir, const char *moduledir, const char *localed
   // calling wai_getExecutablePath twice as recommended in the docs:
   // the first call retrieves the length of the path
   int length = wai_getExecutablePath(NULL, 0, &dirname_length);
-  if (length > 0)
+  if(length > 0)
   {
     application_directory = (char*)malloc(length + 1);
     // the second call retrieves the path including the executable
@@ -118,7 +118,7 @@ gchar *dt_loc_init_generic(const char *absolute_value, const char *application_d
 {
   gchar *result = NULL;
   gchar *path = NULL;
-  
+
   if(absolute_value)
   {
     // the only adjustment the absolute path needs is transforming the possible tilde '~' to an absolute path
@@ -128,7 +128,7 @@ gchar *dt_loc_init_generic(const char *absolute_value, const char *application_d
   {
     // the default_value could be absolute or relative. we decide upon presence of the application_directory.
     if(application_directory)
-    {   
+    {
       // default_value is relative.
       // combine basename (application_directory) and relative path (default_value).
       gchar complete_path[PATH_MAX] = { 0 };
@@ -144,9 +144,9 @@ gchar *dt_loc_init_generic(const char *absolute_value, const char *application_d
         // <bundleroot>/Contents/Resources/lib
         // <bundleroot>/Contents/Resources/share
         // so the relative path from the binary directory to the other directories differs to the non-bundle version by
-        // ../etc -> ../Resources/etc, 
-        // ../lib -> ../Resources/lib, 
-        // ../share -> ../Resources/share, 
+        // ../etc -> ../Resources/etc,
+        // ../lib -> ../Resources/lib,
+        // ../share -> ../Resources/share,
         // So we have to modify the relative default value
 
         // +2: removes the two dots '..'
@@ -171,7 +171,7 @@ gchar *dt_loc_init_generic(const char *absolute_value, const char *application_d
 
   // create file if it does not exist
   if(g_file_test(path, G_FILE_TEST_EXISTS) == FALSE) g_mkdir_with_parents(path, 0700);
-  
+
   // removes '.', '..', and extra '/' characters.
   result = g_realpath(path);
 
@@ -209,36 +209,36 @@ void dt_loc_init_plugindir(const char* application_directory, const char *plugin
 
 void dt_check_opendir(const char* context, const char* directory)
 {
-  if (!directory)
+  if(!directory)
   {
-    fprintf(stderr, "directory for %s has not been set.\n", context);
+    dt_print(DT_DEBUG_ALWAYS, "directory for %s has not been set.\n", context);
     exit(EXIT_FAILURE);
-  } 
+  }
 
 #if _WIN32
   wchar_t *wdirectory = g_utf8_to_utf16 (directory, -1, NULL, NULL, NULL);
   DWORD attribs = GetFileAttributesW(wdirectory);
   g_free(wdirectory);
-  if (attribs != INVALID_FILE_ATTRIBUTES &&
+  if(attribs != INVALID_FILE_ATTRIBUTES &&
       (attribs & FILE_ATTRIBUTE_DIRECTORY))
   {
     dt_print(DT_DEBUG_DEV, "%s: %s\n", context, directory);
   }
   else
   {
-    fprintf(stderr, "%s: directory '%s' fails to open.'\n", context, directory);
+    dt_print(DT_DEBUG_ALWAYS, "%s: directory '%s' fails to open.'\n", context, directory);
     exit(EXIT_FAILURE);
   }
 #else
   DIR* dir = opendir(directory);
-  if (dir)
+  if(dir)
   {
     dt_print(DT_DEBUG_DEV, "%s: %s\n", context, directory);
     closedir(dir);
-  } 
-  else 
+  }
+  else
   {
-    fprintf(stderr, "opendir '%s' fails with: '%s'\n", directory, strerror(errno));
+    dt_print(DT_DEBUG_ALWAYS, "opendir '%s' fails with: '%s'\n", directory, strerror(errno));
     exit(EXIT_FAILURE);
   }
 #endif
@@ -299,6 +299,9 @@ void dt_loc_get_sharedir(char *sharedir, size_t bufsize)
 {
   g_strlcpy(sharedir, darktable.sharedir, bufsize);
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

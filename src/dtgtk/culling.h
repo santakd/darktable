@@ -79,7 +79,7 @@ typedef struct dt_culling_t
 dt_culling_t *dt_culling_new(dt_culling_mode_t mode);
 // reload all thumbs from scratch.
 void dt_culling_full_redraw(dt_culling_t *table, gboolean force);
-// initialise culling offset/naviagtion mode, etc before entering.
+// initialise culling offset/navigation mode, etc before entering.
 // if offset is > 0 it'll be used as offset, otherwise offset will be determined by other means
 void dt_culling_init(dt_culling_t *table, int offset);
 // move by key actions.
@@ -95,9 +95,13 @@ void dt_culling_zoom_fit(dt_culling_t *table);
 
 // set the overlays type
 void dt_culling_set_overlays_mode(dt_culling_t *table, dt_thumbnail_overlay_t over);
+void dt_culling_force_overlay(dt_culling_t *table, const gboolean force);
 
 // update active images list
 void dt_culling_update_active_images_list(dt_culling_t *table);
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

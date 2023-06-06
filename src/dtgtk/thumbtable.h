@@ -42,7 +42,8 @@ typedef enum dt_thumbtable_move_t
   DT_THUMBTABLE_MOVE_START,
   DT_THUMBTABLE_MOVE_END,
   DT_THUMBTABLE_MOVE_ALIGN,
-  DT_THUMBTABLE_MOVE_RESET_FIRST
+  DT_THUMBTABLE_MOVE_RESET_FIRST,
+  DT_THUMBTABLE_MOVE_LEAVE
 } dt_thumbtable_move_t;
 
 typedef struct dt_thumbtable_t
@@ -83,9 +84,8 @@ typedef struct dt_thumbtable_t
   // in that case, we count the number of "scroll-top" try and reallign after 2 try
   int realign_top_try;
 
-  gboolean mouse_inside; // is the mouse pointer inside thumbatable widget ?
-
-  GSList *accel_closures; // list of associated accels
+  gboolean mouse_inside; // is the mouse pointer inside thumbtable widget ?
+  gboolean key_inside;   // is the key move pointer inside thumbtable widget ?
 
   // when performing a drag, we store the list of items to drag here
   // as this can change during the drag and drop (esp. because of the image_over_id)
@@ -114,15 +114,15 @@ void dt_thumbtable_set_parent(dt_thumbtable_t *table, GtkWidget *new_parent, dt_
 int dt_thumbtable_get_offset(dt_thumbtable_t *table);
 gboolean dt_thumbtable_set_offset(dt_thumbtable_t *table, int offset, gboolean redraw);
 // set offset at specific imageid (and redraw if needed)
-gboolean dt_thumbtable_set_offset_image(dt_thumbtable_t *table, int imgid, gboolean redraw);
+gboolean dt_thumbtable_set_offset_image(dt_thumbtable_t *table, dt_imgid_t imgid, gboolean redraw);
 
 // fired when the zoom level change
 void dt_thumbtable_zoom_changed(dt_thumbtable_t *table, int oldzoom, int newzoom);
 
 // ensure that the mentioned image is visible by moving the view if needed
-gboolean dt_thumbtable_ensure_imgid_visibility(dt_thumbtable_t *table, int imgid);
+gboolean dt_thumbtable_ensure_imgid_visibility(dt_thumbtable_t *table, dt_imgid_t imgid);
 // check if the mentioned image is visible
-gboolean dt_thumbtable_check_imgid_visibility(dt_thumbtable_t *table, int imgid);
+gboolean dt_thumbtable_check_imgid_visibility(dt_thumbtable_t *table, dt_imgid_t imgid);
 
 // drag & drop receive function - handles dropping of files in the center view (files are added to the library)
 void dt_thumbtable_event_dnd_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y, GtkSelectionData *selection_data, guint target_type, guint time, gpointer user_data);
@@ -137,14 +137,14 @@ gboolean dt_thumbtable_reset_first_offset(dt_thumbtable_t *table);
 // scrollbar change
 void dt_thumbtable_scrollbar_changed(dt_thumbtable_t *table, float x, float y);
 
-// init all accels
-void dt_thumbtable_init_accels(dt_thumbtable_t *table);
-
 // change the type of overlays that should be shown (over or under the image)
 void dt_thumbtable_set_overlays_mode(dt_thumbtable_t *table, dt_thumbnail_overlay_t over);
 // change the timeout of the overlays block
 void dt_thumbtable_set_overlays_block_timeout(dt_thumbtable_t *table, const int timeout);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2021 darktable developers.
+    Copyright (C) 2013-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -75,7 +76,7 @@ const char *aliases()
   return _("chromatic aberrations");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("attenuate chromatic aberration by desaturating edges"),
                                       _("corrective"),
@@ -102,7 +103,7 @@ const char *deprecated_msg()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
 // Verify before actually using this
@@ -141,7 +142,7 @@ static inline void fib_latt(int *const x, int *const y, float radius, int step, 
   {
     *x = 0;
     *y = 0;
-    fprintf(stderr, "Fibonacci lattice index wrong/out of bounds in: defringe module\n");
+    dt_print(DT_DEBUG_ALWAYS, "Fibonacci lattice index wrong/out of bounds in defringe module\n");
     return;
   }
   float px = step / fib[idx], py = step * (fib[idx + 1] / fib[idx]);
@@ -169,7 +170,7 @@ void process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, cons
              void *const o, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_defringe_data_t *const d = (dt_iop_defringe_data_t *)piece->data;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, module, piece->colors,
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, module, piece->colors,
                                          i, o, roi_in, roi_out))
     return; // image has been copied through to output and module's trouble flag has been updated
 
@@ -197,7 +198,7 @@ void process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, cons
   gauss = dt_gaussian_init(width, height, 4, Labmax, Labmin, sigma, order);
   if(!gauss)
   {
-    fprintf(stderr, "Error allocating memory for gaussian blur in: defringe module\n");
+    dt_print(DT_DEBUG_ALWAYS, "Error allocating memory for gaussian blur in defringe module\n");
     goto ERROR_EXIT;
   }
   dt_gaussian_blur_4c(gauss, in, out);
@@ -244,7 +245,7 @@ void process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, cons
   xy_small = malloc(sizeof(int) * 2 * samples_small);
   if(!xy_avg || !xy_small)
   {
-    fprintf(stderr, "Error allocating memory for fibonacci lattice in: defringe module\n");
+    dt_print(DT_DEBUG_ALWAYS, "Error allocating memory for fibonacci lattice in defringe module\n");
     goto ERROR_EXIT;
   }
 
@@ -395,9 +396,6 @@ void process(struct dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece, cons
     }
   }
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-    dt_iop_alpha_copy(i, o, roi_out->width, roi_out->height);
-
   goto FINISH_PROCESS;
 
 ERROR_EXIT:
@@ -436,6 +434,9 @@ void gui_update(dt_iop_module_t *module)
   dt_bauhaus_slider_set(g->thresh_scale, p->thresh);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

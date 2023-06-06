@@ -76,12 +76,12 @@ RUN rm -rf /var/lib/apt/lists/* && apt-get update && \
     libcups2-dev \
     libcurl4-gnutls-dev \
     libexiv2-dev \
-    libflickcurl-dev \
     libgdk-pixbuf2.0-dev \
     libglib2.0-dev \
     libgphoto2-dev \
     libgraphicsmagick1-dev \
     libgtk-3-dev \
+    libheif-dev \
     libjpeg-dev \
     libjson-glib-dev \
     liblcms2-dev \
@@ -98,7 +98,6 @@ RUN rm -rf /var/lib/apt/lists/* && apt-get update && \
     librsvg2-dev \
     libsaxon-java \
     libsecret-1-dev \
-    libsoup2.4-dev \
     libsqlite3-dev \
     libtiff5-dev \
     libwebp-dev \

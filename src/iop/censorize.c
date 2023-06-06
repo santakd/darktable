@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  Copyright (C) 2020 darktable developers.
+  Copyright (C) 2020-2023 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -77,7 +77,7 @@ name()
   return _("censorize");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("censorize license plates and body parts for privacy"),
                                       _("creative"),
@@ -98,7 +98,7 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
 static inline void make_noise(float *const output, const float noise, const size_t width, const size_t height)
@@ -134,10 +134,18 @@ static inline void make_noise(float *const output, const float noise, const size
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
                                          ivoid, ovoid, roi_in, roi_out))
     return; // image has been copied through to output and module's trouble flag has been updated
 
+  float *restrict temp;
+  if(!dt_iop_alloc_image_buffers(self,roi_in,roi_out,
+                                 4 | DT_IMGSZ_INPUT, &temp,
+                                 0, NULL))
+  {
+    dt_iop_copy_image_roi(ovoid, ivoid, piece->colors, roi_in, roi_out, 0);
+    return;
+  }
   dt_iop_censorize_data_t *data = (dt_iop_censorize_data_t *)piece->data;
   const float *const restrict in = DT_IS_ALIGNED((const float *const restrict)ivoid);
   float *const restrict out = DT_IS_ALIGNED((float *const restrict)ovoid);
@@ -145,8 +153,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const int width = roi_in->width;
   const int height = roi_in->height;
   const int ch = 4;
-
-  float *const restrict temp = dt_alloc_align_float((size_t)width * height * ch);
 
   const float sigma_1 = data->radius_1 * roi_in->scale / piece->iscale;
   const float sigma_2 = data->radius_2 * roi_in->scale / piece->iscale;
@@ -159,7 +165,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   dt_aligned_pixel_t RGBmax, RGBmin;
   for(int k = 0; k < 4; k++)
   {
-    RGBmax[k] = INFINITY;
+    RGBmax[k] = FLT_MAX;
     RGBmin[k] = 0.f;
   }
 
@@ -250,9 +256,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   if(noise != 0.f)
     make_noise(output, noise, width, height);
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-    dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
-
   dt_free_align(temp);
 }
 
@@ -265,7 +268,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_censorize_data_t *d = (dt_iop_censorize_data_t *)piece->data;
   dt_iop_censorize_global_data_t *gd = (dt_iop_censorize_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
 
   const int width = roi_in->width;
@@ -277,8 +280,6 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float saturation = d->saturation;
   const int order = d->order;
   const int unbound = d->unbound;
-
-  size_t sizes[3];
 
   cl_mem dev_cm = NULL;
   cl_mem dev_ccoeffs = NULL;
@@ -294,8 +295,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   if(unbound)
   {
-    for(int k = 0; k < 4; k++) RGBmax[k] = INFINITY;
-    for(int k = 0; k < 4; k++) RGBmin[k] = -INFINITY;
+    for(int k = 0; k < 4; k++) RGBmax[k] = FLT_MAX;
+    for(int k = 0; k < 4; k++) RGBmin[k] = -FLT_MAX;
   }
 
   if(d->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
@@ -345,21 +346,9 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   err = dt_opencl_enqueue_copy_image(devid, dev_out, dev_tmp, origin, origin, region);
   if(err != CL_SUCCESS) goto error;
 
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPWD(height);
-  sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 0, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 1, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 4, sizeof(float), (void *)&saturation);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 5, sizeof(cl_mem), (void *)&dev_cm);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 6, sizeof(cl_mem), (void *)&dev_ccoeffs);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 7, sizeof(cl_mem), (void *)&dev_lm);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 8, sizeof(cl_mem), (void *)&dev_lcoeffs);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 9, sizeof(int), (void *)&unbound);
-
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_lowpass_mix, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_lowpass_mix, width, height,
+    CLARG(dev_tmp), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(saturation), CLARG(dev_cm),
+    CLARG(dev_ccoeffs), CLARG(dev_lm), CLARG(dev_lcoeffs), CLARG(unbound));
   if(err != CL_SUCCESS) goto error;
 
   dt_opencl_release_mem_object(dev_tmp);
@@ -379,8 +368,22 @@ error:
   dt_opencl_release_mem_object(dev_lm);
   dt_opencl_release_mem_object(dev_ccoeffs);
   dt_opencl_release_mem_object(dev_cm);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_lowpass] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_lowpass] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
+}
+
+void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
+                     struct dt_develop_tiling_t *tiling)
+{
+  tiling->factor = 3.0f;
+  tiling->factor_cl = 5.0f;
+  tiling->maxbuf = 1.0f;
+  tiling->maxbuf_cl = 1.0f;
+  tiling->overhead = 0;
+  tiling->overlap = 0;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
 }
 
 void init_global(dt_iop_module_so_t *module)
@@ -402,28 +405,15 @@ void cleanup_global(dt_iop_module_so_t *module)
 
 #endif
 
-void gui_update(struct dt_iop_module_t *self)
-{
-  dt_iop_censorize_gui_data_t *g = (dt_iop_censorize_gui_data_t *)self->gui_data;
-  dt_iop_censorize_params_t *p = (dt_iop_censorize_params_t *)self->params;
-  dt_bauhaus_slider_set(g->radius_1, p->radius_1);
-  dt_bauhaus_slider_set(g->pixelate, p->pixelate);
-  dt_bauhaus_slider_set(g->radius_2, p->radius_2);
-  dt_bauhaus_slider_set(g->noise, p->noise);
-}
-
 void gui_init(struct dt_iop_module_t *self)
 {
   dt_iop_censorize_gui_data_t *g = IOP_GUI_ALLOC(censorize);
 
   g->radius_1 = dt_bauhaus_slider_from_params(self, N_("radius_1"));
-  dt_bauhaus_slider_set_step(g->radius_1, 0.1);
 
   g->pixelate = dt_bauhaus_slider_from_params(self, N_("pixelate"));
-  dt_bauhaus_slider_set_step(g->pixelate, 0.1);
 
   g->radius_2 = dt_bauhaus_slider_from_params(self, N_("radius_2"));
-  dt_bauhaus_slider_set_step(g->radius_2, 0.1);
 
   g->noise = dt_bauhaus_slider_from_params(self, N_("noise"));
 
@@ -433,6 +423,9 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->noise, _("amount of noise to add at the end"));
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2021 darktable developers.
+    Copyright (C) 2009-2023 darktable developers.
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -15,6 +15,9 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 /** this is the view for the lighttable module.  */
+
+#include "common/extra_optimizations.h"
+
 #include "bauhaus/bauhaus.h"
 #include "common/collection.h"
 #include "common/colorlabels.h"
@@ -164,7 +167,8 @@ static void _lighttable_check_layout(dt_view_t *self)
   // layout has changed, let restore panels
   dt_ui_restore_panels(darktable.gui->ui);
 
-  if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE)
+  if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER
+     || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE)
   {
     dt_ui_thumbtable(darktable.gui->ui)->navigate_inside_selection = FALSE;
     gtk_widget_hide(lib->preview->widget);
@@ -172,7 +176,8 @@ static void _lighttable_check_layout(dt_view_t *self)
     gtk_widget_hide(dt_ui_thumbtable(darktable.gui->ui)->widget);
 
     // if we arrive from culling, we just need to ensure the offset is right
-    if(layout_old == DT_LIGHTTABLE_LAYOUT_CULLING || layout_old == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
+    if(layout_old == DT_LIGHTTABLE_LAYOUT_CULLING
+       || layout_old == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
     {
       dt_thumbtable_set_offset(dt_ui_thumbtable(darktable.gui->ui), lib->thumbtable_offset, FALSE);
     }
@@ -190,7 +195,8 @@ static void _lighttable_check_layout(dt_view_t *self)
     dt_thumbtable_full_redraw(dt_ui_thumbtable(darktable.gui->ui), TRUE);
     gtk_widget_show(dt_ui_thumbtable(darktable.gui->ui)->widget);
   }
-  else if(layout == DT_LIGHTTABLE_LAYOUT_CULLING || layout == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
+  else if(layout == DT_LIGHTTABLE_LAYOUT_CULLING
+          || layout == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
   {
     // record thumbtable offset
     lib->thumbtable_offset = dt_thumbtable_get_offset(dt_ui_thumbtable(darktable.gui->ui));
@@ -212,7 +218,7 @@ static void _lighttable_check_layout(dt_view_t *self)
       dt_culling_init(lib->culling, id);
     }
     else
-      dt_culling_init(lib->culling, -1);
+      dt_culling_init(lib->culling, lib->thumbtable_offset);
 
 
     // ensure that thumbtable is not visible in the main view
@@ -244,7 +250,7 @@ static void _lighttable_check_layout(dt_view_t *self)
   }
 }
 
-static void _lighttable_change_offset(dt_view_t *self, gboolean reset, gint imgid)
+static void _lighttable_change_offset(dt_view_t *self, gboolean reset, dt_imgid_t imgid)
 {
   dt_library_t *lib = (dt_library_t *)self->data;
 
@@ -252,7 +258,8 @@ static void _lighttable_change_offset(dt_view_t *self, gboolean reset, gint imgi
   if(lib->preview_state)
   {
     // we only do the change if the offset is different
-    if(lib->culling->offset_imgid != imgid) dt_culling_change_offset_image(lib->preview, imgid);
+    if(lib->culling->offset_imgid != imgid)
+      dt_culling_change_offset_image(lib->preview, imgid);
   }
 
   // culling change (note that full_preview can be combined with culling)
@@ -315,7 +322,7 @@ static gboolean _preview_get_state(dt_view_t *self)
 
 static int set_image_visible_cb(lua_State *L)
 {
-  dt_lua_image_t imgid = -1;
+  dt_lua_image_t imgid = NO_IMGID;
   dt_view_t *self = lua_touserdata(L, lua_upvalueindex(1));  //check were in lighttable view
   if(view(self) == DT_VIEW_LIGHTTABLE)
   {
@@ -342,7 +349,7 @@ static int set_image_visible_cb(lua_State *L)
 
 static gboolean is_image_visible_cb(lua_State *L)
 {
-  dt_lua_image_t imgid = -1;
+  dt_lua_image_t imgid = NO_IMGID;
   dt_view_t *self = lua_touserdata(L, lua_upvalueindex(1));  //check were in lighttable view
   //check we are in file manager or zoomable
   if(view(self) == DT_VIEW_LIGHTTABLE)
@@ -378,67 +385,6 @@ void cleanup(dt_view_t *self)
   free(self->data);
 }
 
-// display help text in the center view if there's no image to show
-static int _lighttable_expose_empty(dt_view_t *self, cairo_t *cr, int32_t width, int32_t height, int32_t pointerx,
-                                    int32_t pointery)
-{
-  const float fs = DT_PIXEL_APPLY_DPI(15.0f);
-  const float ls = 1.5f * fs;
-  const float offy = height * 0.2f;
-  const float offx = DT_PIXEL_APPLY_DPI(60);
-  const float at = 0.3f;
-  dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_LIGHTTABLE_BG);
-  cairo_rectangle(cr, 0, 0, width, height);
-  cairo_fill(cr);
-
-  PangoLayout *layout;
-  PangoRectangle ink;
-  PangoFontDescription *desc = pango_font_description_copy_static(darktable.bauhaus->pango_font_desc);
-  pango_font_description_set_absolute_size(desc, fs * PANGO_SCALE);
-  layout = pango_cairo_create_layout(cr);
-  pango_layout_set_font_description(layout, desc);
-  cairo_set_font_size(cr, fs);
-  dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_LIGHTTABLE_FONT);
-  pango_layout_set_text(layout, _("there are no images in this collection"), -1);
-  pango_layout_get_pixel_extents(layout, &ink, NULL);
-  cairo_move_to(cr, offx, offy - ink.height - ink.x);
-  pango_cairo_show_layout(cr, layout);
-  pango_layout_set_text(layout, _("if you have not imported any images yet"), -1);
-  pango_layout_get_pixel_extents(layout, &ink, NULL);
-  cairo_move_to(cr, offx, offy + 2 * ls - ink.height - ink.x);
-  pango_cairo_show_layout(cr, layout);
-  pango_layout_set_text(layout, _("you can do so in the import module"), -1);
-  pango_layout_get_pixel_extents(layout, &ink, NULL);
-  cairo_move_to(cr, offx, offy + 3 * ls - ink.height - ink.x);
-  pango_cairo_show_layout(cr, layout);
-  cairo_move_to(cr, offx - DT_PIXEL_APPLY_DPI(10.0f), offy + 3 * ls - ls * .25f);
-  cairo_line_to(cr, 0.0f, 10.0f);
-  dt_gui_gtk_set_source_rgba(cr, DT_GUI_COLOR_LIGHTTABLE_FONT, at);
-  cairo_stroke(cr);
-  pango_layout_set_text(layout, _("try to relax the filter settings in the top panel"), -1);
-  pango_layout_get_pixel_extents(layout, &ink, NULL);
-  cairo_move_to(cr, offx, offy + 5 * ls - ink.height - ink.x);
-  dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_LIGHTTABLE_FONT);
-  pango_cairo_show_layout(cr, layout);
-  cairo_rel_move_to(cr, 10.0f + ink.width, ink.height * 0.5f);
-  cairo_line_to(cr, width * 0.5f, 0.0f);
-  dt_gui_gtk_set_source_rgba(cr, DT_GUI_COLOR_LIGHTTABLE_FONT, at);
-  cairo_stroke(cr);
-  pango_layout_set_text(layout, _("or add images in the collections module in the left panel"), -1);
-  pango_layout_get_pixel_extents(layout, &ink, NULL);
-  cairo_move_to(cr, offx, offy + 6 * ls - ink.height - ink.x);
-  dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_LIGHTTABLE_FONT);
-  pango_cairo_show_layout(cr, layout);
-  cairo_move_to(cr, offx - DT_PIXEL_APPLY_DPI(10.0f), offy + 6 * ls - ls * 0.25f);
-  cairo_rel_line_to(cr, -offx + 10.0f, 0.0f);
-  dt_gui_gtk_set_source_rgba(cr, DT_GUI_COLOR_LIGHTTABLE_FONT, at);
-  cairo_stroke(cr);
-
-  pango_font_description_free(desc);
-  g_object_unref(layout);
-  return 0;
-}
-
 void expose(dt_view_t *self, cairo_t *cr, int32_t width, int32_t height, int32_t pointerx, int32_t pointery)
 {
   dt_library_t *lib = (dt_library_t *)self->data;
@@ -449,11 +395,9 @@ void expose(dt_view_t *self, cairo_t *cr, int32_t width, int32_t height, int32_t
   // Let's show full preview if in that state...
   _lighttable_check_layout(self);
 
-  if(!darktable.collection || darktable.collection->count <= 0)
+  if(!darktable.collection || dt_collection_get_count_no_group(darktable.collection) <= 0)
   {
-    if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE)
-      gtk_widget_hide(dt_ui_thumbtable(darktable.gui->ui)->widget);
-    _lighttable_expose_empty(self, cr, width, height, pointerx, pointery);
+    // thumbtable displays an help message
   }
   else if(lib->preview_state)
   {
@@ -542,7 +486,7 @@ void enter(dt_view_t *self)
   dt_ui_restore_panels(darktable.gui->ui);
 }
 
-static void _preview_enter(dt_view_t *self, gboolean sticky, gboolean focus, int32_t mouse_over_id)
+static void _preview_enter(dt_view_t *self, gboolean sticky, gboolean focus)
 {
   dt_library_t *lib = (dt_library_t *)self->data;
 
@@ -555,7 +499,7 @@ static void _preview_enter(dt_view_t *self, gboolean sticky, gboolean focus, int
   lib->preview_sticky = sticky;
   lib->preview->focus = focus;
   lib->preview_state = TRUE;
-  dt_culling_init(lib->preview, -1);
+  dt_culling_init(lib->preview, lib->thumbtable_offset);
   gtk_widget_show(lib->preview->widget);
 
   dt_ui_thumbtable(darktable.gui->ui)->navigate_inside_selection = lib->preview->navigate_inside_selection;
@@ -580,10 +524,10 @@ static void _preview_enter(dt_view_t *self, gboolean sticky, gboolean focus, int
   dt_ui_scrollbars_show(darktable.gui->ui, FALSE);
 }
 
-static void _preview_set_state(dt_view_t *self, gboolean state, gboolean focus)
+static void _preview_set_state(dt_view_t *self, gboolean state, gboolean sticky, gboolean focus)
 {
   if(state)
-    _preview_enter(self, TRUE, focus, dt_control_get_mouse_over_id());
+    _preview_enter(self, sticky, focus);
   else
     _preview_quit(self);
 }
@@ -651,7 +595,7 @@ void leave(dt_view_t *self)
 
 void reset(dt_view_t *self)
 {
-  dt_control_set_mouse_over_id(-1);
+  dt_control_set_mouse_over_id(NO_IMGID);
 }
 
 
@@ -659,64 +603,58 @@ void scrollbar_changed(dt_view_t *self, double x, double y)
 {
   const dt_lighttable_layout_t layout = dt_view_lighttable_get_layout(darktable.view_manager);
 
-  switch(layout)
+  if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER)
+    dt_thumbtable_scrollbar_changed(dt_ui_thumbtable(darktable.gui->ui), x, y);
+}
+
+static void _overlays_force(dt_view_t *self, const gboolean show)
+{
+  dt_library_t *lib = (dt_library_t *)self->data;
+
+  // full_preview change
+  if(lib->preview_state
+     && (!show || lib->preview->overlays == DT_THUMBNAIL_OVERLAYS_NONE
+         || lib->preview->overlays == DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK))
   {
-    case DT_LIGHTTABLE_LAYOUT_FILEMANAGER:
-    case DT_LIGHTTABLE_LAYOUT_ZOOMABLE:
-    {
-      dt_thumbtable_scrollbar_changed(dt_ui_thumbtable(darktable.gui->ui), x, y);
-      break;
-    }
-    default:
-      break;
+    dt_culling_force_overlay(lib->preview, show);
+  }
+
+  // culling change (note that full_preview can be combined with culling)
+  if((lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING
+      || lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
+     && (!show || lib->preview->overlays == DT_THUMBNAIL_OVERLAYS_NONE
+         || lib->preview->overlays == DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK))
+  {
+    dt_culling_force_overlay(lib->culling, show);
   }
 }
 
-enum
-{
-  DT_ACTION_ELEMENT_FOCUS_DETECT = 1,
-};
-
-static float _action_process_preview(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
+static float _action_process_infos(gpointer target, const dt_action_element_t element,
+                                   const dt_action_effect_t effect, const float move_size)
 {
   dt_view_t *self = darktable.view_manager->proxy.lighttable.view;
   dt_library_t *lib = (dt_library_t *)self->data;
 
-  if(!isnan(move_size))
+  if(DT_PERFORM_ACTION(move_size))
   {
-    if(lib->preview_state)
+    if(effect != DT_ACTION_EFFECT_ON)
     {
-      if(effect != DT_ACTION_EFFECT_ON)
-        _preview_quit(self);
+      _overlays_force(self, FALSE);
     }
-    else
+    else if(effect != DT_ACTION_EFFECT_OFF)
     {
-      if(effect != DT_ACTION_EFFECT_OFF)
-      {
-        const int32_t mouse_over_id = dt_control_get_mouse_over_id();
-        if(mouse_over_id != -1)
-        {
-          gboolean focus = element == DT_ACTION_ELEMENT_FOCUS_DETECT;
-
-          _preview_enter(self, FALSE, focus, mouse_over_id);
-        }
-      }
+      _overlays_force(self, TRUE);
     }
   }
 
   return lib->preview_state;
 }
 
-const dt_action_element_def_t _action_elements_preview[]
-  = { { "normal", dt_action_effect_hold },
-      { "focus detection", dt_action_effect_hold },
-      { NULL } };
+const dt_action_element_def_t _action_elements_infos[] = { { NULL, dt_action_effect_hold } };
 
-const dt_action_def_t dt_action_def_preview
-  = { N_("preview"),
-      _action_process_preview,
-      _action_elements_preview,
-      NULL, TRUE };
+const dt_action_def_t dt_action_def_infos
+    = { N_("show infos"), _action_process_infos, _action_elements_infos, NULL, TRUE };
+
 
 enum
 {
@@ -730,11 +668,12 @@ enum
   _ACTION_TABLE_MOVE_LEFTRIGHT = 1,
   _ACTION_TABLE_MOVE_UPDOWN = 2,
   _ACTION_TABLE_MOVE_PAGE = 3,
+  _ACTION_TABLE_MOVE_LEAVE = 4,
 };
 
 static float _action_process_move(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
 {
-  if(isnan(move_size)) return 0; // FIXME return should be relative position
+  if(!DT_PERFORM_ACTION(move_size)) return 0; // FIXME return should be relative position
 
   int action = GPOINTER_TO_INT(target);
 
@@ -744,10 +683,12 @@ static float _action_process_move(gpointer target, dt_action_element_t element, 
   // navigation accels for thumbtable layouts
   // this can't be "normal" key accels because it's usually arrow keys and lot of other widgets
   // will capture them before the usual accel is triggered
-  if(!lib->preview_state && (layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE))
+  if(!lib->preview_state
+     && (layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER
+         || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE))
   {
     dt_thumbtable_move_t move = DT_THUMBTABLE_MOVE_NONE;
-    gboolean select = element == DT_ACTION_ELEMENT_SELECT;
+    const gboolean select = element == DT_ACTION_ELEMENT_SELECT;
     if(action == _ACTION_TABLE_MOVE_LEFTRIGHT && effect == DT_ACTION_EFFECT_PREVIOUS)
       move = DT_THUMBTABLE_MOVE_LEFT;
     else if(action == _ACTION_TABLE_MOVE_UPDOWN && effect == DT_ACTION_EFFECT_NEXT)
@@ -764,6 +705,8 @@ static float _action_process_move(gpointer target, dt_action_element_t element, 
       move = DT_THUMBTABLE_MOVE_START;
     else if(action == _ACTION_TABLE_MOVE_STARTEND && effect == DT_ACTION_EFFECT_NEXT)
       move = DT_THUMBTABLE_MOVE_END;
+    else if(action == _ACTION_TABLE_MOVE_LEAVE && effect == DT_ACTION_EFFECT_NEXT)
+      move = DT_THUMBTABLE_MOVE_LEAVE;
     else
     {
       // MIDDLE
@@ -776,7 +719,8 @@ static float _action_process_move(gpointer target, dt_action_element_t element, 
       gtk_widget_queue_draw(dt_ui_center(darktable.gui->ui));
     }
   }
-  else if(lib->preview_state || layout == DT_LIGHTTABLE_LAYOUT_CULLING
+  else if(lib->preview_state
+          || layout == DT_LIGHTTABLE_LAYOUT_CULLING
           || layout == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
   {
     dt_culling_move_t move = DT_CULLING_MOVE_NONE;
@@ -833,8 +777,7 @@ const dt_action_def_t _action_def_move
       _action_fallbacks_move,
       TRUE };
 
-static gboolean zoom_in_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                           GdkModifierType modifier, gpointer data)
+static void zoom_in_callback(dt_action_t *action)
 {
   int zoom = dt_view_lighttable_get_zoom(darktable.view_manager);
 
@@ -842,11 +785,9 @@ static gboolean zoom_in_callback(GtkAccelGroup *accel_group, GObject *accelerata
   if(zoom < 1) zoom = 1;
 
   dt_view_lighttable_set_zoom(darktable.view_manager, zoom);
-  return TRUE;
 }
 
-static gboolean zoom_out_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                           GdkModifierType modifier, gpointer data)
+static void zoom_out_callback(dt_action_t *action)
 {
   int zoom = dt_view_lighttable_get_zoom(darktable.view_manager);
 
@@ -854,84 +795,45 @@ static gboolean zoom_out_callback(GtkAccelGroup *accel_group, GObject *accelerat
   if(zoom > 2 * DT_LIGHTTABLE_MAX_ZOOM) zoom = 2 * DT_LIGHTTABLE_MAX_ZOOM;
 
   dt_view_lighttable_set_zoom(darktable.view_manager, zoom);
-  return TRUE;
 }
 
-static gboolean zoom_max_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                           GdkModifierType modifier, gpointer data)
+static void zoom_max_callback(dt_action_t *action)
 {
   dt_view_lighttable_set_zoom(darktable.view_manager, 1);
-  return TRUE;
 }
 
-static gboolean zoom_min_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                           GdkModifierType modifier, gpointer data)
+static void zoom_min_callback(dt_action_t *action)
 {
   dt_view_lighttable_set_zoom(darktable.view_manager, DT_LIGHTTABLE_MAX_ZOOM);
-  return TRUE;
 }
 
-void init_key_accels(dt_view_t *self)
-{
-  dt_accel_register_view(self, NC_("accel", "align images to grid"), 0, 0);
-  dt_accel_register_view(self, NC_("accel", "reset first image offset"), 0, 0);
-  dt_accel_register_view(self, NC_("accel", "select toggle image"), GDK_KEY_space, 0);
-  dt_accel_register_view(self, NC_("accel", "select single image"), GDK_KEY_Return, 0);
-
-  // undo/redo
-  dt_accel_register_view(self, NC_("accel", "undo"), GDK_KEY_z, GDK_CONTROL_MASK);
-  dt_accel_register_view(self, NC_("accel", "redo"), GDK_KEY_y, GDK_CONTROL_MASK);
-
-  // zoom for full culling & preview
-  dt_accel_register_view(self, NC_("accel", "preview zoom 100%"), 0, 0);
-  dt_accel_register_view(self, NC_("accel", "preview zoom fit"), 0, 0);
-
-  // zoom in/out/min/max
-  dt_accel_register_view(self, NC_("accel", "zoom in"), GDK_KEY_plus, GDK_CONTROL_MASK);
-  dt_accel_register_view(self, NC_("accel", "zoom max"), GDK_KEY_plus, GDK_MOD1_MASK);
-  dt_accel_register_view(self, NC_("accel", "zoom out"), GDK_KEY_minus, GDK_CONTROL_MASK);
-  dt_accel_register_view(self, NC_("accel", "zoom min"), GDK_KEY_minus, GDK_MOD1_MASK);
-}
-
-static gboolean _lighttable_undo_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                          GdkModifierType modifier, gpointer data)
+static void _lighttable_undo_callback(dt_action_t *action)
 {
   dt_undo_do_undo(darktable.undo, DT_UNDO_LIGHTTABLE);
-  return TRUE;
 }
 
-static gboolean _lighttable_redo_callback(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                          GdkModifierType modifier, gpointer data)
+static void _lighttable_redo_callback(dt_action_t *action)
 {
   dt_undo_do_redo(darktable.undo, DT_UNDO_LIGHTTABLE);
-  return TRUE;
 }
 
-static gboolean _accel_align_to_grid(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                     GdkModifierType modifier, gpointer data)
+static void _accel_align_to_grid(dt_action_t *action)
 {
   const dt_lighttable_layout_t layout = dt_view_lighttable_get_layout(darktable.view_manager);
 
   if(layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE)
-  {
-    return dt_thumbtable_key_move(dt_ui_thumbtable(darktable.gui->ui), DT_THUMBTABLE_MOVE_ALIGN, FALSE);
-  }
-  return FALSE;
+    dt_thumbtable_key_move(dt_ui_thumbtable(darktable.gui->ui), DT_THUMBTABLE_MOVE_ALIGN, FALSE);
 }
-static gboolean _accel_reset_first_offset(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                          GdkModifierType modifier, gpointer data)
+
+static void _accel_reset_first_offset(dt_action_t *action)
 {
   const dt_lighttable_layout_t layout = dt_view_lighttable_get_layout(darktable.view_manager);
 
   if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE)
-  {
-    return dt_thumbtable_reset_first_offset(dt_ui_thumbtable(darktable.gui->ui));
-  }
-  return FALSE;
+    dt_thumbtable_reset_first_offset(dt_ui_thumbtable(darktable.gui->ui));
 }
 
-static gboolean _accel_culling_zoom_100(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                        GdkModifierType modifier, gpointer data)
+static void _accel_culling_zoom_100(dt_action_t *action)
 {
   dt_view_t *self = darktable.view_manager->proxy.lighttable.view;
   dt_library_t *lib = (dt_library_t *)self->data;
@@ -941,14 +843,9 @@ static gboolean _accel_culling_zoom_100(GtkAccelGroup *accel_group, GObject *acc
   else if(dt_view_lighttable_get_layout(darktable.view_manager) == DT_LIGHTTABLE_LAYOUT_CULLING
           || dt_view_lighttable_get_layout(darktable.view_manager) == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
     dt_culling_zoom_max(lib->culling);
-  else
-    return FALSE;
-
-  return TRUE;
 }
 
-static gboolean _accel_culling_zoom_fit(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                        GdkModifierType modifier, gpointer data)
+static void _accel_culling_zoom_fit(dt_action_t *action)
 {
   dt_view_t *self = darktable.view_manager->proxy.lighttable.view;
   dt_library_t *lib = (dt_library_t *)self->data;
@@ -958,63 +855,18 @@ static gboolean _accel_culling_zoom_fit(GtkAccelGroup *accel_group, GObject *acc
   else if(dt_view_lighttable_get_layout(darktable.view_manager) == DT_LIGHTTABLE_LAYOUT_CULLING
           || dt_view_lighttable_get_layout(darktable.view_manager) == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC)
     dt_culling_zoom_fit(lib->culling);
-  else
-    return FALSE;
-
-  return TRUE;
 }
 
-static gboolean _accel_select_toggle(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                     GdkModifierType modifier, gpointer data)
+static void _accel_select_toggle(dt_action_t *action)
 {
-  const int32_t id = dt_control_get_mouse_over_id();
+  const dt_imgid_t id = dt_control_get_mouse_over_id();
   dt_selection_toggle(darktable.selection, id);
-  return TRUE;
 }
 
-static gboolean _accel_select_single(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
-                                     GdkModifierType modifier, gpointer data)
+static void _accel_select_single(dt_action_t *action)
 {
-  const int32_t id = dt_control_get_mouse_over_id();
+  const dt_imgid_t id = dt_control_get_mouse_over_id();
   dt_selection_select_single(darktable.selection, id);
-  return TRUE;
-}
-
-void connect_key_accels(dt_view_t *self)
-{
-  GClosure *closure;
-
-  // Navigation keys
-  closure = g_cclosure_new(G_CALLBACK(_accel_select_toggle), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "select toggle image", closure);
-  closure = g_cclosure_new(G_CALLBACK(_accel_select_single), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "select single image", closure);
-  closure = g_cclosure_new(G_CALLBACK(_accel_align_to_grid), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "align images to grid", closure);
-  closure = g_cclosure_new(G_CALLBACK(_accel_reset_first_offset), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "reset first image offset", closure);
-
-  // undo/redo
-  closure = g_cclosure_new(G_CALLBACK(_lighttable_undo_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "undo", closure);
-  closure = g_cclosure_new(G_CALLBACK(_lighttable_redo_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "redo", closure);
-
-  // culling & preview zoom
-  closure = g_cclosure_new(G_CALLBACK(_accel_culling_zoom_100), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "preview zoom 100%", closure);
-  closure = g_cclosure_new(G_CALLBACK(_accel_culling_zoom_fit), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "preview zoom fit", closure);
-
-  // zoom in/out/min/max
-  closure = g_cclosure_new(G_CALLBACK(zoom_in_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "zoom in", closure);
-  closure = g_cclosure_new(G_CALLBACK(zoom_out_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "zoom out", closure);
-  closure = g_cclosure_new(G_CALLBACK(zoom_min_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "zoom min", closure);
-  closure = g_cclosure_new(G_CALLBACK(zoom_max_callback), (gpointer)self, NULL);
-  dt_accel_connect_view(self, "zoom max", closure);
 }
 
 GSList *mouse_actions(const dt_view_t *self)
@@ -1030,6 +882,7 @@ GSList *mouse_actions(const dt_view_t *self)
     lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_SCROLL, GDK_CONTROL_MASK, _("zoom in the image"));
     /* xgettext:no-c-format */
     lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_MIDDLE, 0, _("zoom to 100% and back"));
+    lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT_DRAG, 0, _("pan a zoomed image"));
   }
   else if(lib->current_layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER)
   {
@@ -1037,7 +890,14 @@ GSList *mouse_actions(const dt_view_t *self)
     lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_SCROLL, GDK_CONTROL_MASK,
                                        _("change number of images per row"));
 
-    if(darktable.collection->params.sort == DT_COLLECTION_SORT_CUSTOM_ORDER)
+    lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT, 0,
+                                      _("select an image"));
+    lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT, GDK_SHIFT_MASK,
+                                      _("select range from last image"));
+    lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT, GDK_CONTROL_MASK,
+                                      _("add image to or remove it from a selection"));
+
+    if(darktable.collection->params.sorts[DT_COLLECTION_SORT_CUSTOM_ORDER])
     {
       lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_DRAG_DROP, GDK_BUTTON1_MASK, _("change image order"));
     }
@@ -1062,6 +922,10 @@ GSList *mouse_actions(const dt_view_t *self)
     lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_SCROLL, 0, _("zoom the main view"));
     lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT_DRAG, 0, _("pan inside the main view"));
   }
+
+  lm = dt_mouse_action_create_simple(lm, DT_MOUSE_ACTION_LEFT, GDK_SHIFT_MASK, dt_conf_get_bool("lighttable/ui/single_module")
+                                     ? _("[modules] expand module without closing others")
+                                     : _("[modules] expand module and close others"));
 
   return lm;
 }
@@ -1155,7 +1019,9 @@ static void _profile_display_profile_callback(GtkWidget *combo, gpointer user_da
   }
 
   // profile not found, fall back to system display profile. shouldn't happen
-  fprintf(stderr, "can't find display profile `%s', using system display profile instead\n", dt_bauhaus_combobox_get_text(combo));
+  dt_print(DT_DEBUG_ALWAYS,
+           "can't find display profile `%s', using system display profile instead\n",
+           dt_bauhaus_combobox_get_text(combo));
   profile_changed = darktable.color_profiles->display_type != DT_COLORSPACE_DISPLAY;
   darktable.color_profiles->display_type = DT_COLORSPACE_DISPLAY;
   darktable.color_profiles->display_filename[0] = '\0';
@@ -1195,8 +1061,9 @@ static void _profile_display2_profile_callback(GtkWidget *combo, gpointer user_d
   }
 
   // profile not found, fall back to system display2 profile. shouldn't happen
-  fprintf(stderr, "can't find preview display profile `%s', using system display profile instead\n",
-          dt_bauhaus_combobox_get_text(combo));
+  dt_print(DT_DEBUG_ALWAYS,
+           "can't find preview display profile `%s', using system display profile instead\n",
+           dt_bauhaus_combobox_get_text(combo));
   profile_changed = darktable.color_profiles->display2_type != DT_COLORSPACE_DISPLAY2;
   darktable.color_profiles->display2_type = DT_COLORSPACE_DISPLAY2;
   darktable.color_profiles->display2_filename[0] = '\0';
@@ -1284,23 +1151,18 @@ void gui_init(dt_view_t *self)
   gtk_overlay_reorder_overlay(GTK_OVERLAY(dt_ui_center_base(darktable.gui->ui)),
                               gtk_widget_get_parent(dt_ui_toast_msg(darktable.gui->ui)), -1);
 
-  // enable drag & drop
-  gtk_drag_dest_set(dt_ui_center_base(darktable.gui->ui), GTK_DEST_DEFAULT_ALL, target_list_all, n_targets_all, GDK_ACTION_MOVE);
-  g_signal_connect(G_OBJECT(dt_ui_center_base(darktable.gui->ui)), "drag-data-received", G_CALLBACK(dt_thumbtable_event_dnd_received), NULL);
-
   /* add the global focus peaking button in toolbox */
   dt_view_manager_module_toolbox_add(darktable.view_manager, darktable.gui->focus_peaking_button,
                                      DT_VIEW_LIGHTTABLE | DT_VIEW_DARKROOM);
 
   // create display profile button
-  GtkWidget *const profile_button = dtgtk_button_new(dtgtk_cairo_paint_display, CPF_STYLE_FLAT, NULL);
+  GtkWidget *const profile_button = dtgtk_button_new(dtgtk_cairo_paint_display, 0, NULL);
   gtk_widget_set_tooltip_text(profile_button, _("set display profile"));
   dt_view_manager_module_toolbox_add(darktable.view_manager, profile_button, DT_VIEW_LIGHTTABLE);
 
   // and the popup window
   lib->profile_floating_window = gtk_popover_new(profile_button);
 
-  gtk_widget_set_size_request(GTK_WIDGET(lib->profile_floating_window), 550, -1);
   g_object_set(G_OBJECT(lib->profile_floating_window), "transitions-enabled", FALSE, NULL);
   g_signal_connect_swapped(G_OBJECT(profile_button), "button-press-event", G_CALLBACK(gtk_widget_show_all), lib->profile_floating_window);
 
@@ -1309,24 +1171,18 @@ void gui_init(dt_view_t *self)
   gtk_container_add(GTK_CONTAINER(lib->profile_floating_window), vbox);
 
   /** let's fill the encapsulating widgets */
-  char datadir[PATH_MAX] = { 0 };
-  char confdir[PATH_MAX] = { 0 };
-  dt_loc_get_user_config_dir(confdir, sizeof(confdir));
-  dt_loc_get_datadir(datadir, sizeof(datadir));
 
-  GtkWidget *display_intent = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(display_intent, NULL, N_("intent"));
-  dt_bauhaus_combobox_add(display_intent, _("perceptual"));
-  dt_bauhaus_combobox_add(display_intent, _("relative colorimetric"));
-  dt_bauhaus_combobox_add(display_intent, C_("rendering intent", "saturation"));
-  dt_bauhaus_combobox_add(display_intent, _("absolute colorimetric"));
+  static const gchar *intents_list[]
+    = { N_("perceptual"),
+        N_("relative colorimetric"),
+        NC_("rendering intent", "saturation"),
+        N_("absolute colorimetric"),
+        NULL };
 
-  GtkWidget *display2_intent = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(display2_intent, NULL, N_("intent"));
-  dt_bauhaus_combobox_add(display2_intent, _("perceptual"));
-  dt_bauhaus_combobox_add(display2_intent, _("relative colorimetric"));
-  dt_bauhaus_combobox_add(display2_intent, C_("rendering intent", "saturation"));
-  dt_bauhaus_combobox_add(display2_intent, _("absolute colorimetric"));
+  GtkWidget *display_intent = dt_bauhaus_combobox_new_full(DT_ACTION(self), N_("profiles"), N_("intent"),
+                                                            "", 0, _profile_display_intent_callback, NULL, intents_list);
+  GtkWidget *display2_intent = dt_bauhaus_combobox_new_full(DT_ACTION(self), N_("profiles"), N_("preview intent"),
+                                                            "", 0, _profile_display2_intent_callback, NULL, intents_list);
 
   GtkWidget *display_profile = dt_bauhaus_combobox_new(NULL);
   dt_bauhaus_widget_set_label(display_profile, NULL, N_("display profile"));
@@ -1366,21 +1222,16 @@ void gui_init(dt_view_t *self)
     }
   }
 
-  char *system_profile_dir = g_build_filename(datadir, "color", "out", NULL);
-  char *user_profile_dir = g_build_filename(confdir, "color", "out", NULL);
-  char *tooltip = g_strdup_printf(_("display ICC profiles in %s or %s"), user_profile_dir, system_profile_dir);
-  gtk_widget_set_tooltip_text(display_profile, tooltip);
+  char *tooltip = dt_ioppr_get_location_tooltip("out", _("display ICC profiles"));
+  gtk_widget_set_tooltip_markup(display_profile, tooltip);
   g_free(tooltip);
-  tooltip = g_strdup_printf(_("preview display ICC profiles in %s or %s"), user_profile_dir, system_profile_dir);
-  gtk_widget_set_tooltip_text(display2_profile, tooltip);
-  g_free(tooltip);
-  g_free(system_profile_dir);
-  g_free(user_profile_dir);
 
-  g_signal_connect(G_OBJECT(display_intent), "value-changed", G_CALLBACK(_profile_display_intent_callback), NULL);
+  tooltip = dt_ioppr_get_location_tooltip("out", _("preview display ICC profiles"));
+  gtk_widget_set_tooltip_markup(display2_profile, tooltip);
+  g_free(tooltip);
+
   g_signal_connect(G_OBJECT(display_profile), "value-changed", G_CALLBACK(_profile_display_profile_callback), NULL);
 
-  g_signal_connect(G_OBJECT(display2_intent), "value-changed", G_CALLBACK(_profile_display2_intent_callback), NULL);
   g_signal_connect(G_OBJECT(display2_profile), "value-changed", G_CALLBACK(_profile_display2_profile_callback),
                    NULL);
 
@@ -1393,27 +1244,50 @@ void gui_init(dt_view_t *self)
   dt_action_t *sa = &self->actions, *ac = NULL;
 
   ac = dt_action_define(sa, N_("move"), N_("whole"), GINT_TO_POINTER(_ACTION_TABLE_MOVE_STARTEND), &_action_def_move);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Home, 0);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_End, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Home, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_End, 0);
 
   ac = dt_action_define(sa, N_("move"), N_("horizontal"), GINT_TO_POINTER(_ACTION_TABLE_MOVE_LEFTRIGHT), &_action_def_move);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Left, 0);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Right, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Left, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Right, 0);
 
   ac = dt_action_define(sa, N_("move"), N_("vertical"), GINT_TO_POINTER(_ACTION_TABLE_MOVE_UPDOWN), &_action_def_move);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Down, 0);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Up, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Down, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Up, 0);
 
   ac = dt_action_define(sa, N_("move"), N_("page"), GINT_TO_POINTER(_ACTION_TABLE_MOVE_PAGE), &_action_def_move);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Page_Down, 0);
-  dt_accel_register_shortcut(ac, NULL, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Page_Up, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_PREVIOUS, GDK_KEY_Page_Down, 0);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Page_Up, 0);
 
-  // Preview key
-  dt_accel_register_shortcut(sa, NC_("accel", "preview"), DT_ACTION_ELEMENT_DEFAULT, DT_ACTION_EFFECT_HOLD, GDK_KEY_w, 0);
-  dt_accel_register_shortcut(sa, NC_("accel", "preview"), DT_ACTION_ELEMENT_FOCUS_DETECT, DT_ACTION_EFFECT_HOLD, GDK_KEY_w, GDK_CONTROL_MASK);
-  dt_action_define(sa, NULL, "preview", NULL, &dt_action_def_preview);
+  ac = dt_action_define(sa, N_("move"), N_("leave"), GINT_TO_POINTER(_ACTION_TABLE_MOVE_LEAVE), &_action_def_move);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_MOVE, DT_ACTION_EFFECT_NEXT    , GDK_KEY_Escape, GDK_MOD1_MASK);
+
+  // Show infos key
+  ac = dt_action_define(sa, NULL, N_("show infos"), NULL, &dt_action_def_infos);
+  dt_shortcut_register(ac, DT_ACTION_ELEMENT_DEFAULT, DT_ACTION_EFFECT_HOLD, GDK_KEY_i, 0);
+
+  dt_action_register(DT_ACTION(self), N_("align images to grid"), _accel_align_to_grid, 0, 0);
+  dt_action_register(DT_ACTION(self), N_("reset first image offset"), _accel_reset_first_offset, 0, 0);
+  dt_action_register(DT_ACTION(self), N_("select toggle image"), _accel_select_toggle, GDK_KEY_space, 0);
+  dt_action_register(DT_ACTION(self), N_("select single image"), _accel_select_single, GDK_KEY_Return, 0);
+
+  // undo/redo
+  dt_action_register(DT_ACTION(self), N_("undo"), _lighttable_undo_callback, GDK_KEY_z, GDK_CONTROL_MASK);
+  dt_action_register(DT_ACTION(self), N_("redo"), _lighttable_redo_callback, GDK_KEY_y, GDK_CONTROL_MASK);
+
+  // zoom for full culling & preview
+  dt_action_register(DT_ACTION(self), N_("preview zoom 100%"), _accel_culling_zoom_100, 0, 0);
+  dt_action_register(DT_ACTION(self), N_("preview zoom fit"), _accel_culling_zoom_fit, 0, 0);
+
+  // zoom in/out/min/max
+  dt_action_register(DT_ACTION(self), N_("zoom in"), zoom_in_callback, GDK_KEY_plus, GDK_CONTROL_MASK);
+  dt_action_register(DT_ACTION(self), N_("zoom max"), zoom_max_callback, GDK_KEY_plus, GDK_MOD1_MASK);
+  dt_action_register(DT_ACTION(self), N_("zoom out"), zoom_out_callback, GDK_KEY_minus, GDK_CONTROL_MASK);
+  dt_action_register(DT_ACTION(self), N_("zoom min"), zoom_min_callback, GDK_KEY_minus, GDK_MOD1_MASK);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

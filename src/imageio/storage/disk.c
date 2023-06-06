@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,8 +21,6 @@
 #include "common/exif.h"
 #include "common/image.h"
 #include "common/image_cache.h"
-#include "common/imageio.h"
-#include "common/imageio_module.h"
 #include "common/utility.h"
 #include "common/variables.h"
 #include "control/conf.h"
@@ -31,6 +29,9 @@
 #include "dtgtk/paint.h"
 #include "gui/gtk.h"
 #include "gui/gtkentry.h"
+#include "gui/accelerators.h"
+#include "imageio/imageio_common.h"
+#include "imageio/imageio_module.h"
 #include "imageio/storage/imageio_storage_api.h"
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
@@ -160,48 +161,31 @@ void gui_init(dt_imageio_module_storage_t *self)
   disk_t *d = (disk_t *)malloc(sizeof(disk_t));
   self->gui_data = (void *)d;
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  GtkWidget *widget;
 
   GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(hbox), TRUE, FALSE, 0);
 
-  widget = gtk_entry_new();
-  gtk_box_pack_start(GTK_BOX(hbox), widget, TRUE, TRUE, 0);
-  const char *dir = dt_conf_get_string_const("plugins/imageio/storage/disk/file_directory");
-  if(dir)
-  {
-    gtk_entry_set_text(GTK_ENTRY(widget), dir);
-    gtk_editable_set_position(GTK_EDITABLE(widget), strlen(dir));
-  }
+  d->entry = GTK_ENTRY(dt_action_entry_new(DT_ACTION(self), N_("path"), G_CALLBACK(entry_changed_callback), self,
+                                           _("enter the path where to put exported images\nvariables support bash like string manipulation\n"
+                                             "type '$(' to activate the completion and see the list of variables"),
+                                           dt_conf_get_string_const("plugins/imageio/storage/disk/file_directory")));
+  dt_gtkentry_setup_completion(d->entry, dt_gtkentry_get_default_path_compl_list());
+  gtk_editable_set_position(GTK_EDITABLE(d->entry), -1);
+  gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->entry), TRUE, TRUE, 0);
 
-  dt_gtkentry_setup_completion(GTK_ENTRY(widget), dt_gtkentry_get_default_path_compl_list());
-
-  char *tooltip_text = dt_gtkentry_build_completion_tooltip_text(
-      _("enter the path where to put exported images\nvariables support bash like string manipulation\n"
-        "recognized variables:"),
-      dt_gtkentry_get_default_path_compl_list());
-
-  d->entry = GTK_ENTRY(widget);
-  gtk_entry_set_width_chars(GTK_ENTRY(widget), 0);
-  gtk_widget_set_tooltip_text(widget, tooltip_text);
-  g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(entry_changed_callback), self);
-
-  widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
+  GtkWidget *widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
   gtk_widget_set_name(widget, "non-flat");
   gtk_widget_set_tooltip_text(widget, _("select directory"));
   gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(widget), "clicked", G_CALLBACK(button_clicked), self);
 
-  d->onsave_action = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->onsave_action, NULL, N_("on conflict"));
-  dt_bauhaus_combobox_add(d->onsave_action, _("create unique filename"));
-  dt_bauhaus_combobox_add(d->onsave_action, _("overwrite"));
-  dt_bauhaus_combobox_add(d->onsave_action, _("skip"));
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(d->onsave_action, self, NULL, N_("on conflict"), NULL,
+                               dt_conf_get_int("plugins/imageio/storage/disk/overwrite"),
+                               onsave_action_toggle_callback, self,
+                               N_("create unique filename"),
+                               N_("overwrite"),
+                               N_("skip"));
   gtk_box_pack_start(GTK_BOX(self->widget), d->onsave_action, TRUE, TRUE, 0);
-  g_signal_connect(G_OBJECT(d->onsave_action), "value-changed", G_CALLBACK(onsave_action_toggle_callback), self);
-  dt_bauhaus_combobox_set(d->onsave_action, dt_conf_get_int("plugins/imageio/storage/disk/overwrite"));
-
-  g_free(tooltip_text);
 }
 
 void gui_cleanup(dt_imageio_module_storage_t *self)
@@ -220,7 +204,7 @@ void gui_reset(dt_imageio_module_storage_t *self)
   dt_conf_set_int("plugins/imageio/storage/disk/overwrite", dt_bauhaus_combobox_get(d->onsave_action));
 }
 
-int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const int imgid,
+int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const dt_imgid_t imgid,
           dt_imageio_module_format_t *format, dt_imageio_module_data_t *fdata, const int num, const int total,
           const gboolean high_quality, const gboolean upscale, const gboolean export_masks,
           dt_colorspaces_color_profile_type_t icc_type, const gchar *icc_filename, dt_iop_color_intent_t icc_intent,
@@ -269,7 +253,7 @@ try_again:
     {
       // add to the end of the original pattern without caring about a
       // potentially added "_$(SEQUENCE)"
-      if (snprintf(pattern, sizeof(pattern), "%s" G_DIR_SEPARATOR_S "$(FILE_NAME)", d->filename) < sizeof(pattern))
+      if(snprintf(pattern, sizeof(pattern), "%s" G_DIR_SEPARATOR_S "$(FILE_NAME)", d->filename) < sizeof(pattern))
         goto try_again;
     }
 
@@ -277,14 +261,14 @@ try_again:
 
     if(g_mkdir_with_parents(output_dir, 0755))
     {
-      fprintf(stderr, "[imageio_storage_disk] could not create directory: `%s'!\n", output_dir);
+      dt_print(DT_DEBUG_ALWAYS, "[imageio_storage_disk] could not create directory: `%s'!\n", output_dir);
       dt_control_log(_("could not create directory `%s'!"), output_dir);
       fail = TRUE;
       goto failed;
     }
     if(g_access(output_dir, W_OK | X_OK) != 0)
     {
-      fprintf(stderr, "[imageio_storage_disk] could not write to directory: `%s'!\n", output_dir);
+      dt_print(DT_DEBUG_ALWAYS, "[imageio_storage_disk] could not write to directory: `%s'!\n", output_dir);
       dt_control_log(_("could not write to directory `%s'!"), output_dir);
       fail = TRUE;
       goto failed;
@@ -314,7 +298,7 @@ try_again:
       if(g_file_test(filename, G_FILE_TEST_EXISTS))
       {
         dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
-        fprintf(stderr, "[export_job] skipping `%s'\n", filename);
+        dt_print(DT_DEBUG_ALWAYS, "[export_job] skipping `%s'\n", filename);
         dt_control_log(ngettext("%d/%d skipping `%s'", "%d/%d skipping `%s'", num),
                        num, total, filename);
         return 0;
@@ -328,12 +312,12 @@ try_again:
   if(dt_imageio_export(imgid, filename, format, fdata, high_quality, upscale, TRUE, export_masks, icc_type,
                        icc_filename, icc_intent, self, sdata, num, total, metadata) != 0)
   {
-    fprintf(stderr, "[imageio_storage_disk] could not export to file: `%s'!\n", filename);
+    dt_print(DT_DEBUG_ALWAYS, "[imageio_storage_disk] could not export to file: `%s'!\n", filename);
     dt_control_log(_("could not export to file `%s'!"), filename);
     return 1;
   }
 
-  fprintf(stderr, "[export_job] exported to `%s'\n", filename);
+  dt_print(DT_DEBUG_ALWAYS, "[export_job] exported to `%s'\n", filename);
   dt_control_log(ngettext("%d/%d exported to `%s'", "%d/%d exported to `%s'", num),
                  num, total, filename);
   return 0;
@@ -393,7 +377,7 @@ char *ask_user_confirmation(dt_imageio_module_storage_t *self)
   disk_t *g = (disk_t *)self->gui_data;
   if(dt_bauhaus_combobox_get(g->onsave_action) == DT_EXPORT_ONCONFLICT_OVERWRITE && dt_conf_get_bool("plugins/lighttable/export/ask_before_export_overwrite"))
   {
-    return g_strdup(_("you are going to export on overwrite mode, this will overwrite any existing images\n\n"
+    return g_strdup(_("you are going to export in overwrite mode, this will overwrite any existing images\n\n"
         "do you really want to continue?"));
   }
   else
@@ -402,6 +386,9 @@ char *ask_user_confirmation(dt_imageio_module_storage_t *self)
   }
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2021 darktable developers.
+    Copyright (C) 2019-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@
 #include "develop/imageop_gui.h"
 #include "gui/accelerators.h"
 #include "gui/color_picker_proxy.h"
+#include "develop/tiling.h"
 
 DT_MODULE_INTROSPECTION(2, dt_iop_basicadj_params_t)
 
@@ -140,7 +141,7 @@ const char *name()
   return _("basic adjustments");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("apply usual image adjustments"),
                                       _("creative"),
@@ -161,7 +162,7 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
 static void _turn_select_region_off(struct dt_iop_module_t *self)
@@ -502,6 +503,19 @@ static inline float get_lut_contrast(const float x, const float contrast, const 
                    : lut[CLAMP((int)(x * 0x10000ul), 0, 0xffff)];
 }
 
+void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
+                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
+                     struct dt_develop_tiling_t *tiling)
+{
+  tiling->factor = 2.0f;
+  tiling->factor_cl = 3.0f;
+  tiling->maxbuf = 1.0f;
+  tiling->maxbuf_cl = 1.0f;
+  tiling->overhead = 0;
+  tiling->overlap = 0;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
+}
 void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
@@ -545,18 +559,6 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
 void gui_update(struct dt_iop_module_t *self)
 {
   dt_iop_basicadj_gui_data_t *g = (dt_iop_basicadj_gui_data_t *)self->gui_data;
-  dt_iop_basicadj_params_t *p = (dt_iop_basicadj_params_t *)self->params;
-
-  dt_bauhaus_slider_set(g->sl_black_point, p->black_point);
-  dt_bauhaus_slider_set(g->sl_exposure, p->exposure);
-  dt_bauhaus_slider_set(g->sl_hlcompr, p->hlcompr);
-  dt_bauhaus_slider_set(g->sl_contrast, p->contrast);
-  dt_bauhaus_combobox_set(g->cmb_preserve_colors, p->preserve_colors);
-  dt_bauhaus_slider_set(g->sl_middle_grey, p->middle_grey);
-  dt_bauhaus_slider_set(g->sl_brightness, p->brightness);
-  dt_bauhaus_slider_set(g->sl_saturation, p->saturation);
-  dt_bauhaus_slider_set(g->sl_vibrance, p->vibrance);
-  dt_bauhaus_slider_set(g->sl_clip, p->clip);
 
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_select_region), g->draw_selected_region);
 }
@@ -587,7 +589,6 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->sl_black_point = dt_bauhaus_slider_from_params(self, "black_point");
   dt_bauhaus_slider_set_soft_range(g->sl_black_point, -0.1, 0.1);
-  dt_bauhaus_slider_set_step(g->sl_black_point, .001);
   dt_bauhaus_slider_set_digits(g->sl_black_point, 4);
   gtk_widget_set_tooltip_text(g->sl_black_point, _("adjust the black level to unclip negative RGB values.\n"
                                                     "you should never use it to add more density in blacks!\n"
@@ -596,8 +597,7 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->sl_exposure = dt_bauhaus_slider_from_params(self, N_("exposure"));
   dt_bauhaus_slider_set_soft_range(g->sl_exposure, -4.0, 4.0);
-  dt_bauhaus_slider_set_step(g->sl_exposure, .02);
-  dt_bauhaus_slider_set_format(g->sl_exposure, _("%.2f EV"));
+  dt_bauhaus_slider_set_format(g->sl_exposure, _(" EV"));
   gtk_widget_set_tooltip_text(g->sl_exposure, _("adjust the exposure correction"));
 
   g->sl_hlcompr = dt_bauhaus_slider_from_params(self, "hlcompr");
@@ -613,8 +613,7 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->sl_middle_grey = dt_color_picker_new(self, DT_COLOR_PICKER_AREA,
                       dt_bauhaus_slider_from_params(self, "middle_grey"));
-  dt_bauhaus_slider_set_step(g->sl_middle_grey, .5);
-  dt_bauhaus_slider_set_format(g->sl_middle_grey, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->sl_middle_grey, "%");
   gtk_widget_set_tooltip_text(g->sl_middle_grey, _("middle gray adjustment"));
   g_signal_connect(G_OBJECT(g->sl_middle_grey), "quad-pressed", G_CALLBACK(_color_picker_callback), self);
 
@@ -630,12 +629,12 @@ void gui_init(struct dt_iop_module_t *self)
 
   GtkWidget *autolevels_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(10));
 
-  g->bt_auto_levels = dt_ui_button_new(_("auto"), _("apply auto exposure based on the entire image"), NULL);
-  g_signal_connect(G_OBJECT(g->bt_auto_levels), "clicked", G_CALLBACK(_auto_levels_callback), self);
+  g->bt_auto_levels = dt_action_button_new(NULL, N_("auto"), _auto_levels_callback, self, _("apply auto exposure based on the entire image"), 0, 0);
   gtk_widget_set_size_request(g->bt_auto_levels, -1, DT_PIXEL_APPLY_DPI(24));
   gtk_box_pack_start(GTK_BOX(autolevels_box), g->bt_auto_levels, TRUE, TRUE, 0);
 
-  g->bt_select_region = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT, NULL);
+  g->bt_select_region = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, 0, NULL);
+  dt_gui_add_class(g->bt_select_region, "dt_transparent_background");
   gtk_widget_set_tooltip_text(g->bt_select_region,
                               _("apply auto exposure based on a region defined by the user\n"
                                 "click and drag to draw the area\n"
@@ -710,6 +709,10 @@ static inline double ldexpk(double x, int32_t q)
 
 static inline double xlog(double d)
 {
+  // since this is a local function and we know that xlog will only be
+  // called with values 1 <= d <= 65537, there is no need to check for
+  // d == INFINITY or d <= 0 and return +/-INFINITY or NAN.
+
   const int e = ilogbp1(d * 0.7071);
   const double m = ldexpk(d, -e);
 
@@ -726,11 +729,6 @@ static inline double xlog(double d)
   t = fma(t, x2, 2);
 
   x = x * t + 0.693147180559945286226764 * e;
-
-  if(isinf(d)) x = INFINITY;
-  if(d < 0)    x = NAN;
-  if(d == 0)   x = -INFINITY;
-
   return x;
 }
 
@@ -1146,35 +1144,35 @@ cleanup:
   bright /= 100.f;
   contr /= 100.f;
 
-  if(isnan(expcomp))
+  if(dt_isnan(expcomp))
   {
     expcomp = 0.f;
-    fprintf(stderr, "[_get_auto_exp] expcomp is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] expcomp is NaN!!!\n");
   }
-  if(isnan(black))
+  if(dt_isnan(black))
   {
     black = 0.f;
-    fprintf(stderr, "[_get_auto_exp] black is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] black is NaN!!!\n");
   }
-  if(isnan(bright))
+  if(dt_isnan(bright))
   {
     bright = 0.f;
-    fprintf(stderr, "[_get_auto_exp] bright is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] bright is NaN!!!\n");
   }
-  if(isnan(contr))
+  if(dt_isnan(contr))
   {
     contr = 0.f;
-    fprintf(stderr, "[_get_auto_exp] contr is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] contr is NaN!!!\n");
   }
-  if(isnan(hlcompr))
+  if(dt_isnan(hlcompr))
   {
     hlcompr = 0.f;
-    fprintf(stderr, "[_get_auto_exp] hlcompr is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcompr is NaN!!!\n");
   }
-  if(isnan(hlcomprthresh))
+  if(dt_isnan(hlcomprthresh))
   {
     hlcomprthresh = 0.f;
-    fprintf(stderr, "[_get_auto_exp] hlcomprthresh is NaN!!!\n");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcomprthresh is NaN!!!\n");
   }
 
   *_expcomp = expcomp;
@@ -1287,7 +1285,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const int height = roi_in->height;
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW)
+  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->call_auto_exposure == 1 && !darktable.gui->reset)
@@ -1299,15 +1297,15 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
       src_buffer = dt_alloc_align_float((size_t)ch * width * height);
       if(src_buffer == NULL)
       {
-        fprintf(stderr, "[basicadj process_cl] error allocating memory for color transformation 1\n");
-        err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+        dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory for color transformation 1\n");
+        err = DT_OPENCL_SYSMEM_ALLOCATION;
         goto cleanup;
       }
 
       err = dt_opencl_copy_device_to_host(devid, src_buffer, dev_in, width, height, ch * sizeof(float));
       if(err != CL_SUCCESS)
       {
-        fprintf(stderr, "[basicadj process_cl] error allocating memory for color transformation 2\n");
+        dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory for color transformation 2\n");
         goto cleanup;
       }
 
@@ -1364,7 +1362,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_gamma = dt_opencl_copy_host_to_device(devid, d->lut_gamma, 256, 256, sizeof(float));
   if(dev_gamma == NULL)
   {
-    fprintf(stderr, "[basicadj process_cl] error allocating memory 3\n");
+    dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory 3\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1372,49 +1370,20 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_contrast = dt_opencl_copy_host_to_device(devid, d->lut_contrast, 256, 256, sizeof(float));
   if(dev_contrast == NULL)
   {
-    fprintf(stderr, "[basicadj process_cl] error allocating memory 4\n");
+    dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory 4\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
 
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 1, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 3, sizeof(int), (void *)&height);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 4, sizeof(cl_mem), (void *)&dev_gamma);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 5, sizeof(cl_mem), (void *)&dev_contrast);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 6, sizeof(float), (void *)&black_point);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 7, sizeof(float), (void *)&scale);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 8, sizeof(int), (void *)&process_gamma);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 9, sizeof(float), (void *)&gamma);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 10, sizeof(int), (void *)&plain_contrast);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 11, sizeof(int), (void *)&preserve_colors);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 12, sizeof(float), (void *)&contrast);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 13, sizeof(int), (void *)&process_saturation_vibrance);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 14, sizeof(float), (void *)&saturation);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 15, sizeof(float), (void *)&vibrance);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 16, sizeof(int), (void *)&process_hlcompr);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 17, sizeof(float), (void *)&hlcomp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 18, sizeof(float), (void *)&hlrange);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 19, sizeof(float), (void *)&middle_grey);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 20, sizeof(float), (void *)&inv_middle_grey);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 21, sizeof(cl_mem), (void *)&dev_profile_info);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 22, sizeof(cl_mem), (void *)&dev_profile_lut);
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_basicadj, 23, sizeof(int), (void *)&use_work_profile);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basicadj, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basicadj, width, height,
+    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(dev_gamma), CLARG(dev_contrast),
+    CLARG(black_point), CLARG(scale), CLARG(process_gamma), CLARG(gamma), CLARG(plain_contrast), CLARG(preserve_colors),
+    CLARG(contrast), CLARG(process_saturation_vibrance), CLARG(saturation), CLARG(vibrance), CLARG(process_hlcompr),
+    CLARG(hlcomp), CLARG(hlrange), CLARG(middle_grey), CLARG(inv_middle_grey), CLARG(dev_profile_info),
+    CLARG(dev_profile_lut), CLARG(use_work_profile));
   if(err != CL_SUCCESS)
   {
-    fprintf(stderr, "[basicadj process_cl] error %i enqueue kernel\n", err);
+    dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error %i enqueue kernel\n", err);
     goto cleanup;
   }
 
@@ -1425,7 +1394,7 @@ cleanup:
 
   if(src_buffer) dt_free_align(src_buffer);
 
-  if(err != CL_SUCCESS) dt_print(DT_DEBUG_OPENCL, "[opencl_basicadj] couldn't enqueue kernel! %d\n", err);
+  if(err != CL_SUCCESS) dt_print(DT_DEBUG_OPENCL, "[opencl_basicadj] couldn't enqueue kernel! %s\n", cl_errstr(err));
 
   return (err == CL_SUCCESS) ? TRUE : FALSE;
 }
@@ -1442,7 +1411,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   dt_iop_basicadj_gui_data_t *g = (dt_iop_basicadj_gui_data_t *)self->gui_data;
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW)
+  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->call_auto_exposure == 1 && !darktable.gui->reset)
@@ -1580,6 +1549,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 #undef exposure2white
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -132,13 +132,13 @@ void dt_lua_init_lock()
 
 void dt_lua_lock_internal(const char *function, const char *file, int line, gboolean silent)
 {
+#ifdef _DEBUG
   if(!silent && !darktable.lua_state.ending && pthread_equal(darktable.control->gui_thread, pthread_self()) != 0)
   {
     dt_print(DT_DEBUG_LUA, "LUA WARNING locking from the gui thread should be avoided\n");
     //g_assert(false);
   }
 
-#ifdef _DEBUG
   dt_print(DT_DEBUG_LUA,"LUA DEBUG : thread %p waiting from %s:%d\n", g_thread_self(), function, line);
 #endif
   dt_pthread_mutex_lock(&darktable.lua_state.mutex);
@@ -177,6 +177,9 @@ void dt_lua_redraw_screen()
 }
 
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

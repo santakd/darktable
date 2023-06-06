@@ -503,7 +503,7 @@ static int32_t dt_control_get_threadid_res()
 static void *dt_control_work_res(void *ptr)
 {
 #ifdef _OPENMP // need to do this in every thread
-  omp_set_num_threads(darktable.num_openmp_threads);
+  omp_set_num_threads(dt_get_num_threads());
 #endif
   worker_thread_parameters_t *params = (worker_thread_parameters_t *)ptr;
   dt_control_t *s = params->self;
@@ -548,7 +548,7 @@ static void *dt_control_worker_kicker(void *ptr)
 static void *dt_control_work(void *ptr)
 {
 #ifdef _OPENMP // need to do this in every thread
-  omp_set_num_threads(darktable.num_openmp_threads);
+  omp_set_num_threads(dt_get_num_threads());
 #endif
   worker_thread_parameters_t *params = (worker_thread_parameters_t *)ptr;
   dt_control_t *control = params->self;
@@ -645,6 +645,9 @@ void dt_control_jobs_cleanup(dt_control_t *control)
   free(control->thread);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2021 darktable developers.
+    Copyright (C) 2019-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -133,10 +134,10 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("alter an image’s tones using curves in RGB color space"),
                                       _("corrective and creative"),
@@ -156,7 +157,7 @@ void init_presets(dt_iop_module_so_t *self)
   p.curve_type[DT_IOP_RGBCURVE_G] = CUBIC_SPLINE;
   p.curve_type[DT_IOP_RGBCURVE_B] = CUBIC_SPLINE;
   p.curve_autoscale = DT_S_SCALE_AUTOMATIC_RGB;
-  p.compensate_middle_grey = 1;
+  p.compensate_middle_grey = TRUE;
   p.preserve_colors = 1;
 
   float linear_ab[7] = { 0.0, 0.08, 0.3, 0.5, 0.7, 0.92, 1.0 };
@@ -246,12 +247,14 @@ void init_presets(dt_iop_module_so_t *self)
   for(int k = 0; k < 7; k++) p.curve_nodes[DT_IOP_RGBCURVE_R][k].y = linear_L[k];
 
   // Gamma 2.0 - no contrast
-  for(int k = 1; k < 6; k++) p.curve_nodes[DT_IOP_RGBCURVE_R][k].y = powf(linear_L[k], 2.0f);
+  for(int k = 1; k < 6; k++)
+    p.curve_nodes[DT_IOP_RGBCURVE_R][k].y = (linear_L[k] * linear_L[k]);
   dt_gui_presets_add_generic(_("gamma 2.0"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   // Gamma 0.5 - no contrast
-  for(int k = 1; k < 6; k++) p.curve_nodes[DT_IOP_RGBCURVE_R][k].y = powf(linear_L[k], 0.5f);
+  for(int k = 1; k < 6; k++)
+    p.curve_nodes[DT_IOP_RGBCURVE_R][k].y = sqrtf(linear_L[k]);
   dt_gui_presets_add_generic(_("gamma 0.5"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
@@ -406,7 +409,7 @@ static void interpolator_callback(GtkWidget *widget, dt_iop_module_t *self)
     p->curve_type[DT_IOP_RGBCURVE_R] = p->curve_type[DT_IOP_RGBCURVE_G] = p->curve_type[DT_IOP_RGBCURVE_B]
         = MONOTONE_HERMITE;
 
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
+  dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget);
   gtk_widget_queue_draw(GTK_WIDGET(g->area));
 }
 
@@ -419,17 +422,6 @@ static void tab_switch_callback(GtkNotebook *notebook, GtkWidget *page, guint pa
   g->channel = (rgbcurve_channel_t)page_num;
 
   gtk_widget_queue_draw(self->widget);
-}
-
-static gboolean _area_resized_callback(GtkWidget *widget, GdkEvent *event, gpointer user_data)
-{
-  GtkRequisition r;
-  GtkAllocation allocation;
-  gtk_widget_get_allocation(widget, &allocation);
-  r.width = allocation.width;
-  r.height = allocation.width;
-  gtk_widget_get_preferred_size(widget, &r, NULL);
-  return TRUE;
 }
 
 static inline int _add_node(dt_iop_rgbcurve_node_t *curve_nodes, int *nodes, float x, float y)
@@ -569,21 +561,7 @@ static gboolean _move_point_internal(dt_iop_module_t *self, GtkWidget *widget, f
   const int ch = g->channel;
   dt_iop_rgbcurve_node_t *curve = p->curve_nodes[ch];
 
-  float multiplier;
-
-  if(dt_modifier_is(state, GDK_SHIFT_MASK))
-  {
-    multiplier = dt_conf_get_float("darkroom/ui/scale_rough_step_multiplier");
-  }
-  else if(dt_modifier_is(state, GDK_CONTROL_MASK))
-  {
-    multiplier = dt_conf_get_float("darkroom/ui/scale_precise_step_multiplier");
-  }
-  else
-  {
-    multiplier = dt_conf_get_float("darkroom/ui/scale_step_multiplier");
-  }
-
+  float multiplier = dt_accel_get_speed_multiplier(widget, state);
   dx *= multiplier;
   dy *= multiplier;
 
@@ -597,7 +575,7 @@ static gboolean _move_point_internal(dt_iop_module_t *self, GtkWidget *widget, f
     curve[g->selected].x = new_x;
     curve[g->selected].y = new_y;
 
-    dt_iop_queue_history_update(self, FALSE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
   }
 
   return TRUE;
@@ -700,16 +678,14 @@ static gboolean _area_key_press_callback(GtkWidget *widget, GdkEventKey *event, 
 
 #undef RGBCURVE_DEFAULT_STEP
 
-static gboolean _area_enter_notify_callback(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
+static gboolean _area_leave_notify_callback(GtkWidget *widget, GdkEventCrossing *event, dt_iop_module_t *self)
 {
-  gtk_widget_queue_draw(widget);
-  return TRUE;
-}
+  dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
+  if(!(event->state & GDK_BUTTON1_MASK))
+    g->selected = -1;
 
-static gboolean _area_leave_notify_callback(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
-{
   gtk_widget_queue_draw(widget);
-  return TRUE;
+  return FALSE;
 }
 
 static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_module_t *self)
@@ -839,7 +815,7 @@ static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_modu
     else
       hist_max = self->histogram_max[ch];
 
-    if (!is_linear)
+    if(!is_linear)
       hist_max = logf(1.0 + hist_max);
 
     if(hist && hist_max > 0.0f)
@@ -889,9 +865,9 @@ static gboolean _area_draw_callback(GtkWidget *widget, cairo_t *crf, dt_iop_modu
             // this functions need a 4c image
             for(int k = 0; k < 3; k++)
             {
-              picker_mean[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MEAN][k];
-              picker_min[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MIN][k];
-              picker_max[k] = sample->scope[DT_LIB_COLORPICKER_STATISTIC_MAX][k];
+              picker_mean[k] = sample->scope[DT_PICK_MEAN][k];
+              picker_min[k] = sample->scope[DT_PICK_MIN][k];
+              picker_max[k] = sample->scope[DT_PICK_MAX][k];
             }
             picker_mean[3] = picker_min[3] = picker_max[3] = 1.f;
 
@@ -1164,7 +1140,7 @@ static gboolean _area_motion_notify_callback(GtkWidget *widget, GdkEventMotion *
       dt_iop_color_picker_reset(self, TRUE);
       // no vertex was close, create a new one!
       g->selected = _add_node(curve_nodes, &p->curve_num_nodes[ch], linx, liny);
-      dt_dev_add_history_item(darktable.develop, self, TRUE);
+      dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
     }
   }
   else
@@ -1258,7 +1234,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *e
           }
 
           dt_iop_color_picker_reset(self, TRUE);
-          dt_dev_add_history_item(darktable.develop, self, TRUE);
+          dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
           gtk_widget_queue_draw(self->widget);
         }
 
@@ -1280,7 +1256,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *e
         g->selected = -2; // avoid motion notify re-inserting immediately.
         dt_bauhaus_combobox_set(g->interpolator, p->curve_type[DT_IOP_RGBCURVE_R]);
         dt_iop_color_picker_reset(self, TRUE);
-        dt_dev_add_history_item(darktable.develop, self, TRUE);
+        dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
         gtk_widget_queue_draw(self->widget);
       }
       else
@@ -1291,7 +1267,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *e
           g->selected = -2; // avoid motion notify re-inserting immediately.
           dt_bauhaus_combobox_set(g->autoscale, 1);
           dt_iop_color_picker_reset(self, TRUE);
-          dt_dev_add_history_item(darktable.develop, self, TRUE);
+          dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
           gtk_widget_queue_draw(self->widget);
         }
       }
@@ -1305,7 +1281,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *e
       const float reset_value = g->selected == 0 ? 0.f : 1.f;
       curve_nodes[g->selected].y = curve_nodes[g->selected].x = reset_value;
       dt_iop_color_picker_reset(self, TRUE);
-      dt_dev_add_history_item(darktable.develop, self, TRUE);
+      dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
       gtk_widget_queue_draw(self->widget);
       return TRUE;
     }
@@ -1319,7 +1295,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *e
     g->selected = -2; // avoid re-insertion of that point immediately after this
     p->curve_num_nodes[ch]--;
     dt_iop_color_picker_reset(self, TRUE);
-    dt_dev_add_history_item(darktable.develop, self, TRUE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + ch);
     gtk_widget_queue_draw(self->widget);
     return TRUE;
   }
@@ -1370,7 +1346,6 @@ void gui_init(struct dt_iop_module_t *self)
   }
 
   g->channel = DT_IOP_RGBCURVE_R;
-  self->timeout_handle = 0;
   change_image(self);
 
   g->autoscale = dt_bauhaus_combobox_from_params(self, "curve_autoscale");
@@ -1388,18 +1363,20 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(hbox), gtk_grid_new(), TRUE, TRUE, 0);
 
   // color pickers
-  g->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA, hbox);
+  g->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA | DT_COLOR_PICKER_IO, hbox);
   gtk_widget_set_tooltip_text(g->colorpicker, _("pick GUI color from image\nctrl+click or right-click to select an area"));
   gtk_widget_set_name(g->colorpicker, "keep-active");
-  g->colorpicker_set_values = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, hbox);
+  dt_action_define_iop(self, N_("pickers"), N_("show color"), g->colorpicker, &dt_action_def_toggle);
+  g->colorpicker_set_values = dt_color_picker_new(self, DT_COLOR_PICKER_AREA | DT_COLOR_PICKER_IO, hbox);
   dtgtk_togglebutton_set_paint(DTGTK_TOGGLEBUTTON(g->colorpicker_set_values),
-                               dtgtk_cairo_paint_colorpicker_set_values,
-                               CPF_STYLE_FLAT | CPF_BG_TRANSPARENT, NULL);
+                               dtgtk_cairo_paint_colorpicker_set_values, 0, NULL);
+  dt_gui_add_class(g->colorpicker_set_values, "dt_transparent_background");
   gtk_widget_set_size_request(g->colorpicker_set_values, DT_PIXEL_APPLY_DPI(14), DT_PIXEL_APPLY_DPI(14));
   gtk_widget_set_tooltip_text(g->colorpicker_set_values, _("create a curve based on an area from the image\n"
                                                            "drag to create a flat curve\n"
                                                            "ctrl+drag to create a positive curve\n"
                                                            "shift+drag to create a negative curve"));
+  dt_action_define_iop(self, N_("pickers"), N_("create curve"), g->colorpicker_set_values, &dt_action_def_toggle);
 
   GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), vbox, FALSE, FALSE, 0);
@@ -1421,8 +1398,6 @@ void gui_init(struct dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->area), "button-press-event", G_CALLBACK(_area_button_press_callback), self);
   g_signal_connect(G_OBJECT(g->area), "motion-notify-event", G_CALLBACK(_area_motion_notify_callback), self);
   g_signal_connect(G_OBJECT(g->area), "leave-notify-event", G_CALLBACK(_area_leave_notify_callback), self);
-  g_signal_connect(G_OBJECT(g->area), "enter-notify-event", G_CALLBACK(_area_enter_notify_callback), self);
-  g_signal_connect(G_OBJECT(g->area), "configure-event", G_CALLBACK(_area_resized_callback), self);
   g_signal_connect(G_OBJECT(g->area), "scroll-event", G_CALLBACK(_area_scrolled_callback), self);
   g_signal_connect(G_OBJECT(g->area), "key-press-event", G_CALLBACK(_area_key_press_callback), self);
 
@@ -1441,7 +1416,7 @@ void gui_init(struct dt_iop_module_t *self)
       _("change this method if you see oscillations or cusps in the curve\n"
         "- cubic spline is better to produce smooth curves but oscillates when nodes are too close\n"
         "- centripetal is better to avoids cusps and oscillations with close nodes but is less smooth\n"
-        "- monotonic is better for accuracy of pure analytical functions (log, gamma, exp)\n"));
+        "- monotonic is better for accuracy of pure analytical functions (log, gamma, exp)"));
   g_signal_connect(G_OBJECT(g->interpolator), "value-changed", G_CALLBACK(interpolator_callback), self);
 
   g->chk_compensate_middle_grey = dt_bauhaus_toggle_from_params(self, "compensate_middle_grey");
@@ -1461,8 +1436,6 @@ void gui_update(struct dt_iop_module_t *self)
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->chk_compensate_middle_grey), p->compensate_middle_grey);
   dt_bauhaus_combobox_set(g->cmb_preserve_colors, p->preserve_colors);
 
-  dt_iop_cancel_history_update(self);
-
   _rgbcurve_show_hide_controls(p, g);
 
   // that's all, gui curve is read directly from params during expose event.
@@ -1474,8 +1447,6 @@ void gui_cleanup(struct dt_iop_module_t *self)
   dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
 
   for(int k = 0; k < DT_IOP_RGBCURVE_MAX_CHANNELS; k++) dt_draw_curve_destroy(g->minmax_curve[k]);
-
-  dt_iop_cancel_history_update(self);
 
   IOP_GUI_FREE;
 }
@@ -1516,7 +1487,7 @@ void init(dt_iop_module_t *module)
 {
   dt_iop_default_init(module);
 
-  module->request_histogram |= (DT_REQUEST_ON);
+  module->request_histogram |= (DT_REQUEST_ON | DT_REQUEST_EXPANDED);
 
   dt_iop_rgbcurve_params_t *d = module->default_params;
 
@@ -1618,10 +1589,15 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   dt_iop_rgbcurve_data_t *d = (dt_iop_rgbcurve_data_t *)(piece->data);
   dt_iop_rgbcurve_params_t *p = (dt_iop_rgbcurve_params_t *)p1;
 
-  if((pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW)
-    piece->request_histogram |= (DT_REQUEST_ON);
+  if(pipe->type & DT_DEV_PIXELPIPE_PREVIEW)
+  {
+    piece->request_histogram |= DT_REQUEST_ON;
+    self->histogram_middle_grey = p->compensate_middle_grey;
+  }
   else
-    piece->request_histogram &= ~(DT_REQUEST_ON);
+  {
+    piece->request_histogram &= ~DT_REQUEST_ON;
+  }
 
   for(int ch = 0; ch < DT_IOP_RGBCURVE_MAX_CHANNELS; ch++)
     d->curve_changed[ch]
@@ -1674,7 +1650,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_r = dt_opencl_copy_host_to_device(devid, d->table[DT_IOP_RGBCURVE_R], 256, 256, sizeof(float));
   if(dev_r == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 1\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 1\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1682,7 +1658,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_g = dt_opencl_copy_host_to_device(devid, d->table[DT_IOP_RGBCURVE_G], 256, 256, sizeof(float));
   if(dev_g == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 2\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 2\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1690,7 +1666,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_b = dt_opencl_copy_host_to_device(devid, d->table[DT_IOP_RGBCURVE_B], 256, 256, sizeof(float));
   if(dev_b == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 3\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 3\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1698,7 +1674,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_coeffs_r = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs[0]);
   if(dev_coeffs_r == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 4\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 4\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1706,7 +1682,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_coeffs_g = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs[1]);
   if(dev_coeffs_g == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 5\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 5\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1714,31 +1690,18 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dev_coeffs_b = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 12, d->unbounded_coeffs[2]);
   if(dev_coeffs_b == NULL)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error allocating memory 6\n");
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error allocating memory 6\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
 
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 1, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 4, sizeof(cl_mem), (void *)&dev_r);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 5, sizeof(cl_mem), (void *)&dev_g);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 6, sizeof(cl_mem), (void *)&dev_b);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 7, sizeof(cl_mem), (void *)&dev_coeffs_r);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 8, sizeof(cl_mem), (void *)&dev_coeffs_g);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 9, sizeof(cl_mem), (void *)&dev_coeffs_b);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 10, sizeof(int), (void *)&autoscale);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 11, sizeof(int), (void *)&preserve_colors);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 12, sizeof(cl_mem), (void *)&dev_profile_info);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 13, sizeof(cl_mem), (void *)&dev_profile_lut);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_rgbcurve, 14, sizeof(int), (void *)&use_work_profile);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_rgbcurve, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_rgbcurve, width, height,
+    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(dev_r), CLARG(dev_g), CLARG(dev_b),
+    CLARG(dev_coeffs_r), CLARG(dev_coeffs_g), CLARG(dev_coeffs_b), CLARG(autoscale), CLARG(preserve_colors),
+    CLARG(dev_profile_info), CLARG(dev_profile_lut), CLARG(use_work_profile));
   if(err != CL_SUCCESS)
   {
-    fprintf(stderr, "[rgbcurve process_cl] error %i enqueue kernel\n", err);
+    dt_print(DT_DEBUG_ALWAYS, "[rgbcurve process_cl] error %i enqueue kernel\n", err);
     goto cleanup;
   }
 
@@ -1751,7 +1714,7 @@ cleanup:
   if(dev_coeffs_b) dt_opencl_release_mem_object(dev_coeffs_b);
   dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
 
-  if(err != CL_SUCCESS) dt_print(DT_DEBUG_OPENCL, "[opencl_rgbcurve] couldn't enqueue kernel! %d\n", err);
+  if(err != CL_SUCCESS) dt_print(DT_DEBUG_OPENCL, "[opencl_rgbcurve] couldn't enqueue kernel! %s\n", cl_errstr(err));
 
   return (err == CL_SUCCESS) ? TRUE : FALSE;
 }
@@ -1764,7 +1727,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const float *const restrict in = (float*)ivoid;
   float *const restrict out = (float*)ovoid;
-  if (!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
                                          in, out, roi_in, roi_out))
     return; // image has been copied through to output and module's trouble flag has been updated
 
@@ -1837,6 +1800,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 #undef DT_IOP_RGBCURVE_MIN_X_DISTANCE
 #undef DT_IOP_COLOR_ICC_LEN
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

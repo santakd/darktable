@@ -7,7 +7,7 @@
 // it butchers @@ and ${} :(
 
 #define PACKAGE_NAME "@CMAKE_PROJECT_NAME@"
-#define PACKAGE_BUGREPORT "darktable-dev@lists.darktable.org"
+#define PACKAGE_BUGREPORT "https://github.com/darktable-org/darktable/issues/new/choose"
 
 // these will be defined in build/bin/version_gen.c
 extern const char darktable_package_version[];
@@ -83,6 +83,9 @@ static const char *dt_supported_extensions[] __attribute__((unused)) = {"@DT_SUP
 // we force use it because we don't have time to support every (vendor driver × OpenCL version)
 #define CL_TARGET_OPENCL_VERSION 120
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

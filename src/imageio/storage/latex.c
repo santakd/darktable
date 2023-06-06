@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2021 darktable developers.
+    Copyright (C) 2012-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,8 +21,6 @@
 #include "common/file_location.h"
 #include "common/image.h"
 #include "common/image_cache.h"
-#include "common/imageio.h"
-#include "common/imageio_module.h"
 #include "common/metadata.h"
 #include "common/utility.h"
 #include "common/variables.h"
@@ -32,6 +30,9 @@
 #include "dtgtk/paint.h"
 #include "gui/gtk.h"
 #include "gui/gtkentry.h"
+#include "gui/accelerators.h"
+#include "imageio/imageio_common.h"
+#include "imageio/imageio_module.h"
 #include "imageio/storage/imageio_storage_api.h"
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
@@ -104,7 +105,7 @@ static void button_clicked(GtkWidget *widget, dt_imageio_module_storage_t *self)
   latex_t *d = (latex_t *)self->gui_data;
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
   GtkFileChooserNative *filechooser = gtk_file_chooser_native_new(
-        _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, 
+        _("select directory"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
         _("_select as output destination"), _("_cancel"));
 
   gchar *old = g_strdup(gtk_entry_get_text(d->entry));
@@ -149,25 +150,12 @@ void gui_init(dt_imageio_module_storage_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), hbox, TRUE, TRUE, 0);
   GtkWidget *widget;
 
-  widget = gtk_entry_new();
-  gtk_entry_set_width_chars(GTK_ENTRY(widget), 0);
-  gtk_box_pack_start(GTK_BOX(hbox), widget, TRUE, TRUE, 0);
-  const char *dir = dt_conf_get_string_const("plugins/imageio/storage/latex/file_directory");
-  if(dir)
-  {
-    gtk_entry_set_text(GTK_ENTRY(widget), dir);
-  }
-  d->entry = GTK_ENTRY(widget);
-
-  dt_gtkentry_setup_completion(GTK_ENTRY(widget), dt_gtkentry_get_default_path_compl_list());
-
-  char *tooltip_text = dt_gtkentry_build_completion_tooltip_text(
-      _("enter the path where to put exported images\nvariables support bash like string manipulation\n"
-        "recognized variables:"),
-      dt_gtkentry_get_default_path_compl_list());
-  gtk_widget_set_tooltip_text(widget, tooltip_text);
-  g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(entry_changed_callback), self);
-  g_free(tooltip_text);
+  d->entry = GTK_ENTRY(dt_action_entry_new(DT_ACTION(self), N_("path"), G_CALLBACK(entry_changed_callback), self,
+                                           _("enter the path where to put exported images\nvariables support bash like string manipulation\n"
+                                             "type '$(' to activate the completion and see the list of variables"),
+                                           dt_conf_get_string_const("plugins/imageio/storage/latex/file_directory")));
+  dt_gtkentry_setup_completion(d->entry, dt_gtkentry_get_default_path_compl_list());
+  gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->entry), TRUE, TRUE, 0);
 
   widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
   gtk_widget_set_name(widget, "non-flat");
@@ -180,17 +168,12 @@ void gui_init(dt_imageio_module_storage_t *self)
 
   gtk_box_pack_start(GTK_BOX(hbox), dt_ui_label_new(_("title")), FALSE, FALSE, 0);
 
-  d->title_entry = GTK_ENTRY(gtk_entry_new());
-  gtk_entry_set_width_chars(d->title_entry, 0);
+  d->title_entry = GTK_ENTRY(dt_action_entry_new(DT_ACTION(self), N_("path"), G_CALLBACK(title_changed_callback), self,
+                                           _("enter the title of the book"),
+                                           dt_conf_get_string_const("plugins/imageio/storage/latex/title")));
   gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->title_entry), TRUE, TRUE, 0);
+
   // TODO: support title, author, subject, keywords (collect tags?)
-  gtk_widget_set_tooltip_text(GTK_WIDGET(d->title_entry), _("enter the title of the book"));
-  dir = dt_conf_get_string_const("plugins/imageio/storage/latex/title");
-  if(dir)
-  {
-    gtk_entry_set_text(GTK_ENTRY(d->title_entry), dir);
-  }
-  g_signal_connect(G_OBJECT(d->title_entry), "changed", G_CALLBACK(title_changed_callback), self);
 }
 
 void gui_cleanup(dt_imageio_module_storage_t *self)
@@ -212,7 +195,7 @@ static gint sort_pos(pair_t *a, pair_t *b)
   return a->pos - b->pos;
 }
 
-int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const int imgid,
+int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const dt_imgid_t imgid,
           dt_imageio_module_format_t *format, dt_imageio_module_data_t *fdata, const int num, const int total,
           const gboolean high_quality, const gboolean upscale, const gboolean export_masks,
           dt_colorspaces_color_profile_type_t icc_type, const gchar *icc_filename, dt_iop_color_intent_t icc_intent,
@@ -265,7 +248,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
     if(*c == '/') *c = '\0';
     if(g_mkdir_with_parents(dirname, 0755))
     {
-      fprintf(stderr, "[imageio_storage_latex] could not create directory: `%s'!\n", dirname);
+      dt_print(DT_DEBUG_ALWAYS, "[imageio_storage_latex] could not create directory: `%s'!\n", dirname);
       dt_control_log(_("could not create directory `%s'!"), dirname);
       dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
       return 1;
@@ -353,7 +336,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
   dt_imageio_export(imgid, filename, format, fdata, high_quality, upscale, TRUE, export_masks, icc_type, icc_filename,
                     icc_intent, self, sdata, num, total, metadata);
 
-  printf("[export_job] exported to `%s'\n", filename);
+  dt_print(DT_DEBUG_ALWAYS, "[export_job] exported to `%s'\n", filename);
   dt_control_log(ngettext("%d/%d exported to `%s'", "%d/%d exported to `%s'", num),
                  num, total, filename);
   return 0;
@@ -450,6 +433,8 @@ int set_params(dt_imageio_module_storage_t *self, const void *params, const int 
   return 0;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

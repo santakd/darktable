@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2020 darktable developers.
+    Copyright (C) 2009-2023 darktable developers.
     Copyright (c) 2012 James C. McPherson
 
     darktable is free software: you can redistribute it and/or modify
@@ -24,7 +24,6 @@
 #include "common/darktable.h"
 #include "common/debug.h"
 #include "common/image_cache.h"
-#include "common/imageio.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/develop.h"
@@ -32,6 +31,7 @@
 #include "gui/accelerators.h"
 #include "gui/draw.h"
 #include "gui/gtk.h"
+#include "imageio/imageio_common.h"
 #include "views/view.h"
 
 #include <assert.h>
@@ -45,7 +45,7 @@
 
 static float _action_process_accels_show(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
 {
-  if(!isnan(move_size))
+  if(DT_PERFORM_ACTION(move_size))
   {
     if(darktable.view_manager->accels_window.window == NULL)
     {
@@ -75,7 +75,7 @@ static float _action_process_modifiers(gpointer target, dt_action_element_t elem
 {
   GdkModifierType mask = 1;
   if(element) mask <<= element + 1; // ctrl = 4, alt = 8
-  if(!isnan(move_size))
+  if(DT_PERFORM_ACTION(move_size))
   {
     if(dt_modifier_shortcuts & mask)
     {
@@ -89,7 +89,7 @@ static float _action_process_modifiers(gpointer target, dt_action_element_t elem
     }
   }
 
-  return (dt_modifier_shortcuts & mask) != 0;
+  return ((dt_modifier_shortcuts | dt_key_modifier_state()) & mask) != 0;
 }
 
 const dt_action_element_def_t _action_elements_modifiers[]
@@ -106,22 +106,92 @@ const dt_action_def_t dt_action_def_modifiers
 
 void dt_control_init(dt_control_t *s)
 {
-  s->actions_global = (dt_action_t){ DT_ACTION_TYPE_GLOBAL, "global", C_("accel", "global"), .next = &s->actions_views };
-  s->actions_views = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "views", C_("accel", "views"), .next = &s->actions_libs, .target = &s->actions_thumb };
-  s->actions_thumb = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "thumbtable", C_("accel", "thumbtable"), .owner = &s->actions_views };
-  s->actions_libs = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "lib", C_("accel", "utility modules"), .next = &s->actions_iops };
-  s->actions_iops = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "iop", C_("accel", "processing modules"), .next = &s->actions_lua, .target = &s->actions_blend };
-  s->actions_blend = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "blend", C_("accel", "blending"), .owner = &s->actions_iops };
-  s->actions_lua = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "lua", C_("accel", "lua scripts"), .next = &s->actions_fallbacks };
-  s->actions_fallbacks = (dt_action_t){ DT_ACTION_TYPE_CATEGORY, "fallbacks", C_("accel", "fallbacks") };
+  s->actions_global = (dt_action_t){ DT_ACTION_TYPE_GLOBAL,
+    "global",
+    C_("accel", "global"),
+    .target = NULL,
+    .owner = NULL,
+    .next = &s->actions_views };
+
+  s->actions_views = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "views",
+    C_("accel", "views"),
+    .target = &s->actions_thumb,
+    .owner = NULL,
+    .next = &s->actions_libs };
+
+  s->actions_thumb = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "thumbtable",
+    C_("accel", "thumbtable"),
+    .target = NULL,
+    .owner = &s->actions_views,
+    .next = NULL };
+
+  s->actions_libs = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "lib",
+    C_("accel", "utility modules"),
+    NULL,
+    NULL,
+    .next = &s->actions_iops };
+
+  s->actions_format = (dt_action_t){ DT_ACTION_TYPE_SECTION,
+    "format",
+    C_("accel", "format"),
+    NULL,
+    NULL,
+    NULL };   // will be placed under lib/export
+
+  s->actions_storage = (dt_action_t){ DT_ACTION_TYPE_SECTION,
+    "storage",
+    C_("accel", "storage"),
+    NULL,
+    NULL,
+    NULL }; // will be placed under lib/export
+
+  s->actions_iops = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "iop",
+    C_("accel", "processing modules"),
+    .target = &s->actions_blend,
+    .owner = NULL,
+    .next = &s->actions_lua };
+
+  s->actions_blend = (dt_action_t){ DT_ACTION_TYPE_BLEND,
+    "blend",
+    C_("accel", "<blending>"),
+    .target = NULL,
+    .owner = &s->actions_iops,
+    .next = NULL };
+
+  s->actions_lua = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "lua",
+    C_("accel", "Lua scripts"),
+    .target = NULL,
+    .owner = NULL,
+    .next = &s->actions_fallbacks };
+
+  s->actions_fallbacks = (dt_action_t){ DT_ACTION_TYPE_CATEGORY,
+    "fallbacks",
+    C_("accel", "fallbacks"),
+    NULL,
+    NULL,
+    NULL };
+
   s->actions = &s->actions_global;
 
+  s->actions_focus = (dt_action_t){ DT_ACTION_TYPE_IOP,
+    "focus",
+    C_("accel", "<focused>"),
+    NULL,
+    NULL,
+    NULL };
+
+  dt_action_insert_sorted(&s->actions_iops, &s->actions_focus);
+
   s->widgets = g_hash_table_new(NULL, NULL);
-  s->combo_introspection = g_hash_table_new(NULL, NULL);
-  s->combo_list = g_hash_table_new(NULL, NULL);
   s->shortcuts = g_sequence_new(g_free);
   s->enable_fallbacks = dt_conf_get_bool("accel/enable_fallbacks");
   s->mapping_widget = NULL;
+  s->confirm_mapping = TRUE;
   s->widget_definitions = g_ptr_array_new ();
   s->input_drivers = NULL;
 
@@ -130,7 +200,7 @@ void dt_control_init(dt_control_t *s)
   dt_action_define_fallback(DT_ACTION_TYPE_VALUE_FALLBACK, &dt_action_def_value);
 
   dt_action_t *ac = dt_action_define(&s->actions_global, NULL, N_("show accels window"), NULL, &dt_action_def_accels_show);
-  dt_accel_register_shortcut(ac, NULL, 0, DT_ACTION_EFFECT_HOLD, GDK_KEY_h, 0);
+  dt_shortcut_register(ac, 0, DT_ACTION_EFFECT_HOLD, GDK_KEY_h, 0);
 
   s->actions_modifiers = dt_action_define(&s->actions_global, NULL, N_("modifiers"), NULL, &dt_action_def_modifiers);
 
@@ -141,7 +211,6 @@ void dt_control_init(dt_control_t *s)
   s->gui_thread = pthread_self();
 
   // s->last_expose_time = dt_get_wtime();
-  s->key_accelerators_on = 1;
   s->log_pos = s->log_ack = 0;
   s->log_busy = 0;
   s->log_message_timeout_id = 0;
@@ -165,28 +234,12 @@ void dt_control_init(dt_control_t *s)
 
   s->button_down = 0;
   s->button_down_which = 0;
-  s->mouse_over_id = -1;
+  s->mouse_over_id = NO_IMGID;
   s->dev_closeup = 0;
   s->dev_zoom_x = 0;
   s->dev_zoom_y = 0;
   s->dev_zoom = DT_ZOOM_FIT;
   s->lock_cursor_shape = FALSE;
-}
-
-void dt_control_key_accelerators_on(struct dt_control_t *s)
-{
-  if(!s->key_accelerators_on) s->key_accelerators_on = 1;
-}
-
-void dt_control_key_accelerators_off(struct dt_control_t *s)
-{
-  s->key_accelerators_on = 0;
-}
-
-
-int dt_control_is_key_accelerators_on(struct dt_control_t *s)
-{
-  return s->key_accelerators_on;
 }
 
 void dt_control_forbid_change_cursor()
@@ -201,7 +254,7 @@ void dt_control_allow_change_cursor()
 
 void dt_control_change_cursor(dt_cursor_t curs)
 {
-  if (!darktable.control->lock_cursor_shape)
+  if(!darktable.control->lock_cursor_shape)
   {
     GtkWidget *widget = dt_ui_main_window(darktable.gui->ui);
     GdkCursor *cursor = gdk_cursor_new_for_display(gdk_display_get_default(), curs);
@@ -446,10 +499,10 @@ static gboolean _dt_ctl_switch_mode_to_by_view(gpointer user_data)
 void dt_ctl_switch_mode_to(const char *mode)
 {
   const dt_view_t *current_view = dt_view_manager_get_current_view(darktable.view_manager);
-  if(current_view && !strcmp(mode, current_view->module_name))
+  if(current_view && !g_ascii_strcasecmp(mode, current_view->module_name))
   {
     // if we are not in lighttable, we switch back to that view
-    if(strcmp(current_view->module_name, "lighttable")) dt_ctl_switch_mode_to("lighttable");
+    if(g_ascii_strcasecmp(current_view->module_name, "lighttable")) dt_ctl_switch_mode_to("lighttable");
     return;
   }
 
@@ -553,14 +606,18 @@ void dt_control_log(const char *msg, ...)
   va_list ap;
   va_start(ap, msg);
   char *escaped_msg = g_markup_vprintf_escaped(msg, ap);
+  const int msglen = strlen(escaped_msg);
   g_strlcpy(darktable.control->log_message[darktable.control->log_pos], escaped_msg, DT_CTL_LOG_MSG_SIZE);
   g_free(escaped_msg);
   va_end(ap);
-  if(darktable.control->log_message_timeout_id) g_source_remove(darktable.control->log_message_timeout_id);
+  if(darktable.control->log_message_timeout_id)
+    g_source_remove(darktable.control->log_message_timeout_id);
   darktable.control->log_ack = darktable.control->log_pos;
   darktable.control->log_pos = (darktable.control->log_pos + 1) % DT_CTL_LOG_SIZE;
+
   darktable.control->log_message_timeout_id
-      = g_timeout_add(DT_CTL_LOG_TIMEOUT, _dt_ctl_log_message_timeout_callback, NULL);
+    = g_timeout_add(DT_CTL_LOG_TIMEOUT + 1000 * (msglen / 40),
+                    _dt_ctl_log_message_timeout_callback, NULL);
   dt_pthread_mutex_unlock(&darktable.control->log_mutex);
   // redraw center later in gui thread:
   g_idle_add(_redraw_center, 0);
@@ -674,6 +731,7 @@ void dt_control_toast_redraw()
 static int _widget_queue_draw(void *widget)
 {
   gtk_widget_queue_draw((GtkWidget*)widget);
+  g_object_unref(widget);
   return FALSE;
 }
 
@@ -681,6 +739,7 @@ void dt_control_queue_redraw_widget(GtkWidget *widget)
 {
   if(dt_control_running())
   {
+    g_object_ref(widget);
     g_idle_add(_widget_queue_draw, (void*)widget);
   }
 }
@@ -807,7 +866,7 @@ int dt_control_key_pressed_override(guint key, guint state)
     }
     return 1;
   }
-  else if(key == ':' && darktable.control->key_accelerators_on)
+  else if(key == ':')
   {
     darktable.control->vimkey[0] = ':';
     darktable.control->vimkey[1] = 0;
@@ -824,7 +883,7 @@ void dt_control_hinter_message(const struct dt_control_t *s, const char *message
   if(s->proxy.hinter.module) return s->proxy.hinter.set_message(s->proxy.hinter.module, message);
 }
 
-int32_t dt_control_get_mouse_over_id()
+dt_imgid_t dt_control_get_mouse_over_id()
 {
   dt_pthread_mutex_lock(&(darktable.control->global_mutex));
   const int32_t result = darktable.control->mouse_over_id;
@@ -832,7 +891,7 @@ int32_t dt_control_get_mouse_over_id()
   return result;
 }
 
-void dt_control_set_mouse_over_id(int32_t value)
+void dt_control_set_mouse_over_id(dt_imgid_t value)
 {
   dt_pthread_mutex_lock(&(darktable.control->global_mutex));
   if(darktable.control->mouse_over_id != value)
@@ -916,6 +975,8 @@ void dt_control_set_dev_zoom(dt_dev_zoom_t value)
 }
 
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

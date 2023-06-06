@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2021 darktable developers.
+    Copyright (C) 2011-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -55,8 +55,6 @@ static GType pointer_trouble[] = { G_TYPE_POINTER, G_TYPE_STRING, G_TYPE_STRING 
 static GType collection_args[] = { G_TYPE_UINT, G_TYPE_UINT, G_TYPE_POINTER, G_TYPE_UINT };
 static GType image_export_arg[]
     = { G_TYPE_UINT, G_TYPE_STRING, G_TYPE_POINTER, G_TYPE_POINTER, G_TYPE_POINTER, G_TYPE_POINTER };
-static GType history_will_change_arg[]
-= { G_TYPE_POINTER, G_TYPE_UINT, G_TYPE_POINTER };
 static GType geotag_arg[] = { G_TYPE_POINTER, G_TYPE_UINT };
 
 // callback for the destructor of DT_SIGNAL_COLLECTION_CHANGED
@@ -110,8 +108,8 @@ static dt_signal_description _signal_description[DT_SIGNAL_COUNT] = {
 
   { "dt-viewmanager-view-changed", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 2, pointer_2arg, NULL,
     FALSE }, // DT_SIGNAL_VIEWMANAGER_VIEW_CHANGED
-  { "dt-viewmanager-view-cannot-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 2, pointer_2arg, NULL,
-    FALSE }, // DT_SIGNAL_VIEWMANAGER_VIEW_CANNOT_CHANGE
+  { "dt-viewmanager-view-cannot-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 2, pointer_2arg,
+    NULL, FALSE }, // DT_SIGNAL_VIEWMANAGER_VIEW_CANNOT_CHANGE
   { "dt-viewmanager-thumbtable-activate", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__UINT, 1, uint_arg,
     NULL, FALSE }, // DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE
 
@@ -129,7 +127,7 @@ static dt_signal_description _signal_description[DT_SIGNAL_COUNT] = {
     G_CALLBACK(_image_info_changed_destroy_callback), FALSE }, // DT_SIGNAL_IMAGE_INFO_CHANGED
   { "dt-style-changed", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
     FALSE }, // DT_SIGNAL_STYLE_CHANGED
-  { "dt-images-order-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__UINT, 1, uint_arg, NULL,
+  { "dt-images-order-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 1, pointer_arg, NULL,
     FALSE }, // DT_SIGNAL_IMAGES_ORDER_CHANGE
   { "dt-filmrolls-changed", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
     FALSE }, // DT_SIGNAL_FILMROLLS_CHANGED
@@ -151,10 +149,12 @@ static dt_signal_description _signal_description[DT_SIGNAL_COUNT] = {
     FALSE }, // DT_SIGNAL_DEVELOP_PREVIEW2_PIPE_FINISHED
   { "dt-develop-ui-pipe-finished", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
     FALSE }, // DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED
-  { "dt-develop-history-will-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 3,
-    history_will_change_arg, NULL, FALSE }, // DT_SIGNAL_HISTORY_WILL_CHANGE
+  { "dt-develop-history-will-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
+    FALSE }, // DT_SIGNAL_DEVELOP_HISTORY_WILL_CHANGE
   { "dt-develop-history-change", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
-    FALSE }, // DT_SIGNAL_HISTORY_CHANGE
+    FALSE }, // DT_SIGNAL_DEVELOP_HISTORY_CHANGE
+  { "dt-develop-history-invalidated", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
+    FALSE }, // DT_SIGNAL_DEVELOP_HISTORY_INVALIDATED
   { "dt-develop-module-remove", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_generic, 1, pointer_arg, NULL,
     TRUE }, // DT_SIGNAL_MODULE_REMOVE
   { "dt-develop-module-moved", NULL, NULL, G_TYPE_NONE, g_cclosure_marshal_VOID__VOID, 0, NULL, NULL,
@@ -286,7 +286,7 @@ static void _print_trace (const char* op)
     size = backtrace (array, 10);
     strings = backtrace_symbols (array, size);
 
-    for (i = 0; i < size; i++)
+    for(i = 0; i < size; i++)
       dt_print(DT_DEBUG_SIGNAL, "[signal-trace-%s]: %s\n", op, strings[i]);
 
     free (strings);
@@ -341,7 +341,7 @@ void dt_control_signal_raise(const dt_control_signal_t *ctlsig, dt_signal_t sign
         g_value_set_pointer(&instance_and_params[i], va_arg(extra_args, void *));
         break;
       default:
-        fprintf(stderr, "error: unsupported parameter type `%s' for signal `%s'\n",
+        dt_print(DT_DEBUG_ALWAYS, "error: unsupported parameter type `%s' for signal `%s'\n",
                 g_type_name(type), signal_description->name);
         va_end(extra_args);
         for(int j = 0; j <= i; j++) g_value_unset(&instance_and_params[j]);
@@ -359,7 +359,7 @@ void dt_control_signal_raise(const dt_control_signal_t *ctlsig, dt_signal_t sign
 
   if(!signal_description->synchronous)
   {
-    g_main_context_invoke(NULL, _signal_raise, params);
+    g_main_context_invoke_full(NULL, G_PRIORITY_HIGH_IDLE, _signal_raise, params, NULL);
   }
   else
   {
@@ -374,7 +374,7 @@ void dt_control_signal_raise(const dt_control_signal_t *ctlsig, dt_signal_t sign
       g_cond_init(&communication.end_cond);
       g_mutex_lock(&communication.end_mutex);
       communication.user_data = params;
-      g_main_context_invoke(NULL,_async_com_callback,&communication);
+      g_main_context_invoke_full(NULL,G_PRIORITY_HIGH_IDLE, _async_com_callback,&communication, NULL);
       g_cond_wait(&communication.end_cond,&communication.end_mutex);
       g_mutex_unlock(&communication.end_mutex);
       g_mutex_clear(&communication.end_mutex);
@@ -414,6 +414,8 @@ void dt_control_signal_unblock_by_func(const struct dt_control_signal_t *ctlsig,
   g_signal_handlers_unblock_by_func(G_OBJECT(ctlsig->sink), cb, user_data);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

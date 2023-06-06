@@ -89,10 +89,10 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("quickly convert an image to black & white using a variable color filter"),
                                       _("creative"),
@@ -140,9 +140,9 @@ void init_presets(dt_iop_module_so_t *self)
   // dt_gui_presets_add_generic(_("green filter"), self->op, self->version(), &p, sizeof(p), 1);
 }
 
-static float color_filter(const float ai, const float bi, const float a, const float b, const float size)
+static float color_filter(const float ai, const float bi, const float a, const float b, const float dbl_size)
 {
-  return dt_fast_expf(-CLAMPS(((ai - a) * (ai - a) + (bi - b) * (bi - b)) / (2.0 * size), 0.0f, 1.0f));
+  return dt_fast_expf(-CLAMPS(((ai - a) * (ai - a) + (bi - b) * (bi - b)) / dbl_size, 0.0f, 1.0f));
 }
 
 static float envelope(const float L)
@@ -153,7 +153,7 @@ static float envelope(const float L)
   if(x < beta)
   {
     // return 1.0f-fabsf(x/beta-1.0f)^2
-    const float tmp = fabsf(x / beta - 1.0f);
+    const float tmp = (x / beta - 1.0f); // no need for fabsf since we square the value
     return 1.0f - tmp * tmp;
   }
   else
@@ -169,7 +169,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_monochrome_data_t *d = (dt_iop_monochrome_data_t *)piece->data;
-  const float sigma2 = (d->size * 128.0) * (d->size * 128.0f);
+  const float sigma2 = 2.0f * (d->size * 128.0f) * (d->size * 128.0f);
 // first pass: evaluate color filter:
   const size_t npixels = (size_t)roi_out->height * roi_out->width;
   const float *const restrict in = (const float *)i;
@@ -177,15 +177,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float d_a = d->a;
   const float d_b = d->b;
 #ifdef _OPENMP
-#pragma omp parallel for default(none) \
+#pragma omp parallel for simd default(none) \
   dt_omp_firstprivate(in, out, npixels, sigma2, d_a, d_b) \
-  schedule(static)
+  schedule(simd:static) aligned(in, out:64)
 #endif
   for(int k = 0; k < 4*npixels; k += 4)
   {
     out[k+0] = 100.0f * color_filter(in[k+1], in[k+2], d_a, d_b, sigma2);
     out[k+1] = out[k+2] = 0.0f;
-    out[k+3] = in[k+3];
   }
 
   // second step: blur filter contribution:
@@ -202,9 +201,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const float highlights = d->highlights;
 #ifdef _OPENMP
-#pragma omp parallel for default(none) \
+#pragma omp parallel for simd default(none) \
   dt_omp_firstprivate(in, out, npixels, highlights) \
-  schedule(static)
+  schedule(simd:static) aligned(in, out:64)
 #endif
   for(int k = 0; k < 4*npixels; k += 4)
   {
@@ -221,7 +220,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_monochrome_data_t *d = (dt_iop_monochrome_data_t *)piece->data;
   dt_iop_monochrome_global_data_t *gd = (dt_iop_monochrome_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
 
   const int width = roi_out->width;
@@ -240,15 +239,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_bilateral_cl_t *b = dt_bilateral_init_cl(devid, roi_in->width, roi_in->height, sigma_s, sigma_r);
   if(!b) goto error;
 
-  size_t sizes[2] = { ROUNDUPWD(width), ROUNDUPHT(height) };
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 0, sizeof(cl_mem), &dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 1, sizeof(cl_mem), &dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 2, sizeof(int), &width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 3, sizeof(int), &height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 4, sizeof(float), &d->a);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 5, sizeof(float), &d->b);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome_filter, 6, sizeof(float), &sigma2);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_monochrome_filter, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_monochrome_filter, width, height,
+    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(d->a), CLARG(d->b), CLARG(sigma2));
   if(err != CL_SUCCESS) goto error;
 
   err = dt_bilateral_splat_cl(b, dev_out);
@@ -260,16 +252,9 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_bilateral_free_cl(b);
   b = NULL; // make sure we don't do double cleanup in case the next few lines err out
 
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 0, sizeof(cl_mem), &dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 1, sizeof(cl_mem), &dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 2, sizeof(cl_mem), &dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 3, sizeof(int), &width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 4, sizeof(int), &height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 5, sizeof(float), &d->a);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 6, sizeof(float), &d->b);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 7, sizeof(float), &sigma2);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_monochrome, 8, sizeof(float), &d->highlights);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_monochrome, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_monochrome, width, height,
+    CLARG(dev_in), CLARG(dev_tmp), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(d->a), CLARG(d->b),
+    CLARG(sigma2), CLARG(d->highlights));
   if(err != CL_SUCCESS) goto error;
 
   dt_opencl_release_mem_object(dev_tmp);
@@ -278,7 +263,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 error:
   dt_opencl_release_mem_object(dev_tmp);
   dt_bilateral_free_cl(b);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_monochrome] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_monochrome] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -321,7 +306,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   d->highlights = p->highlights;
 
 #ifdef HAVE_OPENCL
-  piece->process_cl_ready = (piece->process_cl_ready && !(darktable.opencl->avoid_atomics));
+  piece->process_cl_ready = (piece->process_cl_ready && !dt_opencl_avoid_atomics(pipe->devid));
 #endif
 }
 
@@ -349,10 +334,7 @@ void cleanup_global(dt_iop_module_so_t *module)
 void gui_update(struct dt_iop_module_t *self)
 {
   dt_iop_monochrome_gui_data_t *g = (dt_iop_monochrome_gui_data_t *)self->gui_data;
-  dt_iop_monochrome_params_t *p = (dt_iop_monochrome_params_t *)self->params;
-  dt_bauhaus_slider_set(g->highlights, p->highlights);
   g->dragging = FALSE;
-  gtk_widget_queue_draw(self->widget);
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -593,6 +575,9 @@ void gui_cleanup(struct dt_iop_module_t *self)
   IOP_GUI_FREE;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

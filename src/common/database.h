@@ -20,6 +20,10 @@
 
 #include <glib.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 struct dt_database_t;
 
 /** allocates and initializes database */
@@ -37,7 +41,7 @@ void dt_database_show_error(const struct dt_database_t *db);
 /** perform pre-db-close optimizations (always call when quiting darktable) */
 void dt_database_optimize(const struct dt_database_t *);
 /** conditionally perfrom db maintenance */
-gboolean dt_database_maybe_maintenance(const struct dt_database_t *db, const gboolean has_gui, const gboolean closing_time);
+gboolean dt_database_maybe_maintenance(const struct dt_database_t *db);
 void dt_database_perform_maintenance(const struct dt_database_t *db);
 /** cleanup busy statements on closing dt, just before performing maintenance */
 void dt_database_cleanup_busy_statements(const struct dt_database_t *db);
@@ -50,6 +54,20 @@ char **dt_database_snaps_to_remove(const struct dt_database_t *db);
 /** get possibly the freshest snapshot to restore */
 gchar *dt_database_get_most_recent_snap(const char* db_filename);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+
+// nested transactions support
+
+void dt_database_start_transaction(const struct dt_database_t *db);
+void dt_database_release_transaction(const struct dt_database_t *db);
+void dt_database_rollback_transaction(const struct dt_database_t *db);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif /* __cplusplus */
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

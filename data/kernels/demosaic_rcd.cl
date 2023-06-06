@@ -56,7 +56,7 @@ __kernel void rcd_write_output (__write_only image2d_t out, global float *rgb0, 
   if(!(col >= border && col < w - border && row >= border && row < height - border)) return;
   const int idx = mad24(row, w, col);
 
-  write_imagef(out, (int2)(col, row), (float4)(scale * rgb0[idx], scale * rgb1[idx], scale * rgb2[idx], 0.0f));
+  write_imagef(out, (int2)(col, row), (float4)(fmax(scale * rgb0[idx], 0.0f), fmax(scale * rgb1[idx], 0.0f), fmax(scale * rgb2[idx], 0.0f), 0.0f));
 }
 
 // Step 1.1: Calculate a squared vertical and horizontal high pass filter on color differences
@@ -68,7 +68,7 @@ __kernel void rcd_step_1_1 (global float *cfa, global float *v_diff, global floa
   const int idx = mad24(row, w, col);
   const int w2 = 2 * w;
   const int w3 = 3 * w;
-  
+
   v_diff[idx] = sqrf(cfa[idx - w3] - 3.0f * cfa[idx - w2] - cfa[idx - w] + 6.0f * cfa[idx] - cfa[idx + w] - 3.0f * cfa[idx + w2] + cfa[idx + w3]);
   h_diff[idx] = sqrf(cfa[idx -  3] - 3.0f * cfa[idx -  2] - cfa[idx - 1] + 6.0f * cfa[idx] - cfa[idx + 1] - 3.0f * cfa[idx +  2] + cfa[idx +  3]);
 }
@@ -278,8 +278,10 @@ __kernel void calc_Y0_mask(global float *mask, __read_only image2d_t in, const i
   const int idx = mad24(row, w, col);
 
   float4 pt = read_imagef(in, sampleri, (int2)(col, row));
-  const float val = 0.333333333f * (fmax(pt.x, 0.0f) / red  + fmax(pt.y, 0.0f) / green  + fmax(pt.z, 0.0f) / blue);
-  mask[idx] = native_sqrt(val);
+  const float val = ICLAMP(pt.x / red, 0.0f, 1.0f)
+                  + ICLAMP(pt.y / green, 0.0f, 1.0f)
+                  + ICLAMP(pt.z / blue, 0.0f, 1.0f);
+  mask[idx] = native_sqrt(val / 3.0f);
 }
 
 __kernel void calc_scharr_mask(global float *in, global float *out, const int w, const int height)
@@ -296,7 +298,6 @@ __kernel void calc_scharr_mask(global float *in, global float *out, const int w,
   inrow = row > height - 2 ? height - 2 : inrow;
 
   const int idx = mad24(inrow, w, incol); 
-  const float scale = 1.0f / 16.0f;
 
   // scharr operator
   const float gx = 47.0f * (in[idx-w-1] - in[idx-w+1])
@@ -306,7 +307,7 @@ __kernel void calc_scharr_mask(global float *in, global float *out, const int w,
                 + 162.0f * (in[idx-w]   - in[idx+w])
                  + 47.0f * (in[idx-w+1] - in[idx+w+1]);
   const float gradient_magnitude = native_sqrt(sqrf(gx / 256.0f) + sqrf(gy / 256.0f));
-  out[oidx] = scale * gradient_magnitude;
+  out[oidx] = gradient_magnitude / 16.0f;
 }
 
 
@@ -324,7 +325,6 @@ __kernel void write_scharr_mask(global float *in, __write_only image2d_t out, co
   inrow = row > height - 2 ? height - 2 : inrow;
 
   const int idx = mad24(inrow, w, incol); 
-  const float scale = 1.0f / 16.0f;
 
   // scharr operator
   const float gx = 47.0f * (in[idx-w-1] - in[idx-w+1])
@@ -334,7 +334,7 @@ __kernel void write_scharr_mask(global float *in, __write_only image2d_t out, co
                 + 162.0f * (in[idx-w]   - in[idx+w])
                  + 47.0f * (in[idx-w+1] - in[idx+w+1]);
   const float gradient_magnitude = native_sqrt(sqrf(gx / 256.0f) + sqrf(gy / 256.0f));
-  write_imagef(out, (int2)(col, row), scale * gradient_magnitude);
+  write_imagef(out, (int2)(col, row), gradient_magnitude / 16.0f);
 }
 
 
@@ -346,7 +346,7 @@ __kernel void calc_detail_blend(global float *in, global float *out, const int w
 
   const int idx = mad24(row, w, col); 
 
-  const float blend = calcBlendFactor(in[idx], threshold);
+  const float blend = ICLAMP(calcBlendFactor(in[idx], threshold), 0.0f, 1.0f);
   out[idx] = detail ? blend : 1.0f - blend;
 }
 
@@ -392,7 +392,7 @@ __kernel void write_blended_dual(__read_only image2d_t high, __read_only image2d
     const float4 blender = mask[idx];
     data = mix(low_val, high_val, blender);
   }
-  write_imagef(out, (int2)(col, row), data);
+  write_imagef(out, (int2)(col, row), fmax(data, 0.0f));
 }
 
 __kernel void fastblur_mask_9x9(global float *src, global float *out, const int w, const int height, global const float *kern)
@@ -524,7 +524,7 @@ kernel void rcd_border_green(read_only image2d_t in, write_only image2d_t out, c
       color.y = fmax(fmin(guessx*0.25f, M), m);
     }
   }
-  write_imagef (out, (int2)(x, y), color);
+  write_imagef (out, (int2)(x, y), fmax(color, 0.0f));
 }
 kernel void rcd_border_redblue(read_only image2d_t in, write_only image2d_t out, const int width, const int height,
                       const unsigned int filters, local float4 *buffer, const int border)
@@ -625,6 +625,6 @@ kernel void rcd_border_redblue(read_only image2d_t in, write_only image2d_t out,
       }
     }
   }
-  write_imagef (out, (int2)(x, y), color);
+  write_imagef (out, (int2)(x, y), fmax(color, 0.0f));
 }
 

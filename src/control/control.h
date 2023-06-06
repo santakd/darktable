@@ -38,6 +38,10 @@
 #include <shobjidl.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
 struct dt_lib_backgroundjob_element_t;
 
 typedef GdkCursorType dt_cursor_t;
@@ -50,8 +54,6 @@ void dt_control_button_released(double x, double y, int which, uint32_t state);
 void dt_control_mouse_moved(double x, double y, double pressure, int which);
 void dt_control_mouse_leave();
 void dt_control_mouse_enter();
-int dt_control_key_pressed(guint key, guint state);
-int dt_control_key_released(guint key, guint state);
 int dt_control_key_pressed_override(guint key, guint state);
 gboolean dt_control_configure(GtkWidget *da, GdkEventConfigure *event, gpointer user_data);
 void dt_control_log(const char *msg, ...) __attribute__((format(printf, 1, 2)));
@@ -113,13 +115,6 @@ struct dt_control_t;
 /** sets the hinter message */
 void dt_control_hinter_message(const struct dt_control_t *s, const char *message);
 
-/** turn the use of key accelerators on */
-void dt_control_key_accelerators_on(struct dt_control_t *s);
-/** turn the use of key accelerators on */
-void dt_control_key_accelerators_off(struct dt_control_t *s);
-
-int dt_control_is_key_accelerators_on(struct dt_control_t *s);
-
 #define DT_CTL_LOG_SIZE 10
 #define DT_CTL_LOG_MSG_SIZE 1000
 #define DT_CTL_LOG_TIMEOUT 5000
@@ -135,12 +130,17 @@ typedef struct dt_control_t
 {
   gboolean accel_initialising;
 
-  dt_action_t *actions, actions_global, actions_views, actions_thumb, actions_libs, actions_iops, actions_blend, actions_lua, actions_fallbacks, *actions_modifiers;
+  dt_action_t *actions, actions_global,
+               actions_views, actions_thumb,
+               actions_libs, actions_format, actions_storage,
+               actions_iops, actions_blend, actions_focus,
+               actions_lua, actions_fallbacks, *actions_modifiers;
 
-  GHashTable *widgets, *combo_introspection, *combo_list;
+  GHashTable *widgets;
   GSequence *shortcuts;
   gboolean enable_fallbacks;
   GtkWidget *mapping_widget;
+  gboolean confirm_mapping;
   dt_action_element_t element;
   GPtrArray *widget_definitions;
   GSList *input_drivers;
@@ -155,7 +155,7 @@ typedef struct dt_control_t
   int button_down, button_down_which, button_type;
   double button_x, button_y;
   int history_start;
-  int32_t mouse_over_id;
+  dt_imgid_t mouse_over_id;
   gboolean lock_cursor_shape;
 
   // TODO: move these to some darkroom struct
@@ -181,7 +181,6 @@ typedef struct dt_control_t
   // gui settings
   dt_pthread_mutex_t global_mutex, image_mutex;
   double last_expose_time;
-  int key_accelerators_on;
 
   // job management
   int32_t running;
@@ -255,8 +254,8 @@ int dt_control_running();
 
 // thread-safe interface between core and gui.
 // is the locking really needed?
-int32_t dt_control_get_mouse_over_id();
-void dt_control_set_mouse_over_id(int32_t value);
+dt_imgid_t dt_control_get_mouse_over_id();
+void dt_control_set_mouse_over_id(dt_imgid_t value);
 
 float dt_control_get_dev_zoom_x();
 void dt_control_set_dev_zoom_x(float value);
@@ -273,19 +272,12 @@ void dt_control_set_dev_closeup(int value);
 dt_dev_zoom_t dt_control_get_dev_zoom();
 void dt_control_set_dev_zoom(dt_dev_zoom_t value);
 
-static inline int32_t dt_ctl_get_num_procs()
-{
-#ifdef _OPENMP
-  return omp_get_num_procs();
-#else
-#ifdef _SC_NPROCESSORS_ONLN
-  return sysconf(_SC_NPROCESSORS_ONLN);
-#else
-  return 1;
-#endif
-#endif
-}
+#ifdef __cplusplus
+} // extern "C"
+#endif /* __cplusplus */
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

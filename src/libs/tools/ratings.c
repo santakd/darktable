@@ -56,10 +56,9 @@ const char *name(dt_lib_module_t *self)
   return _("ratings");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  static const char *v[] = {"lighttable", "tethering", NULL};
-  return v;
+  return DT_VIEW_LIGHTTABLE | DT_VIEW_TETHERING;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -72,7 +71,7 @@ int expandable(dt_lib_module_t *self)
   return 0;
 }
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 1002;
 }
@@ -95,6 +94,7 @@ void gui_init(dt_lib_module_t *self)
                                | GDK_STRUCTURE_MASK);
 
   /* connect callbacks */
+  gtk_widget_set_tooltip_text(drawing, _("set star rating for selected images"));
   gtk_widget_set_app_paintable(drawing, TRUE);
   g_signal_connect(G_OBJECT(drawing), "draw", G_CALLBACK(_lib_ratings_draw_callback), self);
   g_signal_connect(G_OBJECT(drawing), "button-press-event", G_CALLBACK(_lib_ratings_button_press_callback), self);
@@ -107,7 +107,15 @@ void gui_init(dt_lib_module_t *self)
 
   /* set size of navigation draw area */
   gtk_widget_set_name(self->widget, "lib-rating-stars");
-  dt_action_define(&darktable.control->actions_thumb, NULL, "rating", drawing, &dt_action_def_rating);
+  dt_action_t *ac = dt_action_define(&darktable.control->actions_thumb, NULL, N_("rating"), drawing, &dt_action_def_rating);
+  dt_shortcut_register(ac, 0, 0, GDK_KEY_0, 0);
+  dt_shortcut_register(ac, 1, 0, GDK_KEY_1, 0);
+  dt_shortcut_register(ac, 2, 0, GDK_KEY_2, 0);
+  dt_shortcut_register(ac, 3, 0, GDK_KEY_3, 0);
+  dt_shortcut_register(ac, 4, 0, GDK_KEY_4, 0);
+  dt_shortcut_register(ac, 5, 0, GDK_KEY_5, 0);
+  dt_shortcut_register(ac, 6, 0, GDK_KEY_r, 0);
+
 }
 
 void gui_cleanup(dt_lib_module_t *self)
@@ -191,10 +199,9 @@ static gboolean _lib_ratings_button_press_callback(GtkWidget *widget, GdkEventBu
   dt_lib_ratings_t *d = (dt_lib_ratings_t *)self->data;
   if(d->current > 0)
   {
-    const GList *imgs = dt_view_get_images_to_act_on(FALSE, TRUE, FALSE);
+    GList *imgs = dt_act_on_get_images(FALSE, TRUE, FALSE);
     dt_ratings_apply_on_list(imgs, d->current, TRUE);
-    dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_RATING,
-                               g_list_copy((GList *)imgs));
+    dt_collection_update_query(darktable.collection, DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_RATING_RANGE, imgs);
 
     dt_control_queue_redraw_center();
   }
@@ -219,6 +226,8 @@ static gboolean _lib_ratings_leave_notify_callback(GtkWidget *widget, GdkEventCr
 
 
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

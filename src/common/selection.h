@@ -31,15 +31,15 @@ void dt_selection_invert(struct dt_selection_t *selection);
 /** clears the selection */
 void dt_selection_clear(struct dt_selection_t *selection);
 /** adds imgid to the current selection */
-void dt_selection_select(struct dt_selection_t *selection, uint32_t imgid);
+void dt_selection_select(struct dt_selection_t *selection, dt_imgid_t imgid);
 /** removes imgid from the current selection */
-void dt_selection_deselect(struct dt_selection_t *selection, uint32_t imgid);
+void dt_selection_deselect(struct dt_selection_t *selection, dt_imgid_t imgid);
 /** clears current selection and adds imgid */
-void dt_selection_select_single(struct dt_selection_t *selection, uint32_t imgid);
+void dt_selection_select_single(struct dt_selection_t *selection, dt_imgid_t imgid);
 /** toggles selection of image in the current selection */
-void dt_selection_toggle(struct dt_selection_t *selection, uint32_t imgid);
+void dt_selection_toggle(struct dt_selection_t *selection, dt_imgid_t imgid);
 /** selects images range last_single_id to imgid */
-void dt_selection_select_range(struct dt_selection_t *selection, uint32_t imgid);
+void dt_selection_select_range(struct dt_selection_t *selection, dt_imgid_t imgid);
 /** selects all images from current collection */
 void dt_selection_select_all(struct dt_selection_t *selection);
 /** selects all images from filmroll of last single selected image */
@@ -55,6 +55,9 @@ GList *dt_selection_get_list(struct dt_selection_t *selection, const gboolean on
                              const gboolean ordering);
 gchar *dt_selection_get_list_query(struct dt_selection_t *selection, const gboolean only_visible,
                                    const gboolean ordering);
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

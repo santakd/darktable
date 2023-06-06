@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2021 darktable developers.
+    Copyright (C) 2019-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,22 +29,12 @@
 #include "common/darktable.h"
 #include "common/imagebuf.h"
 
-/** Note :
- * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
- * fp-contract=fast enables hardware-accelerated Fused Multiply-Add
- * the rest is loop reorganization and vectorization optimization
+
+/* NOTE: this code complies with the optimizations in "common/extra_optimizations.h".
+ * Consider including that at the beginning of a *.c file where you use this
+ * header (provided the rest of the code complies).
  **/
 
-#if defined(__GNUC__)
-#pragma GCC optimize ("unroll-loops", "tree-loop-if-convert", \
-                      "tree-loop-distribution", "no-strict-aliasing", \
-                      "loop-interchange", "loop-nest-optimize", "tree-loop-im", \
-                      "unswitch-loops", "tree-loop-ivcanon", "ira-loop-pressure", \
-                      "split-ivs-in-unroller", "variable-expansion-in-unroller", \
-                      "split-loops", "ivopts", "predictive-commoning",\
-                      "tree-loop-linear", "loop-block", "loop-strip-mine", \
-                      "finite-math-only", "fp-contract=fast", "fast-math")
-#endif
 
 #define MIN_FLOAT exp2f(-16.0f)
 
@@ -316,10 +306,10 @@ static inline void fast_surface_blur(float *const restrict image,
   const size_t num_elem_ds = ds_width * ds_height;
   const size_t num_elem = width * height;
 
-  float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
-  float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
-  float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
-  float *const restrict ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem * 2));
+  float *const restrict ds_image = dt_alloc_align_float(num_elem_ds);
+  float *const restrict ds_mask = dt_alloc_align_float(num_elem_ds);
+  float *const restrict ds_ab = dt_alloc_align_float(num_elem_ds * 2);
+  float *const restrict ab = dt_alloc_align_float(num_elem * 2);
 
   if(!ds_image || !ds_mask || !ds_ab || !ab)
   {
@@ -365,3 +355,10 @@ clean:
   if(ds_mask) dt_free_align(ds_mask);
   if(ds_image) dt_free_align(ds_image);
 }
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
+// vim: shiftwidth=2 expandtab tabstop=2 cindent
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

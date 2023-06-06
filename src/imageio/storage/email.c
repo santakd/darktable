@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,13 +20,13 @@
 #include "common/file_location.h"
 #include "common/image.h"
 #include "common/image_cache.h"
-#include "common/imageio.h"
-#include "common/imageio_module.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "dtgtk/button.h"
 #include "dtgtk/paint.h"
 #include "gui/gtk.h"
+#include "imageio/imageio_common.h"
+#include "imageio/imageio_module.h"
 #include "imageio/storage/imageio_storage_api.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +35,7 @@ DT_MODULE(2)
 
 typedef struct _email_attachment_t
 {
-  uint32_t imgid; // The image id of exported image
+  dt_imgid_t imgid; // The image id of exported image
   gchar *file;    // Full filename of exported image
 } _email_attachment_t;
 
@@ -96,7 +96,7 @@ void gui_reset(dt_imageio_module_storage_t *self)
 {
 }
 
-int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const int imgid,
+int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, const dt_imgid_t imgid,
           dt_imageio_module_format_t *format, dt_imageio_module_data_t *fdata, const int num, const int total,
           const gboolean high_quality, const gboolean upscale, const gboolean export_masks,
           dt_colorspaces_color_profile_type_t icc_type, const gchar *icc_filename, dt_iop_color_intent_t icc_intent,
@@ -133,7 +133,7 @@ int store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t *sdata, co
   if(dt_imageio_export(imgid, attachment->file, format, fdata, high_quality, upscale, TRUE, export_masks, icc_type,
                        icc_filename, icc_intent, self, sdata, num, total, metadata) != 0)
   {
-    fprintf(stderr, "[imageio_storage_email] could not export to file: `%s'!\n", attachment->file);
+    dt_print(DT_DEBUG_ALWAYS, "[imageio_storage_email] could not export to file: `%s'!\n", attachment->file);
     dt_control_log(_("could not export to file `%s'!"), attachment->file);
     g_free(attachment->file);
     g_free(attachment);
@@ -209,7 +209,7 @@ void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t 
     dt_image_cache_read_release(darktable.image_cache, img);
 
     gchar *imgbody = g_strdup_printf(imageBodyFormat, filename, exif);
-    if (body != NULL) {
+    if(body != NULL) {
       gchar *body_bak = body;
       body = g_strconcat(body_bak, imgbody, NULL);
       g_free(body_bak);
@@ -234,16 +234,16 @@ void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t 
 
   argv[argc] = NULL;
 
-  fprintf(stderr, "[email] launching '");
-  for (int k=0; k<argc; k++) fprintf(stderr, " %s", argv[k]);
-  fprintf(stderr, "'\n");
+  dt_print(DT_DEBUG_ALWAYS, "[email] launching '");
+  for(int k=0; k<argc; k++) dt_print(DT_DEBUG_ALWAYS, " %s", argv[k]);
+  dt_print(DT_DEBUG_ALWAYS, "'\n");
 
   gint exit_status = 0;
 
   g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
                 NULL, NULL, NULL, NULL, &exit_status, NULL);
 
-  for (int k=4; k<argc; k++) g_free(argv[k]);
+  for(int k=4; k<argc; k++) g_free(argv[k]);
   g_free(argv);
 
   if(exit_status)
@@ -252,15 +252,18 @@ void finalize_store(dt_imageio_module_storage_t *self, dt_imageio_module_data_t 
   }
 }
 
-int supported(struct dt_imageio_module_storage_t *storage, struct dt_imageio_module_format_t *format)
+gboolean supported(struct dt_imageio_module_storage_t *storage,
+                   struct dt_imageio_module_format_t *format)
 {
   const char *mime = format->mime(NULL);
   if(mime[0] == '\0') // this seems to be the copy format
-    return 0;
+    return FALSE;
 
-  return 1;
+  return TRUE;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

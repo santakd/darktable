@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -221,7 +221,7 @@ typedef struct dt_dlopencl_symbols_t
 
 typedef struct dt_dlopencl_t
 {
-  int have_opencl;
+  gboolean have_opencl;
   dt_dlopencl_symbols_t *symbols;
   char *library;
 } dt_dlopencl_t;
@@ -234,6 +234,9 @@ dt_dlopencl_t *dt_dlopencl_init(const char *);
 
 #endif // HAVE_OPENCL
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -290,7 +290,6 @@ chart_t *parse_cht(const char *filename)
           x_min = MIN(x_min, xo);
           y_min = MIN(y_min, yo);
 
-          int x_steps = 1, y_steps = 1;
           size_t lxs_len = strlen(lxs), lxe_len = strlen(lxe), lys_len = strlen(lys), lye_len = strlen(lye);
           if(lxs_len > lxe_len || lys_len > lye_len) ERROR;
 
@@ -327,7 +326,6 @@ chart_t *parse_cht(const char *filename)
               }
 
               if(!first_label) first_label = label;
-              g_free(last_label);
               last_label = label;
 
               // store it
@@ -346,7 +344,6 @@ chart_t *parse_cht(const char *filename)
               // increment in x direction
               if(!g_strcmp0(x_label, lxe)) break;
               x += xi;
-              x_steps++;
               if(!strinc(x_label, x_label_size))
               {
                 free(y_label);
@@ -358,7 +355,6 @@ chart_t *parse_cht(const char *filename)
             // increment in y direction
             if(!g_strcmp0(y_label, lye)) break;
             y += yi;
-            y_steps++;
             if(!strinc(y_label, y_label_size))
             {
               free(y_label);
@@ -370,7 +366,6 @@ chart_t *parse_cht(const char *filename)
           if(kl == 'X' || kl == 'Y')
             g_hash_table_insert(result->patch_sets, g_strdup_printf("%s .. %s", first_label, last_label), labels);
 
-          g_free(last_label);
           free(y_label);
           free(x_label);
         }
@@ -615,7 +610,9 @@ end:
 
 #undef MAX_LINE_LENGTH
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
-// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces
-// modified;
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2014-2021 darktable developers.
+    Copyright (C) 2014-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include <stdio.h>
 
 #include "common/film.h"
+#include "common/image.h"
 #include "common/import_session.h"
 #include "common/variables.h"
 #include "control/conf.h"
@@ -35,8 +36,8 @@ typedef struct dt_import_session_t
   dt_film_t *film;
   dt_variables_params_t *vp;
 
-  const gchar *current_path;
-  const gchar *current_filename;
+  gchar *current_path;
+  gchar *current_filename;
 
 } dt_import_session_t;
 
@@ -53,6 +54,7 @@ static void _import_session_cleanup_filmroll(dt_import_session_t *self)
       // no need to ask for rmdir as it'll be re-created if it's needed
       // by another import session with same path params
       g_rmdir(self->current_path);
+      g_free(self->current_path);
       self->current_path = NULL;
     }
   }
@@ -63,33 +65,41 @@ static void _import_session_cleanup_filmroll(dt_import_session_t *self)
 }
 
 
-static gboolean _import_session_initialize_filmroll(dt_import_session_t *self, const char *path)
+static gboolean _import_session_initialize_filmroll(dt_import_session_t *self, char *path)
 {
-  int32_t film_id;
-
   /* cleanup of previously used filmroll */
   _import_session_cleanup_filmroll(self);
 
   /* recursively create directories, abort if failed */
   if(g_mkdir_with_parents(path, 0755) == -1)
   {
-    fprintf(stderr, "failed to create session path %s.\n", path);
-    _import_session_cleanup_filmroll(self);
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] failed to create session path %s.\n", path);
+    _import_session_cleanup_filmroll(self); // superfluous?
     return TRUE;
   }
-
   /* open one or initialize a filmroll for the session */
   self->film = (dt_film_t *)g_malloc0(sizeof(dt_film_t));
-  film_id = dt_film_new(self->film, path);
+  const int32_t film_id = dt_film_new(self->film, path);
   if(film_id == 0)
   {
-    fprintf(stderr, "[import_session] Failed to initialize film roll.\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] Failed to initialize film roll.\n");
     _import_session_cleanup_filmroll(self);
     return TRUE;
   }
-
   /* every thing is good lets setup current path */
+#ifdef _WIN32
+  else
+  {
+    // keep the existing film path (case)
+    g_free(path);
+    g_free(self->current_path);
+    dt_film_t *film = self->film;
+    self->current_path = g_strdup(film->dirname);
+  }
+#else
+  g_free(self->current_path);
   self->current_path = path;
+#endif
 
   return FALSE;
 }
@@ -109,12 +119,16 @@ static gchar *_import_session_path_pattern()
 
   if(!sub || !base)
   {
-    fprintf(stderr, "[import_session] No base or subpath configured...\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] No base or subpath configured...\n");
     goto bail_out;
   }
 
 #ifdef WIN32
-  res = g_build_path("\\\\", base, sub, (char *)NULL);
+  gchar *s1 = dt_str_replace(base, "/", "\\\\");
+  gchar *s2 = dt_str_replace(sub, "/", "\\\\");
+  res = g_build_path("\\\\", s1, s2, (char *)NULL);
+  g_free(s1);
+  g_free(s2);
 #else
   res = g_build_path(G_DIR_SEPARATOR_S, base, sub, (char *)NULL);
 #endif
@@ -129,7 +143,7 @@ static char *_import_session_filename_pattern()
   gchar *name = dt_conf_get_string("session/filename_pattern");
   if(!name)
   {
-    fprintf(stderr, "[import_session] No name configured...\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] No name configured...\n");
     return NULL;
   }
 
@@ -201,16 +215,15 @@ void dt_import_session_set_name(struct dt_import_session_t *self, const char *na
 }
 
 
-void dt_import_session_set_time(struct dt_import_session_t *self, time_t time)
+void dt_import_session_set_time(struct dt_import_session_t *self, const char *time)
 {
   dt_variables_set_time(self->vp, time);
 }
 
 
-void
-dt_import_session_set_exif_time(struct dt_import_session_t *self, time_t exif_time)
+void dt_import_session_set_exif_basic_info(struct dt_import_session_t *self, const dt_image_basic_exif_t *basic_exif)
 {
-  dt_variables_set_exif_time(self->vp, exif_time);
+  dt_variables_set_exif_basic_info(self->vp, basic_exif);
 }
 
 
@@ -233,47 +246,59 @@ const char *dt_import_session_name(struct dt_import_session_t *self)
   return self->vp->jobcode;
 }
 
+/* Extends the filename pattern and removes the trailing white spaces, if any.
+ * (Trailing whitespaces after the filename extension could be confusing
+ * when the type of a file is decided from the filename extension.)
+ *
+ * The returned string should be freed with g_free() when no longer needed.
+ */
+static char *_import_session_filename_from_pattern(struct dt_import_session_t *self, gchar *pattern)
+{
+  gchar *result_fname = NULL;
+
+  result_fname = dt_variables_expand(self->vp, pattern, TRUE);
+  return g_strchomp(result_fname);
+}
+
 /* This returns a unique filename using session path **and** the filename.
-   If current is true we will use the original filename otherwise use the pattern.
+   If use_filename is true we will use the original filename otherwise use the pattern.
 */
 const char *dt_import_session_filename(struct dt_import_session_t *self, gboolean use_filename)
 {
-  const char *path;
-  char *fname, *previous_fname;
-  gchar *pattern;
-  gchar *result_fname;
+  gchar *result_fname = NULL;
 
   /* expand next filename */
-  g_free((void *)self->current_filename);
+  g_free(self->current_filename);
   self->current_filename = NULL;
 
-  pattern = _import_session_filename_pattern();
+  char *pattern = _import_session_filename_pattern();
   if(pattern == NULL)
   {
-    fprintf(stderr, "[import_session] Failed to get session filaname pattern.\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] Failed to get session filaname pattern.\n");
     return NULL;
   }
 
   /* verify that expanded path and filename yields a unique file */
-  path = dt_import_session_path(self, TRUE);
+  const char *path = dt_import_session_path(self, TRUE);
 
   if(use_filename)
     result_fname = g_strdup(self->vp->filename);
   else
-    result_fname = dt_variables_expand(self->vp, pattern, TRUE);
+    result_fname = _import_session_filename_from_pattern(self, pattern);
 
-  previous_fname = fname = g_build_path(G_DIR_SEPARATOR_S, path, result_fname, (char *)NULL);
+  char *fname = g_build_path(G_DIR_SEPARATOR_S, path, result_fname, (char *)NULL);
+  char *previous_fname = fname;
   if(g_file_test(fname, G_FILE_TEST_EXISTS) == TRUE)
   {
-    fprintf(stderr, "[import_session] File %s exists.\n", fname);
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] File %s exists.\n", fname);
     do
     {
       /* file exists, yield a new filename */
       g_free(result_fname);
-      result_fname = dt_variables_expand(self->vp, pattern, TRUE);
+      result_fname = _import_session_filename_from_pattern(self, pattern);
       fname = g_build_path(G_DIR_SEPARATOR_S, path, result_fname, (char *)NULL);
 
-      fprintf(stderr, "[import_session] Testing %s.\n", fname);
+      dt_print(DT_DEBUG_ALWAYS, "[import_session] Testing %s.\n", fname);
       /* check if same filename was yielded as before */
       if(strcmp(previous_fname, fname) == 0)
       {
@@ -294,45 +319,70 @@ const char *dt_import_session_filename(struct dt_import_session_t *self, gboolea
   g_free(pattern);
 
   self->current_filename = result_fname;
-  fprintf(stderr, "[import_session] Using filename %s.\n", self->current_filename);
+  dt_print(DT_DEBUG_ALWAYS, "[import_session] Using filename %s.\n", self->current_filename);
 
   return self->current_filename;
 }
 
-static const char *_import_session_path(struct dt_import_session_t *self, gboolean current)
+static const char *_import_session_path(struct dt_import_session_t *self, gboolean use_current_path)
 {
-  gchar *pattern;
-  char *new_path;
   const gboolean currentok = dt_util_test_writable_dir(self->current_path);
-  fprintf(stderr, " _import_session_path testing `%s' %i", self->current_path, currentok);
 
-  if(current && self->current_path != NULL)
+  if(use_current_path && self->current_path != NULL)
   {
     // the current path might not be a writable directory so test for that
     if(currentok) return self->current_path;
     // the current path is not valid so we can't  cleanup
+    g_free(self->current_path);
     self->current_path = NULL;
     return NULL;
   }
-  /* check if expanded path differs from current */
-  pattern = _import_session_path_pattern();
+
+  gchar *pattern = _import_session_path_pattern();
   if(pattern == NULL)
   {
-    fprintf(stderr, "[import_session] Failed to get session path pattern.\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] Failed to get session path pattern.\n");
     return NULL;
   }
 
-  new_path = dt_variables_expand(self->vp, pattern, FALSE);
+  gchar *new_path = dt_variables_expand(self->vp, pattern, FALSE);
   g_free(pattern);
+
+#ifdef WIN32
+  if(new_path && (strlen(new_path) > 1))
+  {
+    const char first = g_ascii_toupper(new_path[0]);
+    if(first >= 'A' && first <= 'Z' && new_path[1] == ':') // path format is <drive letter>:\path\to\file
+      new_path[0] = first;                                 // drive letter in uppercase looks nicer
+  }
+  /* Remove trailing spaces from each element in the the path separated by directory separator.
+     So follow the usage in Windows. */
+  if(new_path && (strlen(new_path) >= 1))
+  {
+    char **directories = g_strsplit(new_path, G_DIR_SEPARATOR_S, -1);
+    for(int i=0; directories[i] != NULL; i++)
+    {
+      g_strchomp(directories[i]);
+    }
+    g_free(new_path);
+    new_path = g_strjoinv(G_DIR_SEPARATOR_S, directories);
+    g_strfreev(directories);
+  }
+#endif
 
   /* did the session path change ? */
   if(self->current_path && strcmp(self->current_path, new_path) == 0)
   {
     g_free(new_path);
+    new_path = NULL;
     if(currentok) return self->current_path;
   }
 
-  if(!currentok) self->current_path = NULL;
+  if(!currentok)
+  {
+    g_free(self->current_path);
+    self->current_path = NULL;
+  }
   /* we need to initialize a new filmroll for the new path */
   if(_import_session_initialize_filmroll(self, new_path) != 0)
   {
@@ -342,18 +392,20 @@ static const char *_import_session_path(struct dt_import_session_t *self, gboole
   return self->current_path;
 }
 
-const char *dt_import_session_path(struct dt_import_session_t *self, gboolean current)
+const char *dt_import_session_path(struct dt_import_session_t *self, gboolean use_current_path)
 {
-  const char *path = _import_session_path(self, current);
+  const char *path = _import_session_path(self, use_current_path);
   if(path == NULL)
   {
-    fprintf(stderr, "[import_session] Failed to get session path.\n");
+    dt_print(DT_DEBUG_ALWAYS, "[import_session] Failed to get session path.\n");
     dt_control_log(_("requested session path not available. "
                      "device not mounted?"));
   }
   return path;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

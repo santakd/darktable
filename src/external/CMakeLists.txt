@@ -6,8 +6,10 @@ add_library(whereami STATIC "${CMAKE_CURRENT_SOURCE_DIR}/whereami/src/whereami.c
 target_include_directories(whereami PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/whereami/src/")
 
 set(BUILD_TESTING_SAVE "${BUILD_TESTING}")
+set(BUILD_BENCHMARKING_SAVE "${BUILD_BENCHMARKING}")
 
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_BENCHMARKING OFF CACHE BOOL "" FORCE)
 set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 set(WITH_OPENMP ${USE_OPENMP} CACHE BOOL "" FORCE)
 
@@ -44,7 +46,7 @@ add_subdirectory(rawspeed ${DARKTABLE_LIBDIR}/rawspeed)
 # Copying rawspeed resources to where dt expects them
 add_custom_target("deploy" ALL)
 SET(RAWSPEED_DATADIR "${CMAKE_CURRENT_SOURCE_DIR}/rawspeed/data")
-add_custom_command(TARGET "deploy" PRE_BUILD  
+add_custom_command(TARGET "deploy" PRE_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${DARKTABLE_DATADIR}/rawspeed/
   COMMAND ${CMAKE_COMMAND} -E copy ${RAWSPEED_DATADIR}/cameras.xml ${RAWSPEED_DATADIR}/showcameras.xsl ${DARKTABLE_DATADIR}/rawspeed/
 )
@@ -58,3 +60,4 @@ set(CMAKE_CXX_CLANG_TIDY "${CMAKE_CXX_CLANG_TIDY_SAVE}")
 set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE "${CMAKE_CXX_INCLUDE_WHAT_YOU_USE_SAVE}")
 
 set(BUILD_TESTING "${BUILD_TESTING_SAVE}" CACHE BOOL "" FORCE)
+set(BUILD_BENCHMARKING "${BUILD_BENCHMARKING_SAVE}" CACHE BOOL "" FORCE)

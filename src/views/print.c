@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2014-2021 darktable developers.
+    Copyright (C) 2014-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@ typedef struct dt_print_t
 {
   dt_print_info_t *pinfo;
   dt_images_box *imgs;
-  int32_t last_selected;
+  dt_imgid_t last_selected;
 }
 dt_print_t;
 
@@ -60,12 +60,14 @@ uint32_t view(const dt_view_t *self)
   return DT_VIEW_PRINT;
 }
 
-static void _print_mipmaps_updated_signal_callback(gpointer instance, int imgid, gpointer user_data)
+static void _print_mipmaps_updated_signal_callback(gpointer instance,
+                                                   dt_imgid_t imgid,
+                                                   gpointer user_data)
 {
   dt_control_queue_redraw_center();
 }
 
-static void _film_strip_activated(const int imgid, void *data)
+static void _film_strip_activated(const dt_imgid_t imgid, void *data)
 {
   const dt_view_t *self = (dt_view_t *)data;
   dt_print_t *prt = (dt_print_t *)self->data;
@@ -79,7 +81,7 @@ static void _film_strip_activated(const int imgid, void *data)
 
   // if the previous shown image is selected and the selection is unique
   // then we change the selected image to the new one
-  if(prt->imgs->box[0].imgid > 0)
+  if(dt_is_valid_imgid(prt->imgs->box[0].imgid))
   {
     sqlite3_stmt *stmt;
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -116,12 +118,16 @@ static void _film_strip_activated(const int imgid, void *data)
   dt_control_queue_redraw();
 }
 
-static void _view_print_filmstrip_activate_callback(gpointer instance, int imgid, gpointer user_data)
+static void _view_print_filmstrip_activate_callback(gpointer instance,
+                                                    dt_imgid_t imgid,
+                                                    gpointer user_data)
 {
-  if(imgid > 0) _film_strip_activated(imgid, user_data);
+  if(dt_is_valid_imgid(imgid)) _film_strip_activated(imgid, user_data);
 }
 
-static void _view_print_settings(const dt_view_t *view, dt_print_info_t *pinfo, dt_images_box *imgs)
+static void _view_print_settings(const dt_view_t *view,
+                                 dt_print_info_t *pinfo,
+                                 dt_images_box *imgs)
 {
   dt_print_t *prt = (dt_print_t *)view->data;
 
@@ -130,9 +136,14 @@ static void _view_print_settings(const dt_view_t *view, dt_print_info_t *pinfo, 
   dt_control_queue_redraw();
 }
 
-static void _drag_and_drop_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y,
-                                   GtkSelectionData *selection_data, guint target_type, guint time,
-                                   gpointer data)
+static void _drag_and_drop_received(GtkWidget *widget,
+                                    GdkDragContext *context,
+                                    gint x,
+                                    gint y,
+                                    GtkSelectionData *selection_data,
+                                    guint target_type,
+                                    guint time,
+                                    gpointer data)
 {
   const dt_view_t *self = (dt_view_t *)data;
   dt_print_t *prt = (dt_print_t *)self->data;
@@ -147,8 +158,11 @@ static void _drag_and_drop_received(GtkWidget *widget, GdkDragContext *context, 
   dt_control_queue_redraw_center();
 }
 
-static gboolean _drag_motion_received(GtkWidget *widget, GdkDragContext *dc,
-                                      gint x, gint y, guint time,
+static gboolean _drag_motion_received(GtkWidget *widget,
+                                      GdkDragContext *dc,
+                                      const gint x,
+                                      const gint y,
+                                      const guint time,
                                       gpointer data)
 {
   const dt_view_t *self = (dt_view_t *)data;
@@ -178,34 +192,41 @@ void cleanup(dt_view_t *self)
   free(prt);
 }
 
-static void expose_print_page(dt_view_t *self, cairo_t *cr,
-                              int32_t width, int32_t height, int32_t pointerx, int32_t pointery)
+static void _expose_print_page(dt_view_t *self,
+                               cairo_t *cr,
+                               const int32_t width,
+                               const int32_t height,
+                               const int32_t pointerx,
+                               const int32_t pointery)
 {
   dt_print_t *prt = (dt_print_t *)self->data;
 
-  int32_t px=0, py=0, pwidth=0, pheight=0;
-  int32_t ax=0, ay=0, awidth=0, aheight=0;
-
-  if (prt->pinfo == NULL)
+  if(prt->pinfo == NULL)
     return;
+
+  float px=.0f, py=.0f, pwidth=.0f, pheight=.0f;
+  float ax=.0f, ay=.0f, awidth=.0f, aheight=.0f;
+
+  gboolean borderless = FALSE;
 
   dt_get_print_layout(prt->pinfo, width, height,
                       &px, &py, &pwidth, &pheight,
-                      &ax, &ay, &awidth, &aheight);
+                      &ax, &ay, &awidth, &aheight, &borderless);
+
   // page w/h
-  double pg_width  = prt->pinfo->paper.width;
-  double pg_height = prt->pinfo->paper.height;
+  float pg_width  = prt->pinfo->paper.width;
+  float pg_height = prt->pinfo->paper.height;
 
   // non-printable
-  double np_top = prt->pinfo->printer.hw_margin_top;
-  double np_left = prt->pinfo->printer.hw_margin_left;
-  double np_right = prt->pinfo->printer.hw_margin_right;
-  double np_bottom = prt->pinfo->printer.hw_margin_bottom;
+  float np_top = prt->pinfo->printer.hw_margin_top;
+  float np_left = prt->pinfo->printer.hw_margin_left;
+  float np_right = prt->pinfo->printer.hw_margin_right;
+  float np_bottom = prt->pinfo->printer.hw_margin_bottom;
 
   // handle the landscape mode if needed
   if(prt->pinfo->page.landscape)
   {
-    double tmp = pg_width;
+    float tmp = pg_width;
     pg_width = pg_height;
     pg_height = tmp;
 
@@ -217,8 +238,8 @@ static void expose_print_page(dt_view_t *self, cairo_t *cr,
     np_left   = tmp;
   }
 
-  const int32_t pright = px + pwidth;
-  const int32_t pbottom = py + pheight;
+  const float pright = px + pwidth;
+  const float pbottom = py + pheight;
 
   // x page -> x display
   // (x / pg_width) * p_width + p_x
@@ -231,15 +252,16 @@ static void expose_print_page(dt_view_t *self, cairo_t *cr,
 
   dt_printing_setup_display(prt->imgs,
                             px, py, pwidth, pheight,
-                            ax, ay, awidth, aheight);
+                            ax, ay, awidth, aheight,
+                            borderless);
 
   // display non-printable area
   cairo_set_source_rgb (cr, 0.1, 0.1, 0.1);
 
-  const int np1x = px + (np_left / pg_width) * pwidth;
-  const int np1y = py + (np_top / pg_height) * pheight;
-  const int np2x = pright - (np_right / pg_width) * pwidth;
-  const int np2y = pbottom - (np_bottom / pg_height) * pheight;
+  const float np1x = px + (np_left / pg_width) * pwidth;
+  const float np1y = py + (np_top / pg_height) * pheight;
+  const float np2x = pright - (np_right / pg_width) * pwidth;
+  const float np2y = pbottom - (np_bottom / pg_height) * pheight;
 
   // top-left
   cairo_move_to (cr, np1x-10, np1y);
@@ -273,24 +295,38 @@ static void expose_print_page(dt_view_t *self, cairo_t *cr,
   cairo_fill (cr);
 }
 
-void expose(dt_view_t *self, cairo_t *cri, int32_t width_i, int32_t height_i, int32_t pointerx, int32_t pointery)
+void expose(dt_view_t *self,
+            cairo_t *cri,
+            int32_t width_i,
+            int32_t height_i,
+            int32_t pointerx,
+            int32_t pointery)
 {
   // clear the current surface
   dt_gui_gtk_set_source_rgb(cri, DT_GUI_COLOR_PRINT_BG);
   cairo_paint(cri);
 
-  // print page & borders only. Images are displayed in gui_post_expose in print_settings module
-  expose_print_page (self, cri, width_i, height_i, pointerx, pointery);
+  // print page & borders only. Images are displayed in
+  // gui_post_expose in print_settings module.
+
+  _expose_print_page(self, cri, width_i, height_i, pointerx, pointery);
 }
 
-void mouse_moved(dt_view_t *self, double x, double y, double pressure, int which)
+void mouse_moved(dt_view_t *self,
+                 double x,
+                 double y,
+                 double pressure,
+                 int which)
 {
   const dt_print_t *prt = (dt_print_t *)self->data;
 
-  // if we are not hovering over a thumbnail in the filmstrip -> show metadata of first opened image.
-  const int32_t mouse_over_id = dt_control_get_mouse_over_id();
+  // if we are not hovering over a thumbnail in the filmstrip -> show
+  // metadata of first opened image.
 
-  if(prt->imgs->count == 1 && mouse_over_id != prt->imgs->box[0].imgid)
+  const dt_imgid_t mouse_over_id = dt_control_get_mouse_over_id();
+
+  if(prt->imgs->count == 1
+     && mouse_over_id != prt->imgs->box[0].imgid)
   {
     dt_control_set_mouse_over_id(prt->imgs->box[0].imgid);
   }
@@ -298,7 +334,7 @@ void mouse_moved(dt_view_t *self, double x, double y, double pressure, int which
   {
     const int bidx = dt_printing_get_image_box(prt->imgs, x, y);
     if(bidx == -1)
-      dt_control_set_mouse_over_id(-1);
+      dt_control_set_mouse_over_id(NO_IMGID);
     else if(mouse_over_id != prt->imgs->box[bidx].imgid)
     {
       dt_control_set_mouse_over_id(prt->imgs->box[bidx].imgid);
@@ -306,19 +342,19 @@ void mouse_moved(dt_view_t *self, double x, double y, double pressure, int which
   }
 }
 
-int try_enter(dt_view_t *self)
+gboolean try_enter(dt_view_t *self)
 {
   dt_print_t *prt = (dt_print_t*)self->data;
 
   //  now check that there is at least one selected image
 
-  const int imgid = dt_view_get_image_to_act_on();
+  const dt_imgid_t imgid = dt_act_on_get_main_image();
 
-  if(imgid < 0)
+  if(!dt_is_valid_imgid(imgid))
   {
     // fail :(
-    dt_control_log(_("no image to open !"));
-    return 1;
+    dt_control_log(_("no image to open!"));
+    return TRUE;
   }
 
   // this loads the image from db if needed:
@@ -340,18 +376,19 @@ int try_enter(dt_view_t *self)
   // we need to setup the selected image
   prt->imgs->imgid_to_load = imgid;
 
-  return 0;
+  return FALSE;
 }
 
 void enter(dt_view_t *self)
 {
-  dt_print_t *prt=(dt_print_t*)self->data;
+  dt_print_t *prt = (dt_print_t*)self->data;
 
   /* scroll filmstrip to the first selected image */
   if(prt->imgs->imgid_to_load >= 0)
   {
     // change active image
-    dt_thumbtable_set_offset_image(dt_ui_thumbtable(darktable.gui->ui), prt->imgs->box[0].imgid, TRUE);
+    dt_thumbtable_set_offset_image(dt_ui_thumbtable(darktable.gui->ui),
+                                   prt->imgs->box[0].imgid, TRUE);
     dt_view_active_images_reset(FALSE);
     dt_view_active_images_add(prt->imgs->imgid_to_load, TRUE);
   }
@@ -377,22 +414,25 @@ void enter(dt_view_t *self)
 
 void leave(dt_view_t *self)
 {
-  dt_print_t *prt=(dt_print_t*)self->data;
+  dt_print_t *prt = (dt_print_t*)self->data;
 
   /* disconnect from mipmap updated signal */
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_print_mipmaps_updated_signal_callback),
-                               (gpointer)self);
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
+                                     G_CALLBACK(_print_mipmaps_updated_signal_callback),
+                                     (gpointer)self);
 
   /* disconnect from filmstrip image activate */
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                               G_CALLBACK(_view_print_filmstrip_activate_callback),
-                               (gpointer)self);
+                                     G_CALLBACK(_view_print_filmstrip_activate_callback),
+                                     (gpointer)self);
 
   dt_printing_clear_boxes(prt->imgs);
 //  g_signal_disconnect(widget, "drag-data-received", G_CALLBACK(_drag_and_drop_received));
 //  g_signal_disconnect(widget, "drag-motion", G_CALLBACK(_drag_motion_received));
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

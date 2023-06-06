@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -37,15 +37,10 @@
 #include <math.h>
 #include <memory.h>
 #include <stdlib.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
 //#define USE_NEW_CL  //uncomment to use the new, more memory-efficient OpenCL code (not yet finished)
 
 #define INSET DT_PIXEL_APPLY_DPI(5)
-#define INFL .3f
-
 
 DT_MODULE_INTROSPECTION(2, dt_iop_atrous_params_t)
 
@@ -133,7 +128,7 @@ const char *aliases()
   return _("sharpness|acutance|local contrast");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("add or remove local contrast, sharpness, acutance"),
                                       _("corrective and creative"),
@@ -154,7 +149,7 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -254,8 +249,7 @@ static int get_scales(float (*thrs)[4], float (*boost)[4], float *sharp, const d
 /* just process the supplied image buffer, upstream default_process_tiling() does the rest */
 static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
                              const void *const i, void *const o, const dt_iop_roi_t *const roi_in,
-                             const dt_iop_roi_t *const roi_out, const eaw_decompose_t decompose,
-                             const eaw_synthesize_t synthesize)
+                             const dt_iop_roi_t *const roi_out)
 {
   dt_iop_atrous_data_t *d = (dt_iop_atrous_data_t *)piece->data;
   dt_aligned_pixel_t thrs[MAX_NUM_SCALES];
@@ -267,7 +261,7 @@ static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpi
   const int width = roi_out->width;
   const int height = roi_out->height;
 
-  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == DT_DEV_PIXELPIPE_FULL)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
   {
     dt_iop_atrous_gui_data_t *g = (dt_iop_atrous_gui_data_t *)self->gui_data;
     g->num_samples = get_samples(g->sample, d, roi_in, piece);
@@ -284,11 +278,10 @@ static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpi
   }
 
   float *const restrict out = (float*)o;
-  float *restrict detail = NULL;
   float *restrict tmp = NULL;
   float *restrict tmp2 = NULL;
 
-  if (!dt_iop_alloc_image_buffers(self, roi_in, roi_out, 4, &tmp, 4, &tmp2, 4, &detail, 0))
+  if(!dt_iop_alloc_image_buffers(self, roi_in, roi_out, 4, &tmp, 4, &tmp2, 0))
   {
     dt_iop_copy_image_roi(out, i, piece->colors, roi_in, roi_out, TRUE);
     return;
@@ -298,14 +291,14 @@ static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpi
   float *buf2 = tmp;
 
   // clear the output buffer, which will be accumulating all of the detail scales
-  memset(out, 0, sizeof(float) * 4 * width * height);
+  dt_iop_image_fill(out, 0.0f, width, height, 4);
 
   // now do the wavelet decomposition, immediately synthesizing the detail scale into the final output so
   // that we don't need to store it past the current scale's iteration
   for(int scale = 0; scale < max_scale; scale++)
   {
-    decompose(buf2, buf1, detail, scale, sharp[scale], width, height);
-    synthesize(out, out, detail, thrs[scale], boost[scale], width, height);
+    eaw_decompose_and_synthesize(buf2, buf1, out, scale, sharp[scale], thrs[scale],
+                                 boost[scale], width, height);
     if(scale == 0) buf1 = (float *)tmp2; // now switch to second scratch for buffer ping-pong between buf1 and buf2
     float *buf3 = buf2;
     buf2 = buf1;
@@ -314,15 +307,13 @@ static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpi
 
   // add in the final residue
 #ifdef _OPENMP
-#pragma omp simd aligned(buf1, out : 64)
+#pragma omp parallel for simd aligned(buf1, out : 64) \
+  dt_omp_firstprivate(width, height, buf1, out) \
+  schedule(simd:static) num_threads(MIN(dt_get_num_threads(),16))
 #endif
-  for (size_t k = 0; k < (size_t)4 * width * height; k++)
+  for(size_t k = 0; k < (size_t)4 * width * height; k++)
     out[k] += buf1[k];
 
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-    dt_iop_alpha_copy(i, o, width, height);
-
-  dt_free_align(detail);
   dt_free_align(tmp);
   dt_free_align(tmp2);
   return;
@@ -331,16 +322,8 @@ static void process_wavelets(struct dt_iop_module_t *self, struct dt_dev_pixelpi
 void process(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const void *const i,
              void *const o, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  process_wavelets(self, piece, i, o, roi_in, roi_out, eaw_decompose, eaw_synthesize);
+  process_wavelets(self, piece, i, o, roi_in, roi_out);
 }
-
-#if defined(__SSE2__)
-void process_sse2(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const void *const i,
-                  void *const o, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  process_wavelets(self, piece, i, o, roi_in, roi_out, eaw_decompose_sse2, eaw_synthesize_sse2);
-}
-#endif
 
 #ifdef HAVE_OPENCL
 
@@ -355,7 +338,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   float sharp[MAX_NUM_SCALES];
   const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
 
-  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == DT_DEV_PIXELPIPE_FULL)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
   {
     dt_iop_atrous_gui_data_t *g = (dt_iop_atrous_gui_data_t *)self->gui_data;
     g->num_samples = get_samples(g->sample, d, roi_in, piece);
@@ -367,7 +350,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_atrous_global_data_t *gd = (dt_iop_atrous_global_data_t *)self->global_data;
 
   const int devid = piece->pipe->devid;
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   cl_mem dev_filter = NULL;
   cl_mem dev_tmp = NULL;
   cl_mem dev_tmp2 = NULL;
@@ -394,10 +377,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   const int width = roi_out->width;
   const int height = roi_out->height;
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
   // clear dev_out to zeros, as we will be incrementally accumulating results there
-  dt_opencl_set_kernel_arg(devid, gd->kernel_zero, 0, sizeof(cl_mem), (void *)&dev_out);
+  dt_opencl_set_kernel_args(devid, gd->kernel_zero, 0, CLARG(dev_out));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_zero, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -412,14 +395,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     const int scale = s;
 
     // run the decomposition
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 0, sizeof(cl_mem), (void *)&dev_buf2); //this scale's output
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 1, sizeof(cl_mem), (void *)&dev_buf1); //this scale's input
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 2, sizeof(cl_mem), (void *)&dev_detail);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 3, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 4, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 5, sizeof(unsigned int), (void *)&scale);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 6, sizeof(float), (void *)&sharp[s]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 7, sizeof(cl_mem), (void *)&dev_filter);
+    dt_opencl_set_kernel_args(devid, gd->kernel_decompose, 0, CLARG(dev_buf2), CLARG(dev_buf1), CLARG(dev_detail),
+      CLARG(width), CLARG(height), CLARG(scale), CLARG(sharp[s]), CLARG(dev_filter));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_decompose, sizes);
     if(err != CL_SUCCESS) goto error;
@@ -428,19 +405,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     dt_iop_nap(darktable.opencl->micro_nap);
 
     // now immediately run the synthesis for the current scale, accumulating the details into dev_out
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 0, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 1, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 2, sizeof(cl_mem), (void *)&dev_detail);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 3, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 4, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 5, sizeof(float), (void *)&thrs[scale][0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 6, sizeof(float), (void *)&thrs[scale][1]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 7, sizeof(float), (void *)&thrs[scale][2]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 8, sizeof(float), (void *)&thrs[scale][3]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 9, sizeof(float), (void *)&boost[scale][0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 10, sizeof(float), (void *)&boost[scale][1]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 11, sizeof(float), (void *)&boost[scale][2]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 12, sizeof(float), (void *)&boost[scale][3]);
+    dt_opencl_set_kernel_args(devid, gd->kernel_synthesize, 0, CLARG(dev_out), CLARG(dev_out), CLARG(dev_detail),
+      CLARG(width), CLARG(height), CLARG(thrs[scale][0]), CLARG(thrs[scale][1]), CLARG(thrs[scale][2]),
+      CLARG(thrs[scale][3]), CLARG(boost[scale][0]), CLARG(boost[scale][1]), CLARG(boost[scale][2]),
+      CLARG(boost[scale][3]));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_synthesize, sizes);
     if(err != CL_SUCCESS) goto error;
@@ -449,21 +417,19 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     dt_iop_nap(darktable.opencl->micro_nap);
 
     // swap scratch buffers
-    if (scale == 0) dev_buf1 = dev_tmp2;
+    if(scale == 0) dev_buf1 = dev_tmp2;
     void* tmp = dev_buf2;
     dev_buf2 = dev_buf1;
     dev_buf1 = tmp;
   }
 
   // add the residue (the coarse scale from the final decomposition) to the accumulated details
-  dt_opencl_set_kernel_arg(devid, gd->kernel_addbuffers, 0, sizeof(cl_mem), (void*)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_addbuffers, 1, sizeof(cl_mem), (void*)&dev_buf1);
+  dt_opencl_set_kernel_args(devid, gd->kernel_addbuffers, 0, CLARG(dev_out), CLARG(dev_buf1));
 
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_addbuffers, sizes);
   if(err != CL_SUCCESS) goto error;
 
-  if(!darktable.opencl->async_pixelpipe || (piece->pipe->type & DT_DEV_PIXELPIPE_EXPORT) == DT_DEV_PIXELPIPE_EXPORT)
-    dt_opencl_finish(devid);
+  dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
 
   dt_opencl_release_mem_object(dev_filter);
   dt_opencl_release_mem_object(dev_tmp);
@@ -476,7 +442,7 @@ error:
   dt_opencl_release_mem_object(dev_tmp);
   dt_opencl_release_mem_object(dev_tmp2);
   dt_opencl_release_mem_object(dev_detail);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_atrous] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_atrous] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 
@@ -492,7 +458,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   float sharp[MAX_NUM_SCALES];
   const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
 
-  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == DT_DEV_PIXELPIPE_FULL)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
   {
     dt_iop_atrous_gui_data_t *g = (dt_iop_atrous_gui_data_t *)self->gui_data;
     g->num_samples = get_samples(g->sample, d, roi_in, piece);
@@ -504,7 +470,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_atrous_global_data_t *gd = (dt_iop_atrous_global_data_t *)self->global_data;
 
   const int devid = piece->pipe->devid;
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   cl_mem dev_filter = NULL;
   cl_mem dev_tmp = NULL;
   cl_mem *dev_detail = calloc(max_scale, sizeof(cl_mem));
@@ -533,7 +499,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   const int width = roi_out->width;
   const int height = roi_out->height;
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
   size_t origin[] = { 0, 0, 0 };
   size_t region[] = { width, height, 1 };
 
@@ -548,26 +514,20 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
     if(s & 1)
     {
-      dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 0, sizeof(cl_mem), (void *)&dev_tmp);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 1, sizeof(cl_mem), (void *)&dev_out);
+      dt_opencl_set_kernel_args(devid, gd->kernel_decompose, 0, CLARG(dev_tmp), CLARG(dev_out));
     }
     else
     {
-      dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 0, sizeof(cl_mem), (void *)&dev_out);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 1, sizeof(cl_mem), (void *)&dev_tmp);
+      dt_opencl_set_kernel_args(devid, gd->kernel_decompose, 0, CLARG(dev_out), CLARG(dev_tmp));
     }
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 2, sizeof(cl_mem), (void *)&dev_detail[s]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 3, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 4, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 5, sizeof(unsigned int), (void *)&scale);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 6, sizeof(float), (void *)&sharp[s]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_decompose, 7, sizeof(cl_mem), (void *)&dev_filter);
+    dt_opencl_set_kernel_args(devid, gd->kernel_decompose, 2, CLARG(dev_detail[s]), CLARG(width), CLARG(height),
+      CLARG(scale), CLARG(sharp[s]), CLARG(dev_filter));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_decompose, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(darktable.opencl->micro_nap);
+    dt_iop_nap(dt_opencl_micro_nap(devid));
   }
 
   /* now synthesize again */
@@ -575,36 +535,25 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   {
     if(scale & 1)
     {
-      dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 0, sizeof(cl_mem), (void *)&dev_tmp);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 1, sizeof(cl_mem), (void *)&dev_out);
+      dt_opencl_set_kernel_args(devid, gd->kernel_synthesize, 0, CLARG(dev_tmp), CLARG(dev_out));
     }
     else
     {
-      dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 0, sizeof(cl_mem), (void *)&dev_out);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 1, sizeof(cl_mem), (void *)&dev_tmp);
+      dt_opencl_set_kernel_args(devid, gd->kernel_synthesize, 0, CLARG(dev_out), CLARG(dev_tmp));
     }
 
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 2, sizeof(cl_mem), (void *)&dev_detail[scale]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 3, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 4, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 5, sizeof(float), (void *)&thrs[scale][0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 6, sizeof(float), (void *)&thrs[scale][1]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 7, sizeof(float), (void *)&thrs[scale][2]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 8, sizeof(float), (void *)&thrs[scale][3]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 9, sizeof(float), (void *)&boost[scale][0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 10, sizeof(float), (void *)&boost[scale][1]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 11, sizeof(float), (void *)&boost[scale][2]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_synthesize, 12, sizeof(float), (void *)&boost[scale][3]);
+    dt_opencl_set_kernel_args(devid, gd->kernel_synthesize, 2, CLARG(dev_detail[scale]), CLARG(width),
+      CLARG(height), CLARG(thrs[scale][0]), CLARG(thrs[scale][1]), CLARG(thrs[scale][2]), CLARG(thrs[scale][3]),
+      CLARG(boost[scale][0]), CLARG(boost[scale][1]), CLARG(boost[scale][2]), CLARG(boost[scale][3]));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_synthesize, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(darktable.opencl->micro_nap);
+    dt_iop_nap(dt_opencl_micro_nap(devid));
   }
 
-  if(!darktable.opencl->async_pixelpipe || (piece->pipe->type & DT_DEV_PIXELPIPE_EXPORT) == DT_DEV_PIXELPIPE_EXPORT)
-    dt_opencl_finish(devid);
+  dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
 
   dt_opencl_release_mem_object(dev_filter);
   dt_opencl_release_mem_object(dev_tmp);
@@ -619,7 +568,7 @@ error:
   for(int k = 0; k < max_scale; k++)
     dt_opencl_release_mem_object(dev_detail[k]);
   free(dev_detail);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_atrous] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_atrous] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif // USE_NEW_CL
@@ -637,7 +586,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
   const int max_filter_radius = 2 * (1 << max_scale); // 2 * 2^max_scale
 
-  tiling->factor = 5.0f;                // in + out + 2*tmp + details
+  tiling->factor = 4.0f;                // in + out + 2*tmp
   tiling->factor_cl = 3.0f + max_scale; // in + out + tmp + scale buffers
   tiling->maxbuf = 1.0f;
   tiling->maxbuf_cl = 1.0f;
@@ -757,7 +706,7 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
 
 void init_presets(dt_iop_module_so_t *self)
 {
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "BEGIN", NULL, NULL, NULL);
+  dt_database_start_transaction(darktable.db);
   dt_iop_atrous_params_t p;
   p.octaves = 7;
   p.mix = 1.0f;
@@ -1024,7 +973,7 @@ void init_presets(dt_iop_module_so_t *self)
   dt_gui_presets_add_generic(_("deblur: fine blur, strength 1"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "COMMIT", NULL, NULL, NULL);
+  dt_database_release_transaction(darktable.db);
 }
 
 static void reset_mix(dt_iop_module_t *self)
@@ -1033,38 +982,28 @@ static void reset_mix(dt_iop_module_t *self)
   dt_iop_atrous_params_t *p = (dt_iop_atrous_params_t *)self->params;
   c->drag_params = *p;
   ++darktable.gui->reset;
-  dt_bauhaus_slider_set_soft(c->mix, p->mix);
+  dt_bauhaus_slider_set(c->mix, p->mix);
   --darktable.gui->reset;
 }
 
 void gui_update(struct dt_iop_module_t *self)
 {
   reset_mix(self);
-  dt_iop_cancel_history_update(self);
   gtk_widget_queue_draw(self->widget);
 }
 
 
 // gui stuff:
 
-static gboolean area_enter_notify(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
+static gboolean area_enter_leave_notify(GtkWidget *widget, GdkEventCrossing *event, dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   dt_iop_atrous_gui_data_t *c = (dt_iop_atrous_gui_data_t *)self->gui_data;
-  if(!c->dragging) c->mouse_y = fabs(c->mouse_y);
-  c->in_curve = TRUE;
-  gtk_widget_queue_draw(widget);
-  return TRUE;
-}
+  c->in_curve = event->type == GDK_ENTER_NOTIFY;
+  if(!c->dragging)
+    c->x_move = -1;
 
-static gboolean area_leave_notify(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
-  dt_iop_atrous_gui_data_t *c = (dt_iop_atrous_gui_data_t *)self->gui_data;
-  if(!c->dragging) c->mouse_y = -fabs(c->mouse_y);
-  c->in_curve = FALSE;
   gtk_widget_queue_draw(widget);
-  return TRUE;
+  return FALSE;
 }
 
 // fills in new parameters based on mouse position (in 0,1)
@@ -1404,6 +1343,8 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
   if(!c->dragging) c->mouse_x = CLAMP(event->x - inset, 0, width) / (float)width;
   c->mouse_y = 1.0 - CLAMP(event->y - inset, 0, height) / (float)height;
 
+  darktable.control->element = 0;
+
   int ch2 = c->channel;
   if(c->channel == atrous_L) ch2 = atrous_Lt;
   if(c->channel == atrous_c) ch2 = atrous_ct;
@@ -1427,7 +1368,7 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
       get_params(p, c->channel2, c->mouse_x, c->mouse_y + c->mouse_pick, c->mouse_radius);
     }
     gtk_widget_queue_draw(widget);
-    dt_iop_queue_history_update(self, FALSE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + c->channel);
   }
   else if(event->y > height)
   {
@@ -1443,6 +1384,8 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
         dist = d2;
       }
     }
+    darktable.control->element = c->x_move + 1;
+
     gtk_widget_queue_draw(widget);
   }
   else
@@ -1485,7 +1428,7 @@ static gboolean area_button_press(GtkWidget *widget, GdkEventButton *event, gpoi
       p->y[c->channel2][k] = d->y[c->channel2][k];
     }
     gtk_widget_queue_draw(self->widget);
-    dt_dev_add_history_item(darktable.develop, self, TRUE);
+    dt_dev_add_history_item_target(darktable.develop, self, TRUE, widget + c->channel2);
   }
   else if(event->button == 1)
   {
@@ -1529,18 +1472,8 @@ static gboolean area_scrolled(GtkWidget *widget, GdkEventScroll *event, gpointer
   int delta_y;
   if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
   {
-    if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
-    {
-      //adjust aspect
-      const int aspect = dt_conf_get_int("plugins/darkroom/atrous/aspect_percent");
-      dt_conf_set_int("plugins/darkroom/atrous/aspect_percent", aspect + delta_y);
-      dtgtk_drawing_area_set_aspect_ratio(widget, aspect / 100.0);
-    }
-    else
-    {
-      c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.25 / BANDS, 1.0);
-      gtk_widget_queue_draw(widget);
-    }
+    c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * delta_y), 0.25 / BANDS, 1.0);
+    gtk_widget_queue_draw(widget);
   }
   return TRUE;
 }
@@ -1561,8 +1494,151 @@ static void mix_callback(GtkWidget *slider, gpointer user_data)
   dt_iop_atrous_params_t *p = (dt_iop_atrous_params_t *)self->params;
   p->mix = dt_bauhaus_slider_get(slider);
   gtk_widget_queue_draw(self->widget);
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
+  dt_dev_add_history_item_target(darktable.develop, self, TRUE, slider);
 }
+
+enum
+{
+  DT_ACTION_EFFECT_ATROUS_RESET = DT_ACTION_EFFECT_DEFAULT_KEY,
+  DT_ACTION_EFFECT_BOOST = DT_ACTION_EFFECT_DEFAULT_UP,
+  DT_ACTION_EFFECT_REDUCE = DT_ACTION_EFFECT_DEFAULT_DOWN,
+  DT_ACTION_EFFECT_RAISE = 3,
+  DT_ACTION_EFFECT_LOWER = 4,
+  DT_ACTION_EFFECT_RIGHT = 5,
+  DT_ACTION_EFFECT_LEFT = 6,
+};
+
+const gchar *dt_action_effect_equalizer[]
+  = { N_("reset"),
+      N_("boost"),
+      N_("reduce"),
+      N_("raise"),
+      N_("lower"),
+      N_("right"),
+      N_("left"),
+      NULL };
+
+const dt_action_element_def_t _action_elements_equalizer[]
+  = { { N_("radius"  ), dt_action_effect_value     },
+      { N_("coarsest"), dt_action_effect_equalizer },
+      { N_("coarser" ), dt_action_effect_equalizer },
+      { N_("coarse"  ), dt_action_effect_equalizer },
+      { N_("fine"    ), dt_action_effect_equalizer },
+      { N_("finer"   ), dt_action_effect_equalizer },
+      { N_("finest"  ), dt_action_effect_equalizer },
+      { } };
+
+static float _action_process_equalizer(gpointer target, dt_action_element_t element, dt_action_effect_t effect, float move_size)
+{
+  dt_iop_module_t *self = g_object_get_data(G_OBJECT(target), "iop-instance");
+  dt_iop_atrous_gui_data_t *c = (dt_iop_atrous_gui_data_t *)self->gui_data;
+  dt_iop_atrous_params_t *p = (dt_iop_atrous_params_t *)self->params;
+  dt_iop_atrous_params_t *d = (dt_iop_atrous_params_t *)self->default_params;
+
+  const int node = element - 1;
+  const int ch1 = c->channel;
+  const int ch2 = ch1 == atrous_L ? atrous_Lt
+                : ch1 == atrous_c ? atrous_ct
+                : ch1;
+
+  if(DT_PERFORM_ACTION(move_size))
+  {
+    gchar *toast = NULL;
+
+    if(element)
+    {
+      switch(effect)
+      {
+      case DT_ACTION_EFFECT_ATROUS_RESET:
+        p->y[ch1][node] = d->y[ch1][node];
+        p->y[ch2][node] = d->y[ch2][node];
+
+        toast = g_strdup_printf("%s, %s", _action_elements_equalizer[element].name, "reset");
+        break;
+      case DT_ACTION_EFFECT_REDUCE:
+        move_size *= -1;
+      case DT_ACTION_EFFECT_BOOST:
+        get_params(p, ch1, p->x[ch1][node], p->y[ch1][node] + move_size / 100, c->mouse_radius);
+
+        toast = g_strdup_printf("%s, %s %+.2f", _action_elements_equalizer[element].name,
+                                ch1 == atrous_s ? _("sharpness") : _("boost"), p->y[ch1][node] * 2. - 1.);
+        break;
+      case DT_ACTION_EFFECT_LOWER:
+        move_size *= -1;
+      case DT_ACTION_EFFECT_RAISE:
+        get_params(p, ch2, p->x[ch2][node], p->y[ch2][node] + move_size / 100, c->mouse_radius);
+
+        toast = g_strdup_printf("%s, %s %.2f", _action_elements_equalizer[element].name,
+                                _("threshold"), p->y[ch2][node]);
+        break;
+      case DT_ACTION_EFFECT_LEFT:
+        move_size *= -1;
+      case DT_ACTION_EFFECT_RIGHT:
+        if(element > 1 && element < BANDS)
+        {
+          const float minx = p->x[ch1][node - 1] + 0.001f;
+          const float maxx = p->x[ch1][node + 1] - 0.001f;
+          p->x[ch1][node] = p->x[ch2][node]
+            = fminf(maxx, fmaxf(minx, p->x[ch1][node] + move_size * (maxx - minx) / 100));
+        }
+
+        toast = g_strdup_printf("%s, %s %+.2f", _action_elements_equalizer[element].name,
+                                _("x"), p->x[ch1][node]);
+        break;
+      default:
+        dt_print(DT_DEBUG_ALWAYS, "[_action_process_equalizer] unknown shortcut effect (%d) for contrast equalizer node\n", effect);
+        break;
+      }
+
+      dt_dev_add_history_item_target(darktable.develop, self, TRUE, target + ch1);
+    }
+    else // radius
+    {
+      float bottop = -1e6;
+      switch(effect)
+      {
+      case DT_ACTION_EFFECT_RESET:
+        c->mouse_radius = 1.0 / BANDS;
+        break;
+      case DT_ACTION_EFFECT_BOTTOM:
+        bottop *= -1;
+      case DT_ACTION_EFFECT_TOP:
+        move_size = bottop;
+      case DT_ACTION_EFFECT_DOWN:
+        move_size *= -1;
+      case DT_ACTION_EFFECT_UP:
+        c->mouse_radius = CLAMP(c->mouse_radius * (1.0 + 0.1 * move_size), 0.25 / BANDS, 1.0);
+        break;
+      default:
+        dt_print(DT_DEBUG_ALWAYS, "[_action_process_equalizer] unknown shortcut effect (%d) for contrast equalizer radius\n", effect);
+        break;
+      }
+
+      toast = g_strdup_printf("%s %+.2f", _action_elements_equalizer[element].name, c->mouse_radius);
+    }
+    dt_action_widget_toast(DT_ACTION(self), target, toast);
+    g_free(toast);
+
+    gtk_widget_queue_draw(self->widget);
+  }
+
+  return element ? effect >= DT_ACTION_EFFECT_RIGHT ? p->x[ch1][node] :
+                   effect >= DT_ACTION_EFFECT_RAISE ? p->y[ch2][node] + DT_VALUE_PATTERN_PERCENTAGE :
+                   effect >= DT_ACTION_EFFECT_BOOST ? p->y[ch1][node] + DT_VALUE_PATTERN_PLUS_MINUS :
+                   p->y[ch1][node] != d->y[ch1][node] || p->y[ch2][node] != d->y[ch2][node]
+                 : c->mouse_radius + DT_VALUE_PATTERN_PERCENTAGE;
+}
+
+static const dt_shortcut_fallback_t _action_fallbacks_equalizer[]
+  = { { .mods = GDK_SHIFT_MASK,   .effect = DT_ACTION_EFFECT_RAISE },
+      { .mods = GDK_CONTROL_MASK, .effect = DT_ACTION_EFFECT_RIGHT },
+      { } };
+
+const dt_action_def_t _action_def_equalizer
+  = { N_("contrast equalizer"),
+      _action_process_equalizer,
+      _action_elements_equalizer,
+      _action_fallbacks_equalizer };
 
 void gui_init(struct dt_iop_module_t *self)
 {
@@ -1578,7 +1654,6 @@ void gui_init(struct dt_iop_module_t *self)
     (void)dt_draw_curve_add_point(c->minmax_curve, p->x[ch][k], p->y[ch][k]);
   c->mouse_x = c->mouse_y = c->mouse_pick = -1.0;
   c->dragging = 0;
-  self->timeout_handle = 0;
   c->x_move = -1;
   c->mouse_radius = 1.0 / BANDS;
   c->in_curve = FALSE;
@@ -1597,22 +1672,17 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->channel_tabs), FALSE, FALSE, 0);
 
   // graph
-  const float aspect = dt_conf_get_int("plugins/darkroom/atrous/aspect_percent") / 100.0;
-  c->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(aspect));
+  c->area = GTK_DRAWING_AREA(dt_ui_resize_wrap(NULL, 0, "plugins/darkroom/atrous/aspect_percent"));
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(c->area), TRUE, TRUE, 0);
 
-  gtk_widget_add_events(GTK_WIDGET(c->area),
-                        GDK_POINTER_MOTION_MASK
-                        | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
-                        | GDK_LEAVE_NOTIFY_MASK | GDK_ENTER_NOTIFY_MASK
-                        | darktable.gui->scroll_mask);
-
+  g_object_set_data(G_OBJECT(c->area), "iop-instance", self);
+  dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(c->area), &_action_def_equalizer);
   g_signal_connect(G_OBJECT(c->area), "draw", G_CALLBACK(area_draw), self);
   g_signal_connect(G_OBJECT(c->area), "button-press-event", G_CALLBACK(area_button_press), self);
   g_signal_connect(G_OBJECT(c->area), "button-release-event", G_CALLBACK(area_button_release), self);
   g_signal_connect(G_OBJECT(c->area), "motion-notify-event", G_CALLBACK(area_motion_notify), self);
-  g_signal_connect(G_OBJECT(c->area), "leave-notify-event", G_CALLBACK(area_leave_notify), self);
-  g_signal_connect(G_OBJECT(c->area), "enter-notify-event", G_CALLBACK(area_enter_notify), self);
+  g_signal_connect(G_OBJECT(c->area), "leave-notify-event", G_CALLBACK(area_enter_leave_notify), self);
+  g_signal_connect(G_OBJECT(c->area), "enter-notify-event", G_CALLBACK(area_enter_leave_notify), self);
   g_signal_connect(G_OBJECT(c->area), "scroll-event", G_CALLBACK(area_scrolled), self);
 
   // mix slider
@@ -1626,11 +1696,13 @@ void gui_cleanup(struct dt_iop_module_t *self)
   dt_iop_atrous_gui_data_t *c = (dt_iop_atrous_gui_data_t *)self->gui_data;
   dt_conf_set_int("plugins/darkroom/atrous/gui_channel", c->channel);
   dt_draw_curve_destroy(c->minmax_curve);
-  dt_iop_cancel_history_update(self);
 
   IOP_GUI_FREE;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

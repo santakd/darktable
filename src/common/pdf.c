@@ -81,7 +81,7 @@ int dt_pdf_parse_length(const char *str, float *length)
   }
 
   // we don't want NAN, INF or parse errors (== 0.0)
-  if(!isnormal(*length))
+  if(!dt_isnormal(*length))
     goto end;
 
   SKIP_SPACES(endptr);
@@ -131,7 +131,7 @@ int dt_pdf_parse_paper_size(const char *str, float *width, float *height)
 
   *width =  g_ascii_strtod(nptr, &endptr);
 
-  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !isnormal(*width))
+  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !dt_isnormal(*width))
     goto end;
 
   nptr = endptr;
@@ -163,7 +163,7 @@ int dt_pdf_parse_paper_size(const char *str, float *width, float *height)
 
   *height =  g_ascii_strtod(nptr, &endptr);
 
-  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !isnormal(*height))
+  if(endptr == NULL || *endptr == '\0' || errno == ERANGE || !dt_isnormal(*height))
     goto end;
 
   nptr = endptr;
@@ -301,7 +301,6 @@ static size_t _pdf_write_stream(dt_pdf_t *pdf, dt_pdf_stream_encoder_t encoder, 
       stream_size = _pdf_stream_encoder_Flate(pdf, data, len);
       break;
   }
-  pdf->bytes_written += stream_size;
   return stream_size;
 }
 
@@ -309,7 +308,7 @@ int dt_pdf_add_icc(dt_pdf_t *pdf, const char *filename)
 {
   size_t len;
   unsigned char *data = (unsigned char *)dt_read_file(filename, &len);
-  if (data)
+  if(data)
   {
     int icc_id = dt_pdf_add_icc_from_data(pdf, data, len);
     free(data);
@@ -939,6 +938,9 @@ int main(int argc, char *argv[])
 
 #endif // STANDALONE
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

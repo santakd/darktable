@@ -6,8 +6,7 @@ require 'json'
 class CameraSupportState
   SOURCE_FILES={
     :cameras => "src/external/rawspeed/data/cameras.xml",
-    :coeffs => "src/external/adobe_coeff.c",
-    :wbpresets => "src/external/wb_presets.c",
+    :wbpresets => "data/wb_presets.json",
     :colormatrices => "src/common/colormatrices.c",
     :noiseprofiles => "data/noiseprofiles.json",
   }
@@ -140,18 +139,12 @@ class CameraSupportState
     end
     @rawspeed_cameras = @rawspeed_cameras.keys
 
-    @coeffs_cameras = {}
-    @sources[:coeffs].each do |line|
-      if line[0..4] == "    {"
-        @coeffs_cameras[line.split('"')[1]] = 0
-      end
-    end
-
     @presets_cameras = {}
-    @sources[:wbpresets].each do |line|
-      if line[0..2] == "  {"
-        lineparts = line.split('"')
-        @presets_cameras["#{lineparts[1]} #{lineparts[3]}"] = 0
+    JSON.parse(@sources[:wbpresets].read)['wb_presets'].each do |mak|
+      maker = mak['maker']
+      mak['models'].each do |mod|
+        model = mod['model']
+        @presets_cameras["#{maker} #{model}"] = 0
       end
     end
 
@@ -212,9 +205,8 @@ class CameraSupportState
   end
 
   def default_listing(verbose_mode, quiet_mode)
-    puts "Found #{@rawspeed_cameras.size} cameras #{@coeffs_cameras.size} adobe_coeffs #{@presets_cameras.size} wb_coeffs #{@colormatrices_cameras.size} colormatrices #{@noiseprofiles_cameras.size} noise profiles #{@samples_cameras.size} samples"
+    puts "Found #{@rawspeed_cameras.size} cameras #{@presets_cameras.size} wb_coeffs #{@colormatrices_cameras.size} colormatrices #{@noiseprofiles_cameras.size} noise profiles #{@samples_cameras.size} samples"
     rawspeed_coeffs_cameras = @rawspeed_cameras.select{|id| !@rawspeed_dngs[id]}
-    compare_lists("adobe_coeffs", @rawspeed_cameras, @coeffs_cameras, !quiet_mode, verbose_mode)
     compare_lists("wb_presets", @rawspeed_cameras, @presets_cameras, verbose_mode, !quiet_mode)
     compare_lists("colormatrices", @rawspeed_cameras, @colormatrices_cameras, verbose_mode, !quiet_mode)
     compare_lists("noiseprofiles", @rawspeed_cameras, @noiseprofiles_cameras, verbose_mode, !quiet_mode)

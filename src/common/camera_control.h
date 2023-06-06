@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #pragma once
 
 #include "common/darktable.h"
+#include "common/image.h"
 
 #include <glib.h>
 
@@ -138,8 +139,8 @@ typedef struct dt_camera_unused_t
 */
 typedef enum dt_camctl_status_t
 {
-  /** Camera control is busy, operations will block . \remarks Technically this means that the
-     dt_camctl_t.mutex is locked*/
+  /** Camera control is busy, operations will block . \remarks
+     Technically this means that the dt_camctl_t.mutex is locked*/
   CAMERA_CONTROL_BUSY,
   /** Camera control is available. \remarks dt_camctl_t.mutex is freed */
   CAMERA_CONTROL_AVAILABLE
@@ -153,9 +154,10 @@ typedef enum dt_camera_error_t
 {
   /** Locking camera failed. \remarks This means that camera control is busy and locking failed. */
   CAMERA_LOCK_FAILED,
-  /**  Camera connection is broken and unusable.
-  \remarks Beyond this message references to dt_camera_t pointer is invalid, which means that the host
-  application should remove all references of camera pointer and disallow any operations onto it.
+  /**  Camera connection is broken and unusable.  \remarks Beyond this
+  message references to dt_camera_t pointer is invalid, which means
+  that the host application should remove all references of camera
+  pointer and disallow any operations onto it.
    */
   CAMERA_CONNECTION_BROKEN
 } dt_camera_error_t;
@@ -197,37 +199,56 @@ typedef struct dt_camctl_t
 typedef struct dt_camctl_listener_t
 {
   void *data;
-  /** Invoked when a image is downloaded while in tethered mode or by import. \see dt_camctl_status_t */
+  /** Invoked when a image is downloaded while in tethered mode or by
+      import. \see dt_camctl_status_t */
   void (*control_status)(dt_camctl_status_t status, void *data);
 
-  /** Invoked before images are fetched from camera and when tethered capture fetching an image. \note That
-   * only one listener should implement this at time... */
-  const char *(*request_image_path)(const dt_camera_t *camera, time_t *exif_time, void *data);
+  /** Invoked before images are fetched from camera and when tethered
+   * capture fetching an image. \note That only one listener should
+   * implement this at time... */
+  const char *(*request_image_path)(const dt_camera_t *camera,
+                                    const dt_image_basic_exif_t *basic_exif,
+                                    void *data);
 
-  /** Invoked before images are fetched from camera and when tethered capture fetching an image. \note That
-   * only one listener should implement this at time... */
-  const char *(*request_image_filename)(const dt_camera_t *camera, const char *filename, time_t *exif_time,
+  /** Invoked before images are fetched from camera and when tethered
+   * capture fetching an image. \note That only one listener should
+   * implement this at time... */
+  const char *(*request_image_filename)(const dt_camera_t *camera,
+                                        const char *filename,
+                                        const dt_image_basic_exif_t *basic_exif,
                                         void *data);
 
   /** Invoked when a image is downloaded while in tethered mode or by import */
-  void (*image_downloaded)(const dt_camera_t *camera, const char *filename, void *data);
+  void (*image_downloaded)(const dt_camera_t *camera,
+                           const char *in_path,
+                           const char *in_filename,
+                           const char *filename,
+                           void *data);
 
-  /** Invoked when a image is found on storage.. such as from dt_camctl_get_previews(), if 0 is returned the
-   * recurse is stopped.. */
-  int (*camera_storage_image_filename)(const dt_camera_t *camera, const char *filename, CameraFile *preview,
+  /** Invoked when a image is found on storage.. such as from
+   * dt_camctl_get_previews(), if 0 is returned the recurse is
+   * stopped.. */
+  int (*camera_storage_image_filename)(const dt_camera_t *camera,
+                                       const char *filename,
+                                       CameraFile *preview,
                                        void *data);
 
   /** Invoked when a value of a property is changed. */
-  void (*camera_property_value_changed)(const dt_camera_t *camera, const char *name, const char *value,
+  void (*camera_property_value_changed)(const dt_camera_t *camera,
+                                        const char *name,
+                                        const char *value,
                                         void *data);
   /** Invoked when accessibility of a property is changed. */
-  void (*camera_property_accessibility_changed)(const dt_camera_t *camera, const char *name,
-                                                gboolean read_only, void *data);
+  void (*camera_property_accessibility_changed)(const dt_camera_t *camera,
+                                                const char *name,
+                                                gboolean read_only,
+                                                void *data);
 
   /** Invoked from dt_camctl_detect_cameras() when a new camera is connected */
   void (*camera_connected)(const dt_camera_t *camera, void *data);
-  /** Invoked from dt_camctl_detect_cameras() when a new camera is disconnected, or when connection is broken
-   * and camera is unusable */
+  /** Invoked from dt_camctl_detect_cameras() when a new camera is
+   * disconnected, or when connection is broken and camera is
+   * unusable */
   void (*camera_disconnected)(const dt_camera_t *camera, void *data);
   /** Invoked when a error occurred \see dt_camera_error_t */
   void (*camera_error)(const dt_camera_t *camera, dt_camera_error_t error, void *data);
@@ -241,6 +262,15 @@ typedef enum dt_camera_preview_flags_t
   /**Get an image preview. */
   CAMCTL_IMAGE_PREVIEW_DATA = 1,
 } dt_camera_preview_flags_t;
+
+/** camera file info */
+typedef struct dt_camera_files_t
+{
+  /** file name */
+  char *filename;
+  /** timestamp */
+  time_t timestamp;
+} dt_camera_files_t;
 
 /** gphoto2 device updating function for thread */
 void *dt_update_cameras_thread(void *ptr);
@@ -264,6 +294,9 @@ int dt_camctl_can_enter_tether_mode(const dt_camctl_t *c, const dt_camera_t *cam
 void dt_camctl_tether_mode(const dt_camctl_t *c, const dt_camera_t *cam, gboolean enable);
 /** Imports the images in list from specified camera */
 void dt_camctl_import(const dt_camctl_t *c, const dt_camera_t *cam, GList *images);
+/** return the timestamp for file from camera CAUTION camera mutex already own*/
+time_t dt_camctl_get_image_file_timestamp(const dt_camctl_t *c, const char *in_path,
+                                          const char *in_filename);
 /** return the list of images from camera */
 GList *dt_camctl_get_images_list(const dt_camctl_t *c, dt_camera_t *cam);
 /** return the thumbnail of a camera image */
@@ -278,41 +311,63 @@ void dt_camctl_camera_stop_live_view(const dt_camctl_t *c);
 const char *dt_camctl_camera_get_model(const dt_camctl_t *c, const dt_camera_t *cam);
 
 /** Set a property value \param cam Pointer to dt_camera_t if NULL the camctl->active_camera is used. */
-void dt_camctl_camera_set_property_string(const dt_camctl_t *c, const dt_camera_t *cam,
-                                          const char *property_name, const char *value);
-void dt_camctl_camera_set_property_toggle(const dt_camctl_t *c, const dt_camera_t *cam,
+void dt_camctl_camera_set_property_string(const dt_camctl_t *c,
+                                          const dt_camera_t *cam,
+                                          const char *property_name,
+                                          const char *value);
+void dt_camctl_camera_set_property_toggle(const dt_camctl_t *c,
+                                          const dt_camera_t *cam,
                                           const char *property_name);
-void dt_camctl_camera_set_property_choice(const dt_camctl_t *c, const dt_camera_t *cam,
-                                          const char *property_name, const int value);
-void dt_camctl_camera_set_property_int(const dt_camctl_t *c, const dt_camera_t *cam,
-                                       const char *property_name, const int value);
-void dt_camctl_camera_set_property_float(const dt_camctl_t *c, const dt_camera_t *cam,
-                                       const char *property_name, const float value);
+void dt_camctl_camera_set_property_choice(const dt_camctl_t *c,
+                                          const dt_camera_t *cam,
+                                          const char *property_name,
+                                          const int value);
+void dt_camctl_camera_set_property_int(const dt_camctl_t *c,
+                                       const dt_camera_t *cam,
+                                       const char *property_name,
+                                       const int value);
+void dt_camctl_camera_set_property_float(const dt_camctl_t *c,
+                                         const dt_camera_t *cam,
+                                         const char *property_name,
+                                         const float value);
 /** Get a property value from cached configuration. \param cam Pointer to dt_camera_t if NULL the
  * camctl->active_camera is used. */
-const char *dt_camctl_camera_get_property(const dt_camctl_t *c, const dt_camera_t *cam,
+const char *dt_camctl_camera_get_property(const dt_camctl_t *c,
+                                          const dt_camera_t *cam,
                                           const char *property_name);
 /** Check if property exists. */
-int dt_camctl_camera_property_exists(const dt_camctl_t *c, const dt_camera_t *cam, const char *property_name);
+int dt_camctl_camera_property_exists(const dt_camctl_t *c,
+                                     const dt_camera_t *cam,
+                                     const char *property_name);
 
 /**
  * @param cam the camera to check property type for
  * @param property_name the property check type for
  * @return the type of camera widget, NULL on failure
  */
-int dt_camctl_camera_get_property_type(const dt_camctl_t *c, const dt_camera_t *cam, const char *property_name, CameraWidgetType *widget_type);
+int dt_camctl_camera_get_property_type(const dt_camctl_t *c,
+                                       const dt_camera_t *cam,
+                                       const char *property_name,
+                                       CameraWidgetType *widget_type);
 
 /** Get first choice available for named property. */
-const char *dt_camctl_camera_property_get_first_choice(const dt_camctl_t *c, const dt_camera_t *cam,
+const char *dt_camctl_camera_property_get_first_choice(const dt_camctl_t *c,
+                                                       const dt_camera_t *cam,
                                                        const char *property_name);
 /** Get next choice available for named property. */
-const char *dt_camctl_camera_property_get_next_choice(const dt_camctl_t *c, const dt_camera_t *cam,
+const char *dt_camctl_camera_property_get_next_choice(const dt_camctl_t *c,
+                                                      const dt_camera_t *cam,
                                                       const char *property_name);
 
 /** build a popup menu with all properties available */
-void dt_camctl_camera_build_property_menu(const dt_camctl_t *c, const dt_camera_t *cam, GtkMenu **menu,
-                                          GCallback item_activate, gpointer user_data);
+void dt_camctl_camera_build_property_menu(const dt_camctl_t *c,
+                                          const dt_camera_t *cam,
+                                          GtkMenu **menu,
+                                          GCallback item_activate,
+                                          gpointer user_data);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

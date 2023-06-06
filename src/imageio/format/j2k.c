@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2021 darktable developers.
+    Copyright (C) 2012-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -53,9 +53,9 @@
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
 #include "common/exif.h"
-#include "common/imageio.h"
-#include "common/imageio_module.h"
 #include "control/conf.h"
+#include "imageio/imageio_common.h"
+#include "imageio/imageio_module.h"
 #include "imageio/format/imageio_format_api.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,10 +220,10 @@ static void cinema_setup_encoder(opj_cparameters_t *parameters, opj_image_t *ima
       }
       if(!((image->comps[0].w == 2048) | (image->comps[0].h == 1080)))
       {
-        fprintf(stdout,
-                "Image coordinates %d x %d is not 2K compliant.\nJPEG Digital Cinema Profile-3 "
-                "(2K profile) compliance requires that at least one of coordinates match 2048 x 1080\n",
-                image->comps[0].w, image->comps[0].h);
+        dt_print(DT_DEBUG_ALWAYS,
+                 "Image coordinates %d x %d is not 2K compliant.\nJPEG Digital Cinema Profile-3 "
+                 "(2K profile) compliance requires that at least one of coordinates match 2048 x 1080\n",
+                 image->comps[0].w, image->comps[0].h);
         parameters->cp_rsiz = OPJ_STD_RSIZ;
       }
       break;
@@ -240,10 +240,10 @@ static void cinema_setup_encoder(opj_cparameters_t *parameters, opj_image_t *ima
       }
       if(!((image->comps[0].w == 4096) | (image->comps[0].h == 2160)))
       {
-        fprintf(stdout,
-                "Image coordinates %d x %d is not 4K compliant.\nJPEG Digital Cinema Profile-4"
-                "(4K profile) compliance requires that at least one of coordinates match 4096 x 2160\n",
-                image->comps[0].w, image->comps[0].h);
+        dt_print(DT_DEBUG_ALWAYS,
+                 "Image coordinates %d x %d is not 4K compliant.\nJPEG Digital Cinema Profile-4 "
+                 "(4K profile) compliance requires that at least one of coordinates match 4096 x 2160\n",
+                 image->comps[0].w, image->comps[0].h);
         parameters->cp_rsiz = OPJ_STD_RSIZ;
       }
       parameters->numpocs = initialise_4K_poc(parameters->POC, parameters->numresolution);
@@ -320,9 +320,10 @@ static void cinema_setup_encoder(opj_cparameters_t *parameters, opj_image_t *ima
 
 int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const void *in_tmp,
                 dt_colorspaces_color_profile_type_t over_type, const char *over_filename,
-                void *exif, int exif_len, int imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
+                void *exif, int exif_len, dt_imgid_t imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
                 const gboolean export_masks)
 {
+  int rc = 1;
   const float *in = (const float *)in_tmp;
   dt_imageio_j2k_t *j2k = (dt_imageio_j2k_t *)j2k_tmp;
   opj_cparameters_t parameters; /* compression parameters */
@@ -356,7 +357,7 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
   }
 
   /* Create comment for codestream */
-  parameters.cp_comment = g_strdup_printf("Created by %s", darktable_package_string);
+  parameters.cp_comment = g_strdup_printf("Created with %s", darktable_package_string);
 
   /*Converting the image to a format suitable for encoding*/
   {
@@ -372,7 +373,6 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     for(int i = 0; i < numcomps; i++)
     {
       cmptparm[i].prec = prec;
-      cmptparm[i].bpp = prec;
       cmptparm[i].sgnd = 0;
       cmptparm[i].dx = subsampling_dx;
       cmptparm[i].dy = subsampling_dy;
@@ -382,9 +382,10 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     image = opj_image_create(numcomps, &cmptparm[0], OPJ_CLRSPC_SRGB);
     if(!image)
     {
-      fprintf(stderr, "Error: opj_image_create() failed\n");
+      dt_print(DT_DEBUG_ALWAYS, "Error: opj_image_create() failed\n");
       free(rates);
-      return 1;
+      rc = 0;
+      goto exit;
     }
 
     /* set image offset and reference grid */
@@ -416,7 +417,7 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
 //        }
 //        break;
 //      default:
-//        fprintf(stderr, "Error: this shouldn't happen, there is no bit depth of %d for jpeg 2000 images.\n",
+//        dt_print(DT_DEBUG_ALWAYS, "Error: this shouldn't happen, there is no bit depth of %d for jpeg 2000 images.\n",
 //                prec);
 //        free(rates);
 //        opj_image_destroy(image);
@@ -437,7 +438,6 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
 
   /* encode the destination image */
   /* ---------------------------- */
-  int rc = 1;
   OPJ_CODEC_FORMAT codec;
   if(parameters.cod_format == J2K_CFMT) /* J2K format output */
     codec = OPJ_CODEC_J2K;
@@ -465,8 +465,9 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
   {
     opj_destroy_codec(ccodec);
     opj_image_destroy(image);
-    fprintf(stderr, "failed to create output stream\n");
-    return 1;
+    dt_print(DT_DEBUG_ALWAYS, "failed to create output stream\n");
+    rc = 0;
+    goto exit;
   }
 
   if(!opj_start_compress(ccodec, image, cstream))
@@ -474,8 +475,9 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     opj_stream_destroy(cstream);
     opj_destroy_codec(ccodec);
     opj_image_destroy(image);
-    fprintf(stderr, "failed to encode image: opj_start_compress\n");
-    return 1;
+    dt_print(DT_DEBUG_ALWAYS, "failed to encode image: opj_start_compress\n");
+    rc = 0;
+    goto exit;
   }
 
   /* encode the image */
@@ -484,8 +486,9 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     opj_stream_destroy(cstream);
     opj_destroy_codec(ccodec);
     opj_image_destroy(image);
-    fprintf(stderr, "failed to encode image: opj_encode\n");
-    return 1;
+    dt_print(DT_DEBUG_ALWAYS, "failed to encode image: opj_encode\n");
+    rc = 0;
+    goto exit;
   }
 
   /* encode the image */
@@ -494,8 +497,9 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
     opj_stream_destroy(cstream);
     opj_destroy_codec(ccodec);
     opj_image_destroy(image);
-    fprintf(stderr, "failed to encode image: opj_end_compress\n");
-    return 1;
+    dt_print(DT_DEBUG_ALWAYS, "failed to encode image: opj_end_compress\n");
+    rc = 0;
+    goto exit;
   }
 
   opj_stream_destroy(cstream);
@@ -507,9 +511,11 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
   /* free image data */
   opj_image_destroy(image);
 
+exit:
   /* free user parameters structure */
   g_free(parameters.cp_comment);
   free(parameters.cp_matrice);
+  free(parameters.mct_data);
 
   return ((rc == 1) ? 0 : 1);
 }
@@ -558,7 +564,7 @@ void *legacy_params(dt_imageio_module_format_t *self, const void *const old_para
 void *get_params(dt_imageio_module_format_t *self)
 {
   dt_imageio_j2k_t *d = (dt_imageio_j2k_t *)calloc(1, sizeof(dt_imageio_j2k_t));
-  d->bpp = 16; // can be 8, 12 or 16
+  d->bpp = 12; // can be 8, 12 or 16
   d->format = dt_conf_get_int("plugins/imageio/format/j2k/format");
   d->preset = dt_conf_get_int("plugins/imageio/format/j2k/preset");
   d->quality = dt_conf_get_int("plugins/imageio/format/j2k/quality");
@@ -641,15 +647,12 @@ void gui_init(dt_imageio_module_format_t *self)
   const int preset_last = dt_conf_get_int("plugins/imageio/format/j2k/preset");
   const int quality_last = dt_conf_get_int("plugins/imageio/format/j2k/quality");
 
-  gui->format = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(gui->format, NULL, N_("format"));
-  dt_bauhaus_combobox_add(gui->format, _("J2K"));
-  dt_bauhaus_combobox_add(gui->format, _("jp2"));
-  dt_bauhaus_combobox_set(gui->format, format_last);
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(gui->format, self, NULL, N_("format"), NULL,
+                               format_last, format_changed, self,
+                               N_("j2k"), N_("jp2"));
   gtk_box_pack_start(GTK_BOX(self->widget), gui->format, TRUE, TRUE, 0);
-  g_signal_connect(G_OBJECT(gui->format), "value-changed", G_CALLBACK(format_changed), NULL);
 
-  gui->quality = dt_bauhaus_slider_new_with_range(NULL,
+  gui->quality = dt_bauhaus_slider_new_with_range((dt_iop_module_t*)self,
                                                   dt_confgen_get_int("plugins/imageio/format/j2k/quality", DT_MIN),
                                                   dt_confgen_get_int("plugins/imageio/format/j2k/quality", DT_MAX),
                                                   1,
@@ -661,15 +664,13 @@ void gui_init(dt_imageio_module_format_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(gui->quality), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(gui->quality), "value-changed", G_CALLBACK(quality_changed), NULL);
 
-  gui->preset = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(gui->preset, NULL, N_("DCP mode"));
-  dt_bauhaus_combobox_add(gui->preset, _("off"));
-  dt_bauhaus_combobox_add(gui->preset, _("Cinema2K, 24FPS"));
-  dt_bauhaus_combobox_add(gui->preset, _("Cinema2K, 48FPS"));
-  dt_bauhaus_combobox_add(gui->preset, _("Cinema4K, 24FPS"));
-  dt_bauhaus_combobox_set(gui->preset, preset_last);
+  DT_BAUHAUS_COMBOBOX_NEW_FULL(gui->preset, self, NULL, N_("DCP mode"), NULL,
+                               preset_last, preset_changed, self,
+                               N_("off"),
+                               N_("Cinema2K, 24FPS"),
+                               N_("Cinema2K, 48FPS"),
+                               N_("Cinema4K, 24FPS"));
   gtk_box_pack_start(GTK_BOX(self->widget), gui->preset, TRUE, TRUE, 0);
-  g_signal_connect(G_OBJECT(gui->preset), "value-changed", G_CALLBACK(preset_changed), NULL);
 
   // TODO: options for "off"
 }
@@ -696,6 +697,8 @@ int flags(dt_imageio_module_data_t *data)
   return ((j && j->format == JP2_CFMT) ? FORMAT_FLAGS_SUPPORT_XMP : 0);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

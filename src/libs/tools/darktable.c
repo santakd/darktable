@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -65,10 +65,9 @@ const char *name(dt_lib_module_t *self)
   return _("darktable");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  static const char *v[] = {"*", NULL};
-  return v;
+  return DT_VIEW_ALL;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -81,7 +80,7 @@ int expandable(dt_lib_module_t *self)
   return 0;
 }
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 1001;
 }
@@ -124,7 +123,7 @@ void gui_init(dt_lib_module_t *self)
     g_free(logo);
     if(cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
     {
-      fprintf(stderr, "warning: can't load darktable logo from PNG file `%s'\n", filename);
+      dt_print(DT_DEBUG_ALWAYS, "warning: can't load darktable logo from PNG file `%s'\n", filename);
       goto done;
     }
     const int png_width = cairo_image_surface_get_width(surface),
@@ -140,7 +139,7 @@ void gui_init(dt_lib_module_t *self)
         = dt_cairo_image_surface_create_for_data(d->image_buffer, CAIRO_FORMAT_ARGB32, width, height, stride);
     if(cairo_surface_status(d->image) != CAIRO_STATUS_SUCCESS)
     {
-      fprintf(stderr, "warning: can't load darktable logo from PNG file `%s'\n", filename);
+      dt_print(DT_DEBUG_ALWAYS, "warning: can't load darktable logo from PNG file `%s'\n", filename);
       free(d->image_buffer);
       d->image_buffer = NULL;
       cairo_surface_destroy(d->image);
@@ -254,7 +253,7 @@ static gboolean _lib_darktable_draw_callback(GtkWidget *widget, cairo_t *cr, gpo
   pango_layout_set_font_description(layout, font_desc);
   pango_layout_set_text(layout, darktable_package_version, -1);
   cairo_move_to(cr, d->image_width + DT_PIXEL_APPLY_DPI(4.0), DT_PIXEL_APPLY_DPI(32.0));
-  cairo_set_source_rgba(cr, tmpcolor->red, tmpcolor->green, tmpcolor->blue, 0.3);
+  cairo_set_source_rgba(cr, tmpcolor->red, tmpcolor->green, tmpcolor->blue, 0.7);
   pango_cairo_show_layout(cr, layout);
 
   /* cleanup */
@@ -276,7 +275,7 @@ static gboolean _lib_darktable_button_press_callback(GtkWidget *widget, GdkEvent
 static void _lib_darktable_show_about_dialog()
 {
   GtkWidget *dialog = gtk_about_dialog_new();
-  gtk_widget_set_name (dialog, "about_dialog");
+  gtk_widget_set_name (dialog, "about-dialog");
 #ifdef GDK_WINDOWING_QUARTZ
   dt_osx_disallow_fullscreen(dialog);
 #endif
@@ -311,6 +310,8 @@ static void _lib_darktable_show_about_dialog()
   gtk_dialog_run(GTK_DIALOG(dialog));
   gtk_widget_destroy(dialog);
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

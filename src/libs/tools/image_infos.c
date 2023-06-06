@@ -40,19 +40,15 @@ const char *name(dt_lib_module_t *self)
   return _("image infos");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
   /* we handle the hidden case here */
   const gboolean is_hidden =
     dt_conf_is_equal("plugins/darkroom/image_infos_position", "hidden");
   if(is_hidden)
-  {
-    static const char *vv[] = { NULL };
-    return vv;
-  }
-
-  static const char *v[] = { "darkroom", NULL };
-  return v;
+    return DT_VIEW_NONE;
+  else
+    return DT_VIEW_DARKROOM;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -75,7 +71,7 @@ int expandable(dt_lib_module_t *self)
   return 0;
 }
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 1500;
 }
@@ -85,8 +81,8 @@ void _lib_imageinfo_update_message(gpointer instance, dt_lib_module_t *self)
   dt_lib_imageinfo_t *d = (dt_lib_imageinfo_t *)self->data;
 
   // we grab the image
-  const int imgid = darktable.develop->image_storage.id;
-  if(imgid < 0) return;
+  const dt_imgid_t imgid = darktable.develop->image_storage.id;
+  if(!dt_is_valid_imgid(imgid)) return;
 
   // we compute the info line (we reuse the function used in export to disk)
   char input_dir[512] = { 0 };
@@ -167,6 +163,8 @@ void gui_cleanup(dt_lib_module_t *self)
 
 
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

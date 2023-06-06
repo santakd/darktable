@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  Copyright (C) 2011-2020 darktable developers.
+  Copyright (C) 2011-2023 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@
 #include "common/bilateralcl.h"
 #include "common/debug.h"
 #include "common/gaussian.h"
+#include "common/imagebuf.h"
 #include "common/math.h"
 #include "common/opencl.h"
 #include "control/control.h"
@@ -127,7 +128,7 @@ const char *name()
   return _("lowpass");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("isolate low frequencies in the image"),
                                       _("creative"),
@@ -146,13 +147,18 @@ int default_group()
   return IOP_GROUP_EFFECT | IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+int default_colorspace(dt_iop_module_t *self,
+                       dt_dev_pixelpipe_t *pipe,
+                       dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
-int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
-                  void *new_params, const int new_version)
+int legacy_params(dt_iop_module_t *self,
+                  const void *const old_params,
+                  const int old_version,
+                  void *new_params,
+                  const int new_version)
 {
   if(old_version == 1 && new_version == 4)
   {
@@ -201,13 +207,17 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self,
+               dt_dev_pixelpipe_iop_t *piece,
+               cl_mem dev_in,
+               cl_mem dev_out,
+               const dt_iop_roi_t *const roi_in,
+               const dt_iop_roi_t *const roi_out)
 {
   dt_iop_lowpass_data_t *d = (dt_iop_lowpass_data_t *)piece->data;
   dt_iop_lowpass_global_data_t *gd = (dt_iop_lowpass_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
 
   const int width = roi_in->width;
@@ -219,8 +229,6 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float saturation = d->saturation;
   const int order = d->order;
   const int unbound = d->unbound;
-
-  size_t sizes[3];
 
   cl_mem dev_cm = NULL;
   cl_mem dev_ccoeffs = NULL;
@@ -236,8 +244,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   if(unbound)
   {
-    for(int k = 0; k < 4; k++) Labmax[k] = INFINITY;
-    for(int k = 0; k < 4; k++) Labmin[k] = -INFINITY;
+    for(int k = 0; k < 4; k++) Labmax[k] = FLT_MAX;
+    for(int k = 0; k < 4; k++) Labmin[k] = -FLT_MAX;
   }
 
   if(d->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
@@ -287,21 +295,9 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   err = dt_opencl_enqueue_copy_image(devid, dev_out, dev_tmp, origin, origin, region);
   if(err != CL_SUCCESS) goto error;
 
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPWD(height);
-  sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 0, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 1, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 4, sizeof(float), (void *)&saturation);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 5, sizeof(cl_mem), (void *)&dev_cm);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 6, sizeof(cl_mem), (void *)&dev_ccoeffs);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 7, sizeof(cl_mem), (void *)&dev_lm);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 8, sizeof(cl_mem), (void *)&dev_lcoeffs);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_lowpass_mix, 9, sizeof(int), (void *)&unbound);
-
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_lowpass_mix, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_lowpass_mix, width, height,
+    CLARG(dev_tmp), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(saturation), CLARG(dev_cm),
+    CLARG(dev_ccoeffs), CLARG(dev_lm), CLARG(dev_lcoeffs), CLARG(unbound));
   if(err != CL_SUCCESS) goto error;
 
   dt_opencl_release_mem_object(dev_tmp);
@@ -321,13 +317,15 @@ error:
   dt_opencl_release_mem_object(dev_lm);
   dt_opencl_release_mem_object(dev_ccoeffs);
   dt_opencl_release_mem_object(dev_cm);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_lowpass] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_lowpass] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
 
-void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                     const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
+void tiling_callback(struct dt_iop_module_t *self,
+                     struct dt_dev_pixelpipe_iop_t *piece,
+                     const dt_iop_roi_t *roi_in,
+                     const dt_iop_roi_t *roi_out,
                      struct dt_develop_tiling_t *tiling)
 {
   dt_iop_lowpass_data_t *d = (dt_iop_lowpass_data_t *)piece->data;
@@ -366,36 +364,49 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   return;
 }
 
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void process(struct dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const ivoid,
+             void *const ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                        ivoid, ovoid, roi_in, roi_out))
+    return;
+
   dt_iop_lowpass_data_t *data = (dt_iop_lowpass_data_t *)piece->data;
-  float *in = (float *)ivoid;
-  float *out = (float *)ovoid;
+  const float *const restrict in = (float *)ivoid;
+  float *const out = (float *)ovoid;
 
-
-  const int width = roi_in->width;
-  const int height = roi_in->height;
-  const int ch = piece->colors;
+  const size_t width = roi_in->width;
+  const size_t height = roi_in->height;
 
   const float radius = fmax(0.1f, data->radius);
   const float sigma = radius * roi_in->scale / piece->iscale;
   const int order = data->order;
   const int unbound = data->unbound;
 
-  float Labmax[] = { 100.0f, 128.0f, 128.0f, 1.0f };
-  float Labmin[] = { 0.0f, -128.0f, -128.0f, 0.0f };
+  dt_aligned_pixel_t Labmax = { 100.0f, 128.0f, 128.0f, 1.0f };
+  dt_aligned_pixel_t Labmin = { 0.0f, -128.0f, -128.0f, 0.0f };
 
   if(unbound)
   {
-    for(int k = 0; k < 4; k++) Labmax[k] = INFINITY;
-    for(int k = 0; k < 4; k++) Labmin[k] = -INFINITY;
+    for_four_channels(c)
+    {
+      Labmax[c] = FLT_MAX;
+      Labmin[c] = -FLT_MAX;
+    }
   }
 
   if(data->lowpass_algo == LOWPASS_ALGO_GAUSSIAN)
   {
-    dt_gaussian_t *g = dt_gaussian_init(width, height, ch, Labmax, Labmin, sigma, order);
-    if(!g) return;
+    dt_gaussian_t *g = dt_gaussian_init(width, height, 4, Labmax, Labmin, sigma, order);
+    if(!g)
+    {
+      dt_iop_copy_image_roi(out, in, piece->colors, roi_in, roi_out, TRUE);
+      return;
+    }
     dt_gaussian_blur_4c(g, in, out);
     dt_gaussian_free(g);
   }
@@ -406,51 +417,45 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     const float detail = -1.0f; // we want the bilateral base layer
 
     dt_bilateral_t *b = dt_bilateral_init(width, height, sigma_s, sigma_r);
-    if(!b) return;
+    if(!b)
+    {
+      dt_iop_copy_image_roi(out, in, piece->colors, roi_in, roi_out, TRUE);
+      return;
+    }
     dt_bilateral_splat(b, in);
     dt_bilateral_blur(b);
     dt_bilateral_slice(b, in, out, detail);
     dt_bilateral_free(b);
   }
 
-  // some aliased pointers for compilers that don't yet understand operators on __m128
-  const float *const Labminf = (float *)&Labmin;
-  const float *const Labmaxf = (float *)&Labmax;
+  const size_t npixels = width * height;
+  const float saturation = data->saturation;
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, Labmaxf, Labminf, roi_out) \
-  shared(in, out, data) \
+  dt_omp_firstprivate(npixels, Labmax, Labmin, in, out, data, saturation) \
   schedule(static)
 #endif
-  for(size_t k = 0; k < (size_t)roi_out->width * roi_out->height; k++)
+  for(size_t k = 0; k < 4*npixels; k += 4)
   {
-    out[k * ch + 0] = (out[k * ch + 0] < 100.0f)
-                          ? data->ctable[CLAMP((int)(out[k * ch + 0] / 100.0f * 0x10000ul), 0, 0xffff)]
-                          : dt_iop_eval_exp(data->cunbounded_coeffs, out[k * ch + 0] / 100.0f);
-    out[k * ch + 0] = (out[k * ch + 0] < 100.0f)
-                          ? data->ltable[CLAMP((int)(out[k * ch + 0] / 100.0f * 0x10000ul), 0, 0xffff)]
-                          : dt_iop_eval_exp(data->lunbounded_coeffs, out[k * ch + 0] / 100.0f);
-    out[k * ch + 1] = CLAMPF(out[k * ch + 1] * data->saturation, Labminf[1],
-                             Labmaxf[1]); // will not clip in unbound case (see definition of Labmax/Labmin)
-    out[k * ch + 2]
-        = CLAMPF(out[k * ch + 2] * data->saturation, Labminf[2], Labmaxf[2]); //                         - " -
-    out[k * ch + 3] = in[k * ch + 3];
+    // apply contrast and brightness curves to L channel
+    out[k + 0] = (out[k + 0] < 100.0f)
+                      ? data->ctable[CLAMP((int)(out[k + 0] / 100.0f * 0x10000ul), 0, 0xffff)]
+                      : dt_iop_eval_exp(data->cunbounded_coeffs, out[k + 0] / 100.0f);
+    out[k + 0] = (out[k + 0] < 100.0f)
+                      ? data->ltable[CLAMP((int)(out[k + 0] / 100.0f * 0x10000ul), 0, 0xffff)]
+                      : dt_iop_eval_exp(data->lunbounded_coeffs, out[k + 0] / 100.0f);
+    // the following will not clip in unbound case (see definition of Labmax/Labmin)
+    out[k + 1] = CLAMPF(out[k + 1] * saturation, Labmin[1], Labmax[1]);
+    out[k + 2] = CLAMPF(out[k + 2] * saturation, Labmin[2], Labmax[2]);
+    // copy alpha channel to output
+    out[k + 3] = in[k + 3];
   }
 }
 
-#if 0 // gaussian order not user selectable
-static void
-order_changed (GtkComboBox *combo, gpointer user_data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
-  if(darktable.gui->reset) return;
-  dt_iop_lowpass_params_t *p = (dt_iop_lowpass_params_t *)self->params;
-  p->order = gtk_combo_box_get_active(combo);
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
-}
-#endif
-
-void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+void commit_params(struct dt_iop_module_t *self,
+                   dt_iop_params_t *p1,
+                   dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_lowpass_params_t *p = (dt_iop_lowpass_params_t *)p1;
@@ -465,7 +470,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 
 #ifdef HAVE_OPENCL
   if(d->lowpass_algo == LOWPASS_ALGO_BILATERAL)
-    piece->process_cl_ready = (piece->process_cl_ready && !(darktable.opencl->avoid_atomics));
+    piece->process_cl_ready = (piece->process_cl_ready && !dt_opencl_avoid_atomics(pipe->devid));
 #endif
 
 
@@ -482,16 +487,16 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
     const float boost = 5.0f;
     const float contrastm1sq = boost * (fabs(d->contrast) - 1.0f) * (fabs(d->contrast) - 1.0f);
     const float contrastscale = copysign(sqrtf(1.0f + contrastm1sq), d->contrast);
+    float *const ctable = d->ctable;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(contrastm1sq, contrastscale) \
-    shared(d) \
+    dt_omp_firstprivate(contrastm1sq, contrastscale, ctable)      \
     schedule(static)
 #endif
-    for(int k = 0; k < 0x10000; k++)
+    for(size_t k = 0; k < 0x10000; k++)
     {
-      float kx2m1 = 2.0f * (float)k / 0x10000 - 1.0f;
-      d->ctable[k] = 50.0f * (contrastscale * kx2m1 / sqrtf(1.0f + contrastm1sq * kx2m1 * kx2m1) + 1.0f);
+      const float kx2m1 = 2.0f * (float)k / 0x10000 - 1.0f;
+      ctable[k] = 50.0f * (contrastscale * kx2m1 / sqrtf(1.0f + contrastm1sq * kx2m1 * kx2m1) + 1.0f);
     }
   }
 
@@ -507,15 +512,15 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   // generate precomputed brightness curve
   const float gamma = (d->brightness >= 0.0f) ? 1.0f / (1.0f + d->brightness) : (1.0f - d->brightness);
 
+  float *const ltable = d->ltable;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(gamma) \
-  shared(d) \
+  dt_omp_firstprivate(gamma, ltable)          \
   schedule(static)
 #endif
-  for(int k = 0; k < 0x10000; k++)
+  for(size_t k = 0; k < 0x10000; k++)
   {
-    d->ltable[k] = 100.0f * powf((float)k / 0x10000, gamma);
+    ltable[k] = 100.0f * powf((float)k / 0x10000, gamma);
   }
 
   // now the extrapolation stuff for the brightness curve:
@@ -527,29 +532,21 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   dt_iop_estimate_exp(xl, yl, 4, d->lunbounded_coeffs);
 }
 
-void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void init_pipe(struct dt_iop_module_t *self,
+               dt_dev_pixelpipe_t *pipe,
+               dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_lowpass_data_t *d = (dt_iop_lowpass_data_t *)calloc(1, sizeof(dt_iop_lowpass_data_t));
   piece->data = (void *)d;
   for(int k = 0; k < 0x10000; k++) d->ctable[k] = d->ltable[k] = 100.0f * k / 0x10000; // identity
 }
 
-void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void cleanup_pipe(struct dt_iop_module_t *self,
+                  dt_dev_pixelpipe_t *pipe,
+                  dt_dev_pixelpipe_iop_t *piece)
 {
   free(piece->data);
   piece->data = NULL;
-}
-
-void gui_update(struct dt_iop_module_t *self)
-{
-  dt_iop_lowpass_gui_data_t *g = (dt_iop_lowpass_gui_data_t *)self->gui_data;
-  dt_iop_lowpass_params_t *p = (dt_iop_lowpass_params_t *)self->params;
-  dt_bauhaus_slider_set(g->radius, p->radius);
-  dt_bauhaus_combobox_set(g->lowpass_algo, p->lowpass_algo);
-  dt_bauhaus_slider_set(g->contrast, p->contrast);
-  dt_bauhaus_slider_set(g->brightness, p->brightness);
-  dt_bauhaus_slider_set(g->saturation, p->saturation);
-  // gtk_combo_box_set_active(g->order, p->order);
 }
 
 void init_global(dt_iop_module_so_t *module)
@@ -563,13 +560,13 @@ void init_global(dt_iop_module_so_t *module)
 
 void init_presets(dt_iop_module_so_t *self)
 {
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "BEGIN", NULL, NULL, NULL);
+  dt_database_start_transaction(darktable.db);
 
   dt_gui_presets_add_generic(_("local contrast mask"), self->op, self->version(),
                              &(dt_iop_lowpass_params_t){ 0, 50.0f, -1.0f, 0.0f, 0.0f, LOWPASS_ALGO_GAUSSIAN, 1 },
                              sizeof(dt_iop_lowpass_params_t), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "COMMIT", NULL, NULL, NULL);
+  dt_database_release_transaction(darktable.db);
 }
 
 void cleanup_global(dt_iop_module_so_t *module)
@@ -585,7 +582,6 @@ void gui_init(struct dt_iop_module_t *self)
   dt_iop_lowpass_gui_data_t *g = IOP_GUI_ALLOC(lowpass);
 
   g->radius = dt_bauhaus_slider_from_params(self, N_("radius"));
-  dt_bauhaus_slider_set_step(g->radius, 0.1);
   g->lowpass_algo = dt_bauhaus_combobox_from_params(self, "lowpass_algo");
   g->contrast = dt_bauhaus_slider_from_params(self, N_("contrast"));
   g->brightness = dt_bauhaus_slider_from_params(self, N_("brightness"));
@@ -596,13 +592,11 @@ void gui_init(struct dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->brightness, _("brightness adjustment of lowpass filter"));
   gtk_widget_set_tooltip_text(g->saturation, _("color saturation of lowpass filter"));
   gtk_widget_set_tooltip_text(g->lowpass_algo, _("which filter to use for blurring"));
-
-#if 0 // gaussian order not user selectable
-  g_signal_connect (G_OBJECT (g->order), "changed",
-                    G_CALLBACK (order_changed), self);
-#endif
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

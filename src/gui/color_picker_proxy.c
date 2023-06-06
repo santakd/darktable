@@ -91,7 +91,7 @@ static gboolean _record_point_area(dt_iop_color_picker_t *self)
     else if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
       for(int k = 0; k < 4; k++)
       {
-        if (self->pick_box[k] != sample->box[k])
+        if(self->pick_box[k] != sample->box[k])
         {
           self->pick_box[k] = sample->box[k];
           changed = TRUE;
@@ -133,12 +133,12 @@ void dt_iop_color_picker_reset(dt_iop_module_t *module, gboolean keep)
 }
 
 static void _init_picker(dt_iop_color_picker_t *picker, dt_iop_module_t *module,
-                         dt_iop_color_picker_kind_t kind, GtkWidget *button)
+                         dt_iop_color_picker_flags_t flags, GtkWidget *button)
 {
   // module is NULL if primary colorpicker
   picker->module     = module;
-  picker->kind       = kind;
-  picker->picker_cst = module ? module->default_colorspace(module, NULL, NULL) : iop_cs_NONE;
+  picker->flags      = flags;
+  picker->picker_cst = module ? module->default_colorspace(module, NULL, NULL) : IOP_CS_NONE;
   picker->colorpick  = button;
   picker->changed    = FALSE;
 
@@ -171,28 +171,37 @@ static gboolean _color_picker_callback_button_press(GtkWidget *button, GdkEventB
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(module->off), TRUE);
 
   const GdkModifierType state = e != NULL ? e->state : dt_key_modifier_state();
-  const gboolean ctrl_key_pressed = dt_modifier_is(state, GDK_CONTROL_MASK) || (e != NULL && e->button == 3);
-  dt_iop_color_picker_kind_t kind = self->kind;
+  const gboolean to_area_mode =
+    dt_modifier_is(state, GDK_CONTROL_MASK) || (e != NULL && e->button == 3);
+  dt_iop_color_picker_flags_t flags = self->flags;
 
-  if (prior_picker != self || (kind == DT_COLOR_PICKER_POINT_AREA &&
-      (ctrl_key_pressed ^ (darktable.lib->proxy.colorpicker.primary_sample->size == DT_LIB_COLORPICKER_SIZE_BOX))))
+  // setup if a new picker or switching between point/area mode
+  if(prior_picker != self
+     || (((flags & DT_COLOR_PICKER_POINT_AREA) == DT_COLOR_PICKER_POINT_AREA)
+         && (to_area_mode !=
+             (darktable.lib->proxy.colorpicker.primary_sample->size ==
+              DT_LIB_COLORPICKER_SIZE_BOX))))
   {
     darktable.lib->proxy.colorpicker.picker_proxy = self;
 
     if(module)
       module->request_color_pick = DT_REQUEST_COLORPICK_MODULE;
 
+    // set point or area mode without stomping on any other flags
+    dt_iop_color_picker_flags_t kind = self->flags & DT_COLOR_PICKER_POINT_AREA;
     if(kind == DT_COLOR_PICKER_POINT_AREA)
-    {
-      kind = ctrl_key_pressed ? DT_COLOR_PICKER_AREA : DT_COLOR_PICKER_POINT;
-    }
+      kind = to_area_mode ? DT_COLOR_PICKER_AREA : DT_COLOR_PICKER_POINT;
     // pull picker's last recorded positions
-    if(kind == DT_COLOR_PICKER_AREA)
+    if(kind & DT_COLOR_PICKER_AREA)
       dt_lib_colorpicker_set_box_area(darktable.lib, self->pick_box);
-    else if(kind == DT_COLOR_PICKER_POINT)
+    else if(kind & DT_COLOR_PICKER_POINT)
       dt_lib_colorpicker_set_point(darktable.lib, self->pick_pos);
     else
       dt_unreachable_codepath();
+
+    dt_lib_colorpicker_setup(darktable.lib,
+                             flags & DT_COLOR_PICKER_DENOISE,
+                             flags & DT_COLOR_PICKER_IO);
 
     // important to have set up state before toggling button and
     // triggering more callbacks
@@ -259,7 +268,7 @@ dt_iop_colorspace_type_t dt_iop_color_picker_get_active_cst(dt_iop_module_t *mod
   if(picker && picker->module == module)
     return picker->picker_cst;
   else
-    return iop_cs_NONE;
+    return IOP_CS_NONE;
 }
 
 static void _iop_color_picker_pickerdata_ready_callback(gpointer instance, dt_iop_module_t *module, dt_dev_pixelpipe_iop_t *piece,
@@ -274,7 +283,7 @@ static void _iop_color_picker_pickerdata_ready_callback(gpointer instance, dt_io
   // to work properly. This will force colorin to be run and it
   // will set the work_profile if needed.
   piece->pipe->changed |= DT_DEV_PIPE_REMOVE;
-  piece->pipe->cache_obsolete = 1;
+  piece->pipe->cache_obsolete = TRUE;
 
   // iops only need new picker data if the pointer has moved
   if(_record_point_area(picker))
@@ -288,20 +297,29 @@ static void _iop_color_picker_pickerdata_ready_callback(gpointer instance, dt_io
 static void _color_picker_proxy_preview_pipe_callback(gpointer instance, gpointer user_data)
 {
   dt_iop_color_picker_t *picker = darktable.lib->proxy.colorpicker.picker_proxy;
-  if(!picker) return;
+  if(picker)
+  {
+    // lib picker is active? record new picker area, but we don't care
+    // about changed value as regardless we want to handle the new
+    // sample
+    if(!picker->module)
+      _record_point_area(picker);
+  }
 
-  // lib picker is active? record new picker area, but we don't care
-  // about changed value as regardless we want to handle the new
-  // sample
-  if(!picker->module)
-    _record_point_area(picker);
-
-  // pixelpipe may have run because sample area changed or an iop,
-  // regardless we want to the colorpicker lib, which also can
-  // provide swatch color for a point sample overlay
-  darktable.lib->proxy.colorpicker.update_panel(darktable.lib->proxy.colorpicker.module);
-  darktable.lib->proxy.colorpicker.update_samples(darktable.lib->proxy.colorpicker.module);
-  // FIXME: It appears that DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED -- which redraws the center view -- isn't called until all the DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED signal handlers are called. Hence the UI will always update once the picker data updates. But I'm not clear how this is guaranteed to be so.
+  dt_lib_module_t *module = darktable.lib->proxy.colorpicker.module;
+  if(module)
+  {
+    // pixelpipe may have run because sample area changed or an iop,
+    // regardless we want to the colorpicker lib, which also can
+    // provide swatch color for a point sample overlay
+    darktable.lib->proxy.colorpicker.update_panel(module);
+    darktable.lib->proxy.colorpicker.update_samples(module);
+    // FIXME: It appears that DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED --
+    // which redraws the center view -- isn't called until all the
+    // DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED signal handlers are
+    // called. Hence the UI will always update once the picker data
+    // updates. But I'm not clear how this is guaranteed to be so.
+  }
 }
 
 void dt_iop_color_picker_init(void)
@@ -320,28 +338,29 @@ void dt_iop_color_picker_cleanup(void)
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_color_picker_proxy_preview_pipe_callback), NULL);
 }
 
-static GtkWidget *_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w,
+static GtkWidget *_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_flags_t flags, GtkWidget *w,
                                     const gboolean init_cst, const dt_iop_colorspace_type_t cst)
 {
   dt_iop_color_picker_t *color_picker = (dt_iop_color_picker_t *)g_malloc(sizeof(dt_iop_color_picker_t));
 
   if(w == NULL || GTK_IS_BOX(w))
   {
-    GtkWidget *button = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT | CPF_BG_TRANSPARENT, NULL);
-    _init_picker(color_picker, module, kind, button);
+    GtkWidget *button = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, 0, NULL);
+    dt_gui_add_class(button, "dt_transparent_background");
+    _init_picker(color_picker, module, flags, button);
     if(init_cst)
       color_picker->picker_cst = cst;
     g_signal_connect_data(G_OBJECT(button), "button-press-event",
                           G_CALLBACK(_color_picker_callback_button_press), color_picker, (GClosureNotify)g_free, 0);
-    if (w) gtk_box_pack_start(GTK_BOX(w), button, FALSE, FALSE, 0);
+    if(w) gtk_box_pack_start(GTK_BOX(w), button, FALSE, FALSE, 0);
 
     return button;
   }
   else
   {
-    dt_bauhaus_widget_set_quad_paint(w, dtgtk_cairo_paint_colorpicker, CPF_STYLE_FLAT, NULL);
+    dt_bauhaus_widget_set_quad_paint(w, dtgtk_cairo_paint_colorpicker, 0, NULL);
     dt_bauhaus_widget_set_quad_toggle(w, TRUE);
-    _init_picker(color_picker, module, kind, w);
+    _init_picker(color_picker, module, flags, w);
     if(init_cst)
       color_picker->picker_cst = cst;
     g_signal_connect_data(G_OBJECT(w), "quad-pressed",
@@ -351,17 +370,20 @@ static GtkWidget *_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker
   }
 }
 
-GtkWidget *dt_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w)
+GtkWidget *dt_color_picker_new(dt_iop_module_t *module, dt_iop_color_picker_flags_t flags, GtkWidget *w)
 {
-  return _color_picker_new(module, kind, w, FALSE, iop_cs_NONE);
+  return _color_picker_new(module, flags, w, FALSE, IOP_CS_NONE);
 }
 
-GtkWidget *dt_color_picker_new_with_cst(dt_iop_module_t *module, dt_iop_color_picker_kind_t kind, GtkWidget *w,
+GtkWidget *dt_color_picker_new_with_cst(dt_iop_module_t *module, dt_iop_color_picker_flags_t flags, GtkWidget *w,
                                         const dt_iop_colorspace_type_t cst)
 {
-  return _color_picker_new(module, kind, w, TRUE, cst);
+  return _color_picker_new(module, flags, w, TRUE, cst);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

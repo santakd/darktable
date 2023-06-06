@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2020 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,10 +15,12 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #include "common/darktable.h"
-#include "common/imageio.h"
-#include "common/imageio_module.h"
+#include "imageio/imageio_common.h"
+#include "imageio/imageio_module.h"
 #include "imageio/format/imageio_format_api.h"
+
 #include <glib/gstdio.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -35,7 +37,7 @@ void cleanup(dt_imageio_module_format_t *self)
 
 int write_image(dt_imageio_module_data_t *ppm, const char *filename, const void *in_tmp,
                 dt_colorspaces_color_profile_type_t over_type, const char *over_filename,
-                void *exif, int exif_len, int imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
+                void *exif, int exif_len, dt_imgid_t imgid, int num, int total, struct dt_dev_pixelpipe_t *pipe,
                 const gboolean export_masks)
 {
   const uint16_t *in = (const uint16_t *)in_tmp;
@@ -119,6 +121,9 @@ void gui_cleanup(dt_imageio_module_format_t *self)
 void gui_reset(dt_imageio_module_format_t *self)
 {
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

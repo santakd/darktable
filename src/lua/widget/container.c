@@ -37,7 +37,7 @@ static int container_reset(lua_State* L)
   lua_getiuservalue(L, 1, 1);
   GList *children = gtk_container_get_children(GTK_CONTAINER(container->widget));
   for(const GList *curelt = children; curelt; curelt = g_list_next(curelt))
-  {      
+  {
     lua_pushcfunction(L,dt_lua_widget_trigger_callback);
     GtkWidget* cur_widget = curelt->data;
     luaA_push(L,lua_widget,&cur_widget);
@@ -178,6 +178,9 @@ int dt_lua_init_widget_container(lua_State* L)
 
   return 0;
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

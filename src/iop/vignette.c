@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -100,8 +101,8 @@ typedef struct dt_iop_vignette_params3_t
 
 typedef struct dt_iop_vignette_params_t
 {
-  float scale;               // $MIN: 0.0 $MAX: 200.0 $DEFAULT: 80.0 Inner radius, percent of largest image dimension
-  float falloff_scale;       // $MIN: 0.0 $MAX: 200.0 $DEFAULT: 50.0 $DESCRIPTION: "fall-off strength" 0 - 100 Radius for falloff -- outer radius = inner radius + falloff_scale
+  float scale;               // $MIN: 0.0 $MAX: 200.0 $DEFAULT: 80.0 $DESCRIPTION: "fall-off start" Inner radius, percent of largest image dimension
+  float falloff_scale;       // $MIN: 0.0 $MAX: 200.0 $DEFAULT: 50.0 $DESCRIPTION: "fall-off radius" 0 - 100 Radius for falloff -- outer radius = inner radius + falloff_scale
   float brightness;          // $MIN: -1.0 $MAX: 1.0 $DEFAULT: -0.5 -1 - 1 Strength of brightness reduction
   float saturation;          // $MIN: -1.0 $MAX: 1.0 $DEFAULT: -0.5 -1 - 1 Strength of saturation reduction
   dt_iop_vector_2d_t center; // Center of vignette
@@ -152,7 +153,7 @@ const char *name()
   return _("vignetting");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("simulate a lens fall-off close to edges"),
                                       _("creative"),
@@ -174,7 +175,7 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
@@ -413,10 +414,10 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
                       -vignette_fy, zoom_scale);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) / zoom_scale);
-  dt_draw_set_color_overlay(cr, 0.3, 0.8);
+  dt_draw_set_color_overlay(cr, FALSE, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(1.0) / zoom_scale);
-  dt_draw_set_color_overlay(cr, 0.8, 0.8);
+  dt_draw_set_color_overlay(cr, TRUE, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
 }
 
@@ -633,9 +634,12 @@ int button_released(struct dt_iop_module_t *self, double x, double y, int which,
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                        ivoid, ovoid, roi_in, roi_out))
+    return;
+
   const dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
   const dt_iop_roi_t *buf_in = &piece->buf_in;
-  const size_t ch = piece->colors;
   const gboolean unbound = data->unbound;
 
   /* Center coordinates of buf_in, these should not consider buf_in->{x,y}! */
@@ -652,14 +656,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   /* w/h ratio follows piece dimensions */
   if(data->autoratio)
   {
-    xscale = 2.0 / (buf_in->width * roi_out->scale);
-    yscale = 2.0 / (buf_in->height * roi_out->scale);
+    xscale = 2.0f / (buf_in->width * roi_out->scale);
+    yscale = 2.0f / (buf_in->height * roi_out->scale);
   }
   else /* specified w/h ratio, scale proportional to longest side */
   {
-    const float basis = 2.0 / (MAX(buf_in->height, buf_in->width) * roi_out->scale);
+    const float basis = 2.0f / (MAX(buf_in->height, buf_in->width) * roi_out->scale);
     // w/h ratio from 0-1 use as-is
-    if(data->whratio <= 1.0)
+    if(data->whratio <= 1.0f)
     {
       yscale = basis;
       xscale = yscale / data->whratio;
@@ -669,16 +673,16 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     else
     {
       xscale = basis;
-      yscale = xscale / (2.0 - data->whratio);
+      yscale = xscale / (2.0f - data->whratio);
     }
   }
-  const float dscale = data->scale / 100.0;
+  const float dscale = data->scale / 100.0f;
   // A minimum falloff is used, based on the image size, to smooth out aliasing artifacts
   const float min_falloff = 100.0 / MIN(buf_in->width, buf_in->height);
-  const float fscale = MAX(data->falloff_scale, min_falloff) / 100.0;
-  const float shape = MAX(data->shape, 0.001);
-  const float exp1 = 2.0 / shape;
-  const float exp2 = shape / 2.0;
+  const float fscale = MAX(data->falloff_scale, min_falloff) / 100.0f;
+  const float shape = MAX(data->shape, 0.001f);
+  const float exp1 = 2.0f / shape;
+  const float exp2 = shape / 2.0f;
   // Pre-scale the center offset
   const dt_iop_vector_2d_t roi_center_scaled = { roi_center.x * xscale, roi_center.y * yscale };
 
@@ -698,22 +702,23 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
 
   unsigned int *const tea_states = alloc_tea_states(dt_get_num_threads());
+  const float brightness = data->brightness;
+  const float saturation = data->saturation;
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, dscale, exp1, exp2, fscale, ivoid, ovoid, \
-                      roi_center_scaled, roi_out, tea_states, unbound) \
-  shared(data, yscale, xscale, dither) \
+  dt_omp_firstprivate(dscale, exp1, exp2, fscale, xscale, yscale, dither, ivoid, ovoid, \
+                      roi_center_scaled, roi_out, tea_states, brightness, saturation, unbound) \
   schedule(static)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
-    const size_t k = (size_t)ch * roi_out->width * j;
+    const size_t k = (size_t)4 * roi_out->width * j;
     const float *in = (const float *)ivoid + k;
     float *out = (float *)ovoid + k;
     unsigned int *tea_state = get_tea_state(tea_states,dt_get_thread_num());
     tea_state[0] = j * roi_out->height; /* + dt_get_thread_num() -- do not include, makes results unreproducible */
-    for(int i = 0; i < roi_out->width; i++, in += ch, out += ch)
+    for(int i = 0; i < roi_out->width; i++)
     {
       // current pixel coord translated to local coord
       const dt_iop_vector_2d_t pv
@@ -721,60 +726,56 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
       // Calculate the pixel weight in vignette
       const float cplen = powf(powf(pv.x, exp1) + powf(pv.y, exp1), exp2); // Length from center to pv
-      float weight = 0.0;
-      float dith = 0.0;
+      float weight = 0.f;
+      float dith = 0.0f;
 
       if(cplen >= dscale) // pixel is outside the inner vignette circle, lets calculate weight of vignette
       {
         weight = ((cplen - dscale) / fscale);
-        if(weight >= 1.0)
-          weight = 1.0;
-        else if(weight <= 0.0)
-          weight = 0.0;
-        else if(dither == 0.0f)
+        if(weight >= 1.0f)
+          weight = 1.0f;
+        else if(weight <= 0.0f)
+          weight = 0.0f;
+        else if(dither != 0.0f)
         {
-          // don't bother computing the random number if dithering is disabled
-          dith = 0.0f;
-        }
-        else
-        {
-          weight = 0.5 - cosf(M_PI * weight) / 2.0;
+          // only bother computing the random number if dithering is enabled
+          weight = 0.5f - cosf((float)M_PI * weight) / 2.0f;
           encrypt_tea(tea_state);
           dith = dither * tpdf(tea_state[0]);
         }
       }
 
       // Let's apply weighted effect on brightness and desaturation
-      float col0 = in[0], col1 = in[1], col2 = in[2], col3 = in[3];
-      if(weight > 0)
+      dt_aligned_pixel_t col;
+      copy_pixel(col, in + 4*i);
+      if(weight > 0.0f)
       {
         // Then apply falloff vignette
-        float falloff = (data->brightness < 0) ? (1.0f + (weight * data->brightness))
-                                               : (weight * data->brightness);
-        col0 = data->brightness < 0 ? col0 * falloff + dith : col0 + falloff + dith;
-        col1 = data->brightness < 0 ? col1 * falloff + dith : col1 + falloff + dith;
-        col2 = data->brightness < 0 ? col2 * falloff + dith : col2 + falloff + dith;
-
-        col0 = unbound ? col0 : CLIP(col0);
-        col1 = unbound ? col1 : CLIP(col1);
-        col2 = unbound ? col2 : CLIP(col2);
+        if (brightness < 0.0f)
+        {
+          const float falloff = (1.0f + (weight * brightness));
+          for_each_channel(c)
+            col[c] = col[c] * falloff + dith;
+        }
+        else
+        {
+          const float falloff = (weight * brightness);
+          for_each_channel(c)
+            col[c] = col[c] + falloff + dith;
+        }
+        for_each_channel(c)
+          col[c] = unbound ? col[c] : CLIP(col[c]);
 
         // apply saturation
-        float mv = (col0 + col1 + col2) / 3.0f;
-        float wss = weight * data->saturation;
-        col0 = col0 - ((mv - col0) * wss);
-        col1 = col1 - ((mv - col1) * wss);
-        col2 = col2 - ((mv - col2) * wss);
-
-        col0 = unbound ? col0 : CLIP(col0);
-        col1 = unbound ? col1 : CLIP(col1);
-        col2 = unbound ? col2 : CLIP(col2);
+        const float mv = (col[0] + col[1] + col[2]) / 3.0f;
+        const float wss = weight * saturation;
+        for_each_channel(c)
+        {
+          col[c] = col[c] - ((mv - col[c]) * wss);
+          col[c] = unbound ? col[c] : CLIP(col[c]);
+        }
       }
-
-      out[0] = col0;
-      out[1] = col1;
-      out[2] = col2;
-      out[3] = col3;
+      copy_pixel_nontemporal(out + 4*i, col) ;
     }
   }
 
@@ -789,7 +790,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
   dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
@@ -862,28 +863,16 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float saturation = data->saturation;
   const int unbound = data->unbound;
 
-  size_t sizes[2] = { ROUNDUPWD(width), ROUNDUPHT(height) };
-
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 0, sizeof(cl_mem), &dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 1, sizeof(cl_mem), &dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 2, sizeof(int), &width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 3, sizeof(int), &height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 4, 2 * sizeof(float), &scale);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 5, 2 * sizeof(float), &roi_center_scaled_f);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 6, 2 * sizeof(float), &expt);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 7, sizeof(float), &dscale);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 8, sizeof(float), &fscale);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 9, sizeof(float), &brightness);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 10, sizeof(float), &saturation);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 11, sizeof(float), &dither);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_vignette, 12, sizeof(int), &unbound);
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_vignette, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_vignette, width, height,
+    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(scale), CLARG(roi_center_scaled_f),
+    CLARG(expt), CLARG(dscale), CLARG(fscale), CLARG(brightness), CLARG(saturation), CLARG(dither),
+    CLARG(unbound));
   if(err != CL_SUCCESS) goto error;
 
   return TRUE;
 
 error:
-  dt_print(DT_DEBUG_OPENCL, "[opencl_vignette] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_vignette] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -935,7 +924,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
 
 void init_presets(dt_iop_module_so_t *self)
 {
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "BEGIN", NULL, NULL, NULL);
+  dt_database_start_transaction(darktable.db);
   dt_iop_vignette_params_t p;
   p.scale = 40.0f;
   p.falloff_scale = 100.0f;
@@ -950,7 +939,7 @@ void init_presets(dt_iop_module_so_t *self)
   p.unbound = TRUE;
   dt_gui_presets_add_generic(_("lomo"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "COMMIT", NULL, NULL, NULL);
+  dt_database_release_transaction(darktable.db);
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -968,17 +957,8 @@ void gui_update(struct dt_iop_module_t *self)
 {
   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
   dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
-  dt_bauhaus_slider_set(g->scale, p->scale);
-  dt_bauhaus_slider_set(g->falloff_scale, p->falloff_scale);
-  dt_bauhaus_slider_set(g->brightness, p->brightness);
-  dt_bauhaus_slider_set(g->saturation, p->saturation);
-  dt_bauhaus_slider_set(g->center_x, p->center.x);
-  dt_bauhaus_slider_set(g->center_y, p->center.y);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->autoratio), p->autoratio);
-  dt_bauhaus_slider_set(g->whratio, p->whratio);
-  dt_bauhaus_slider_set(g->shape, p->shape);
   gtk_widget_set_sensitive(GTK_WIDGET(g->whratio), !p->autoratio);
-  dt_bauhaus_combobox_set(g->dithering, p->dithering);
 }
 
 void gui_init(struct dt_iop_module_t *self)
@@ -989,6 +969,10 @@ void gui_init(struct dt_iop_module_t *self)
   g->falloff_scale = dt_bauhaus_slider_from_params(self, "falloff_scale");
   g->brightness = dt_bauhaus_slider_from_params(self, N_("brightness"));
   g->saturation = dt_bauhaus_slider_from_params(self, N_("saturation"));
+
+  gtk_box_pack_start(GTK_BOX(self->widget),
+                     dt_ui_section_label_new(C_("section", "position / form")), FALSE, FALSE, 0);
+
   g->center_x = dt_bauhaus_slider_from_params(self, "center.x");
   g->center_y = dt_bauhaus_slider_from_params(self, "center.y");
   g->shape = dt_bauhaus_slider_from_params(self, N_("shape"));
@@ -1002,8 +986,8 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_digits(g->center_y, 3);
   dt_bauhaus_slider_set_digits(g->whratio, 3);
 
-  dt_bauhaus_slider_set_format(g->scale, "%.02f%%");
-  dt_bauhaus_slider_set_format(g->falloff_scale, "%.02f%%");
+  dt_bauhaus_slider_set_format(g->scale, "%");
+  dt_bauhaus_slider_set_format(g->falloff_scale, "%");
 
   gtk_widget_set_tooltip_text(g->scale, _("the radii scale of vignette for start of fall-off"));
   gtk_widget_set_tooltip_text(g->falloff_scale, _("the radii scale of vignette for end of fall-off"));
@@ -1021,15 +1005,18 @@ void gui_init(struct dt_iop_module_t *self)
 GSList *mouse_actions(struct dt_iop_module_t *self)
 {
   GSList *lm = NULL;
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, 0, 
+  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, 0,
                                      _("[%s on node] change vignette/feather size"), self->name());
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK, 
+  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
                                      _("[%s on node] change vignette/feather size keeping ratio"), self->name());
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK, 
+  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
                                      _("[%s on center] move vignette"), self->name());
   return lm;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

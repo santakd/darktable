@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2019-2021 darktable developers.
+   Copyright (C) 2019-2023 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,23 +15,31 @@
    You should have received a copy of the GNU General Public License
    along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
+/** Note :
+ * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
+ * fp-contract=fast enables hardware-accelerated Fused Multiply-Add
+**/
+#if defined(__GNUC__)
+#pragma GCC optimize("finite-math-only", "fp-contract=fast", "fast-math", "no-math-errno")
+#endif
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces_inline_conversions.h"
-#include "common/darktable.h"
+#include "common/chromatic_adaptation.h"
 #include "common/bspline.h"
-#include "common/dwt.h"
+#include "common/gamut_mapping.h"
 #include "common/image.h"
-#include "common/iop_profile.h"
 #include "common/opencl.h"
 #include "control/control.h"
 #include "develop/develop.h"
+#include "develop/imageop.h"
 #include "develop/imageop_gui.h"
 #include "develop/imageop_math.h"
 #include "develop/noise_generator.h"
-#include "develop/openmp_maths.h"
 #include "develop/tiling.h"
 #include "dtgtk/button.h"
 #include "dtgtk/drawingarea.h"
@@ -44,24 +52,26 @@
 #include "iop/gaussian_elimination.h"
 #include "iop/iop_api.h"
 
-
-#include "develop/imageop.h"
 #include "gui/draw.h"
 
 #include <assert.h>
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+// enabling the following gives a substantial speed boost (reducing
+// the total runtime of V3, V4 and V5 by 10%) but the fast approximate
+// expf() differs by enough to push several integration tests above
+// the permissible threshold.
+//#define USE_FAST_EXPF
 
-#define NORM_MIN 1.52587890625e-05f // norm can't be < to 2^(-16)
 #define INVERSE_SQRT_3 0.5773502691896258f
+#define SAFETY_MARGIN 0.01f
 
 #define DT_GUI_CURVE_EDITOR_INSET DT_PIXEL_APPLY_DPI(1)
 
 
-DT_MODULE_INTROSPECTION(4, dt_iop_filmicrgb_params_t)
+DT_MODULE_INTROSPECTION(6, dt_iop_filmicrgb_params_t)
 
 /**
  * DOCUMENTATION
@@ -92,30 +102,14 @@ DT_MODULE_INTROSPECTION(4, dt_iop_filmicrgb_params_t)
  *
  * */
 
-
-/** Note :
- * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
- * fp-contract=fast enables hardware-accelerated Fused Multiply-Add
- * the rest is loop reorganization and vectorization optimization
- **/
-#if defined(__GNUC__)
-#pragma GCC optimize("unroll-loops", "tree-loop-if-convert", "tree-loop-distribution", "no-strict-aliasing",      \
-                     "loop-interchange", "loop-nest-optimize", "tree-loop-im", "unswitch-loops",                  \
-                     "tree-loop-ivcanon", "ira-loop-pressure", "split-ivs-in-unroller",                           \
-                     "variable-expansion-in-unroller", "split-loops", "ivopts", "predictive-commoning",           \
-                     "tree-loop-linear", "loop-block", "loop-strip-mine", "finite-math-only", "fp-contract=fast", \
-                     "fast-math", "no-math-errno")
-#endif
-
-
 typedef enum dt_iop_filmicrgb_methods_type_t
 {
   DT_FILMIC_METHOD_NONE = 0,              // $DESCRIPTION: "no"
   DT_FILMIC_METHOD_MAX_RGB = 1,           // $DESCRIPTION: "max RGB"
   DT_FILMIC_METHOD_LUMINANCE = 2,         // $DESCRIPTION: "luminance Y"
   DT_FILMIC_METHOD_POWER_NORM = 3,        // $DESCRIPTION: "RGB power norm"
-  DT_FILMIC_METHOD_EUCLIDEAN_NORM_V2 = 5, // $DESCRIPTION: "RGB euclidean norm"
   DT_FILMIC_METHOD_EUCLIDEAN_NORM_V1 = 4, // $DESCRIPTION: "RGB euclidean norm (legacy)"
+  DT_FILMIC_METHOD_EUCLIDEAN_NORM_V2 = 5, // $DESCRIPTION: "RGB euclidean norm"
 } dt_iop_filmicrgb_methods_type_t;
 
 
@@ -132,8 +126,16 @@ typedef enum dt_iop_filmicrgb_colorscience_type_t
   DT_FILMIC_COLORSCIENCE_V1 = 0, // $DESCRIPTION: "v3 (2019)"
   DT_FILMIC_COLORSCIENCE_V2 = 1, // $DESCRIPTION: "v4 (2020)"
   DT_FILMIC_COLORSCIENCE_V3 = 2, // $DESCRIPTION: "v5 (2021)"
+  DT_FILMIC_COLORSCIENCE_V4 = 3, // $DESCRIPTION: "v6 (2022)"
+  DT_FILMIC_COLORSCIENCE_V5 = 4, // $DESCRIPTION: "v7 (2023)"
 } dt_iop_filmicrgb_colorscience_type_t;
 
+typedef enum dt_iop_filmicrgb_spline_version_type_t
+{
+  DT_FILMIC_SPLINE_VERSION_V1 = 0, // $DESCRIPTION: "v1 (2019)"
+  DT_FILMIC_SPLINE_VERSION_V2 = 1, // $DESCRIPTION: "v2 (2020)"
+  DT_FILMIC_SPLINE_VERSION_V3 = 2, // $DESCRIPTION: "v3 (2021)"
+} dt_iop_filmicrgb_spline_version_type_t;
 
 typedef enum dt_iop_filmicrgb_reconstruction_type_t
 {
@@ -174,8 +176,8 @@ typedef struct dt_iop_filmicrgb_params_t
 {
   float grey_point_source;     // $MIN: 0 $MAX: 100 $DEFAULT: 18.45 $DESCRIPTION: "middle gray luminance"
   float black_point_source;    // $MIN: -16 $MAX: -0.1 $DEFAULT: -8.0 $DESCRIPTION: "black relative exposure"
-  float white_point_source;    // $MIN: 0 $MAX: 16 $DEFAULT: 4.0 $DESCRIPTION: "white relative exposure"
-  float reconstruct_threshold; // $MIN: -6.0 $MAX: 6.0 $DEFAULT: +3.0 $DESCRIPTION: "threshold"
+  float white_point_source;    // $MIN: 0.1 $MAX: 16 $DEFAULT: 4.0 $DESCRIPTION: "white relative exposure"
+  float reconstruct_threshold; // $MIN: -6.0 $MAX: 6.0 $DEFAULT: 0.0 $DESCRIPTION: "threshold"
   float reconstruct_feather;   // $MIN: 0.25 $MAX: 6.0 $DEFAULT: 3.0 $DESCRIPTION: "transition"
   float reconstruct_bloom_vs_details; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "bloom ↔ reconstruct"
   float reconstruct_grey_vs_color; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "gray ↔ colorful details"
@@ -185,21 +187,22 @@ typedef struct dt_iop_filmicrgb_params_t
   float black_point_target; // $MIN: 0.000 $MAX: 20.000 $DEFAULT: 0.01517634 $DESCRIPTION: "target black luminance"
   float white_point_target; // $MIN: 0 $MAX: 1600 $DEFAULT: 100 $DESCRIPTION: "target white luminance"
   float output_power;       // $MIN: 1 $MAX: 10 $DEFAULT: 4.0 $DESCRIPTION: "hardness"
-  float latitude;           // $MIN: 0.01 $MAX: 100 $DEFAULT: 33.0
-  float contrast;           // $MIN: 0 $MAX: 5 $DEFAULT: 1.35
-  float saturation;         // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "extreme luminance saturation"
+  float latitude;           // $MIN: 0.01 $MAX: 99 $DEFAULT: 0.01
+  float contrast;           // $MIN: 0 $MAX: 5 $DEFAULT: 1.0
+  float saturation;         // $MIN: -200 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "extreme luminance saturation"
   float balance;            // $MIN: -50 $MAX: 50 $DEFAULT: 0.0 $DESCRIPTION: "shadows ↔ highlights balance"
   float noise_level;        // $MIN: 0.0 $MAX: 6.0 $DEFAULT: 0.2f $DESCRIPTION: "add noise in highlights"
   dt_iop_filmicrgb_methods_type_t preserve_color; // $DEFAULT: DT_FILMIC_METHOD_POWER_NORM $DESCRIPTION: "preserve chrominance"
-  dt_iop_filmicrgb_colorscience_type_t version; // $DEFAULT: DT_FILMIC_COLORSCIENCE_V3 $DESCRIPTION: "color science"
+  dt_iop_filmicrgb_colorscience_type_t version; // $DEFAULT: DT_FILMIC_COLORSCIENCE_V5 $DESCRIPTION: "color science"
   gboolean auto_hardness;                       // $DEFAULT: TRUE $DESCRIPTION: "auto adjust hardness"
   gboolean custom_grey;                         // $DEFAULT: FALSE $DESCRIPTION: "use custom middle-gray values"
   int high_quality_reconstruction;       // $MIN: 0 $MAX: 10 $DEFAULT: 1 $DESCRIPTION: "iterations of high-quality reconstruction"
   dt_iop_filmic_noise_distribution_t noise_distribution; // $DEFAULT: DT_NOISE_GAUSSIAN $DESCRIPTION: "type of noise"
-  dt_iop_filmicrgb_curve_type_t shadows; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in shadows"
-  dt_iop_filmicrgb_curve_type_t highlights; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in highlights"
+  dt_iop_filmicrgb_curve_type_t shadows; // $DEFAULT: DT_FILMIC_CURVE_POLY_4 $DESCRIPTION: "contrast in shadows"
+  dt_iop_filmicrgb_curve_type_t highlights; // $DEFAULT: DT_FILMIC_CURVE_POLY_4 $DESCRIPTION: "contrast in highlights"
   gboolean compensate_icc_black; // $DEFAULT: FALSE $DESCRIPTION: "compensate output ICC profile black point"
-  gint internal_version;         // $DEFAULT: 2020 $DESCRIPTION: "version of the spline generator"
+  dt_iop_filmicrgb_spline_version_type_t spline_version; // $DEFAULT: DT_FILMIC_SPLINE_VERSION_V3 $DESCRIPTION: "spline handling"
+  gboolean enable_highlight_reconstruction; // $DEFAULT: FALSE $DESCRIPTION: "enable highlight reconstruction"
 } dt_iop_filmicrgb_params_t;
 // clang-format on
 
@@ -260,6 +263,7 @@ typedef struct dt_iop_filmicrgb_gui_data_t
   GtkWidget *high_quality_reconstruction;
   GtkWidget *noise_level, *noise_distribution;
   GtkWidget *compensate_icc_black;
+  GtkWidget *enable_highlight_reconstruction;
   GtkNotebook *notebook;
   GtkDrawingArea *area;
   struct dt_iop_filmic_rgb_spline_t spline DT_ALIGNED_ARRAY;
@@ -305,9 +309,11 @@ typedef struct dt_iop_filmicrgb_data_t
   float noise_level;
   int preserve_color;
   int version;
+  int spline_version;
   int high_quality_reconstruction;
   struct dt_iop_filmic_rgb_spline_t spline DT_ALIGNED_ARRAY;
   dt_noise_distribution_t noise_distribution;
+  gboolean enable_highlight_reconstruction;
 } dt_iop_filmicrgb_data_t;
 
 
@@ -338,7 +344,7 @@ const char *aliases()
   return _("tone mapping|curve|view transform|contrast|saturation|highlights");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("apply a view transform to prepare the scene-referred pipeline\n"
                                         "for display on SDR screens and paper prints\n"
@@ -361,13 +367,85 @@ int flags()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_rgb;
+  return IOP_CS_RGB;
+}
+
+#ifdef USE_FAST_EXPF
+// replace calls to expf() with calls to dt_fast_expf()
+#define expf dt_fast_expf
+#endif
+
+inline static gboolean dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_params_t *const p,
+                                                    struct dt_iop_filmic_rgb_spline_t *const spline);
+
+// convert parameters from spline v1 or v2 to spline v3
+static inline void convert_to_spline_v3(dt_iop_filmicrgb_params_t* n)
+{
+  if(n->spline_version == DT_FILMIC_SPLINE_VERSION_V3)
+    return;
+
+  dt_iop_filmic_rgb_spline_t spline;
+  dt_iop_filmic_rgb_compute_spline(n, &spline);
+
+  // from the spline, compute new values for contrast, balance, and latitude to update spline_version to v3
+  float grey_log = spline.x[2];
+  float toe_log = fminf(spline.x[1], grey_log);
+  float shoulder_log = fmaxf(spline.x[3], grey_log);
+  float black_display = spline.y[0];
+  float grey_display = spline.y[2];
+  float white_display = spline.y[4];
+  const float scaled_safety_margin = SAFETY_MARGIN * (white_display - black_display);
+  float toe_display = fminf(spline.y[1], grey_display);
+  float shoulder_display = fmaxf(spline.y[3], grey_display);
+
+  float hardness = n->output_power;
+  float contrast = (shoulder_display - toe_display) / (shoulder_log - toe_log);
+  // sanitize toe and shoulder, for min and max values, while keeping the same contrast
+  float linear_intercept = grey_display - (contrast * grey_log);
+  if(toe_display < black_display + scaled_safety_margin)
+  {
+    toe_display = black_display + scaled_safety_margin;
+    // compute toe_log to keep same slope
+    toe_log = (toe_display - linear_intercept) / contrast;
+  }
+  if(shoulder_display > white_display - scaled_safety_margin)
+  {
+    shoulder_display = white_display - scaled_safety_margin;
+    // compute shoulder_log to keep same slope
+    shoulder_log = (shoulder_display - linear_intercept) / contrast;
+  }
+  // revert contrast adaptation that will be performed in dt_iop_filmic_rgb_compute_spline
+  contrast *= 8.0f / (n->white_point_source - n->black_point_source);
+  contrast *= hardness * powf(grey_display, hardness-1.0f);
+  // latitude is the % of the segment [b+safety*(w-b),w-safety*(w-b)] which is covered, where b is black_display and w white_display
+  const float latitude = CLAMP((shoulder_display - toe_display) / ((white_display - black_display) - 2.0f * scaled_safety_margin), 0.0f, 0.99f);
+  // find balance
+  float toe_display_ref = latitude * (black_display + scaled_safety_margin) + (1.0f - latitude) * grey_display;
+  float shoulder_display_ref = latitude * (white_display - scaled_safety_margin) + (1.0f - latitude) * grey_display;
+  float balance;
+  if(shoulder_display < shoulder_display_ref)
+    balance = 0.5f * (1.0f - fmaxf(shoulder_display - grey_display, 0.0f) / fmaxf(shoulder_display_ref - grey_display, 1E-5f));
+  else
+    balance = -0.5f * (1.0f - fmaxf(grey_display - toe_display, 0.0f) / fmaxf(grey_display - toe_display_ref, 1E-5f));
+
+  if(n->spline_version == DT_FILMIC_SPLINE_VERSION_V1)
+  {
+    // black and white point need to be updated as well,
+    // as code path for v3 will raise them to power 1.0f / hardness,
+    // while code path for v1 did not.
+    n->black_point_target = powf(black_display, hardness) * 100.0f;
+    n->white_point_target = powf(white_display, hardness) * 100.0f;
+  }
+  n->latitude = latitude * 100.0f;
+  n->contrast = contrast;
+  n->balance = balance * 100.0f;
+  n->spline_version = DT_FILMIC_SPLINE_VERSION_V3;
 }
 
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version, void *new_params,
                   const int new_version)
 {
-  if(old_version == 1 && new_version == 4)
+  if(old_version == 1 && new_version == 6)
   {
     typedef struct dt_iop_filmicrgb_params_v1_t
     {
@@ -419,11 +497,13 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     n->high_quality_reconstruction = 0;
     n->noise_distribution = d->noise_distribution;
     n->noise_level = 0.f;
-    n->internal_version = 2019;
+    n->spline_version = DT_FILMIC_SPLINE_VERSION_V1;
     n->compensate_icc_black = FALSE;
+    convert_to_spline_v3(n);
+    n->enable_highlight_reconstruction = TRUE;
     return 0;
   }
-  if(old_version == 2 && new_version == 4)
+  if(old_version == 2 && new_version == 6)
   {
     typedef struct dt_iop_filmicrgb_params_v2_t
     {
@@ -486,11 +566,13 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     n->noise_level = d->noise_level;
     n->noise_distribution = d->noise_distribution;
     n->noise_level = 0.f;
-    n->internal_version = 2019;
+    n->spline_version = DT_FILMIC_SPLINE_VERSION_V1;
     n->compensate_icc_black = FALSE;
+    n->enable_highlight_reconstruction = TRUE;
+    convert_to_spline_v3(n);
     return 0;
   }
-  if(old_version == 3 && new_version == 4)
+  if(old_version == 3 && new_version == 6)
   {
     typedef struct dt_iop_filmicrgb_params_v3_t
     {
@@ -562,13 +644,145 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     n->noise_level = d->noise_level;
     n->noise_distribution = d->noise_distribution;
     n->noise_level = d->noise_level;
-    n->internal_version = 2019;
+    n->spline_version = DT_FILMIC_SPLINE_VERSION_V1;
     n->compensate_icc_black = FALSE;
+    n->enable_highlight_reconstruction = TRUE;
+    convert_to_spline_v3(n);
+    return 0;
+  }
+  if(old_version == 4 && new_version == 6)
+  {
+    typedef struct dt_iop_filmicrgb_params_v4_t
+    {
+      float grey_point_source;     // $MIN: 0 $MAX: 100 $DEFAULT: 18.45 $DESCRIPTION: "middle gray luminance"
+      float black_point_source;    // $MIN: -16 $MAX: -0.1 $DEFAULT: -8.0 $DESCRIPTION: "black relative exposure"
+      float white_point_source;    // $MIN: 0 $MAX: 16 $DEFAULT: 4.0 $DESCRIPTION: "white relative exposure"
+      float reconstruct_threshold; // $MIN: -6.0 $MAX: 6.0 $DEFAULT: +3.0 $DESCRIPTION: "threshold"
+      float reconstruct_feather;   // $MIN: 0.25 $MAX: 6.0 $DEFAULT: 3.0 $DESCRIPTION: "transition"
+      float reconstruct_bloom_vs_details; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "bloom ↔ reconstruct"
+      float reconstruct_grey_vs_color; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "gray ↔ colorful details"
+      float reconstruct_structure_vs_texture; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "structure ↔ texture"
+      float security_factor;                  // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "dynamic range scaling"
+      float grey_point_target;                // $MIN: 1 $MAX: 50 $DEFAULT: 18.45 $DESCRIPTION: "target middle gray"
+      float black_point_target; // $MIN: 0.000 $MAX: 20.000 $DEFAULT: 0.01517634 $DESCRIPTION: "target black luminance"
+      float white_point_target; // $MIN: 0 $MAX: 1600 $DEFAULT: 100 $DESCRIPTION: "target white luminance"
+      float output_power;       // $MIN: 1 $MAX: 10 $DEFAULT: 4.0 $DESCRIPTION: "hardness"
+      float latitude;           // $MIN: 0.01 $MAX: 99 $DEFAULT: 50.0
+      float contrast;           // $MIN: 0 $MAX: 5 $DEFAULT: 1.1
+      float saturation;         // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "extreme luminance saturation"
+      float balance;            // $MIN: -50 $MAX: 50 $DEFAULT: 0.0 $DESCRIPTION: "shadows ↔ highlights balance"
+      float noise_level;        // $MIN: 0.0 $MAX: 6.0 $DEFAULT: 0.2f $DESCRIPTION: "add noise in highlights"
+      dt_iop_filmicrgb_methods_type_t preserve_color; // $DEFAULT: DT_FILMIC_METHOD_POWER_NORM $DESCRIPTION: "preserve chrominance"
+      dt_iop_filmicrgb_colorscience_type_t version; // $DEFAULT: DT_FILMIC_COLORSCIENCE_V3 $DESCRIPTION: "color science"
+      gboolean auto_hardness;                       // $DEFAULT: TRUE $DESCRIPTION: "auto adjust hardness"
+      gboolean custom_grey;                         // $DEFAULT: FALSE $DESCRIPTION: "use custom middle-gray values"
+      int high_quality_reconstruction;       // $MIN: 0 $MAX: 10 $DEFAULT: 1 $DESCRIPTION: "iterations of high-quality reconstruction"
+      dt_iop_filmic_noise_distribution_t noise_distribution; // $DEFAULT: DT_NOISE_GAUSSIAN $DESCRIPTION: "type of noise"
+      dt_iop_filmicrgb_curve_type_t shadows; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in shadows"
+      dt_iop_filmicrgb_curve_type_t highlights; // $DEFAULT: DT_FILMIC_CURVE_RATIONAL $DESCRIPTION: "contrast in highlights"
+      gboolean compensate_icc_black; // $DEFAULT: FALSE $DESCRIPTION: "compensate output ICC profile black point"
+      gint internal_version; // $DEFAULT: 2020 $DESCRIPTION: "version of the spline generator"
+    } dt_iop_filmicrgb_params_v4_t;
+
+    dt_iop_filmicrgb_params_v4_t *o = (dt_iop_filmicrgb_params_v4_t *)old_params;
+    dt_iop_filmicrgb_params_t *n = (dt_iop_filmicrgb_params_t *)new_params;
+    *n = *(dt_iop_filmicrgb_params_t*)o; // structure didn't change except the enum instead of gint for internal_version
+    // we still need to convert the internal_version (in year) to the enum
+    switch(o->internal_version)
+    {
+      case(2019):
+        n->spline_version = DT_FILMIC_SPLINE_VERSION_V1;
+        break;
+      case(2020):
+        n->spline_version = DT_FILMIC_SPLINE_VERSION_V2;
+        break;
+      case(2021):
+        n->spline_version = DT_FILMIC_SPLINE_VERSION_V3;
+        break;
+      default:
+        return 1;
+    }
+    n->enable_highlight_reconstruction = TRUE;
+    convert_to_spline_v3(n);
+    return 0;
+  }
+  if(old_version == 5 && new_version == 6)
+  {
+    typedef struct dt_iop_filmicrgb_params_v5_t
+    {
+      float grey_point_source;     // $MIN: 0 $MAX: 100 $DEFAULT: 18.45 $DESCRIPTION: "middle gray luminance"
+      float black_point_source;    // $MIN: -16 $MAX: -0.1 $DEFAULT: -8.0 $DESCRIPTION: "black relative exposure"
+      float white_point_source;    // $MIN: 0.1 $MAX: 16 $DEFAULT: 4.0 $DESCRIPTION: "white relative exposure"
+      float reconstruct_threshold; // $MIN: -6.0 $MAX: 6.0 $DEFAULT: +3.0 $DESCRIPTION: "threshold"
+      float reconstruct_feather;   // $MIN: 0.25 $MAX: 6.0 $DEFAULT: 3.0 $DESCRIPTION: "transition"
+      float reconstruct_bloom_vs_details; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "bloom ↔ reconstruct"
+      float reconstruct_grey_vs_color; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 100.0 $DESCRIPTION: "gray ↔ colorful details"
+      float reconstruct_structure_vs_texture; // $MIN: -100.0 $MAX: 100.0 $DEFAULT: 0.0 $DESCRIPTION: "structure ↔ texture"
+      float security_factor;                  // $MIN: -50 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "dynamic range scaling"
+      float grey_point_target;                // $MIN: 1 $MAX: 50 $DEFAULT: 18.45 $DESCRIPTION: "target middle gray"
+      float black_point_target; // $MIN: 0.000 $MAX: 20.000 $DEFAULT: 0.01517634 $DESCRIPTION: "target black luminance"
+      float white_point_target; // $MIN: 0 $MAX: 1600 $DEFAULT: 100 $DESCRIPTION: "target white luminance"
+      float output_power;       // $MIN: 1 $MAX: 10 $DEFAULT: 4.0 $DESCRIPTION: "hardness"
+      float latitude;           // $MIN: 0.01 $MAX: 99 $DEFAULT: 0.01
+      float contrast;           // $MIN: 0 $MAX: 5 $DEFAULT: 1.0
+      float saturation;         // $MIN: -200 $MAX: 200 $DEFAULT: 0 $DESCRIPTION: "extreme luminance saturation"
+      float balance;            // $MIN: -50 $MAX: 50 $DEFAULT: 0.0 $DESCRIPTION: "shadows ↔ highlights balance"
+      float noise_level;        // $MIN: 0.0 $MAX: 6.0 $DEFAULT: 0.2f $DESCRIPTION: "add noise in highlights"
+      dt_iop_filmicrgb_methods_type_t preserve_color; // $DEFAULT: DT_FILMIC_METHOD_POWER_NORM $DESCRIPTION: "preserve chrominance"
+      dt_iop_filmicrgb_colorscience_type_t version; // $DEFAULT: DT_FILMIC_COLORSCIENCE_V4 $DESCRIPTION: "color science"
+      gboolean auto_hardness;                       // $DEFAULT: TRUE $DESCRIPTION: "auto adjust hardness"
+      gboolean custom_grey;                         // $DEFAULT: FALSE $DESCRIPTION: "use custom middle-gray values"
+      int high_quality_reconstruction;       // $MIN: 0 $MAX: 10 $DEFAULT: 1 $DESCRIPTION: "iterations of high-quality reconstruction"
+      dt_iop_filmic_noise_distribution_t noise_distribution; // $DEFAULT: DT_NOISE_GAUSSIAN $DESCRIPTION: "type of noise"
+      dt_iop_filmicrgb_curve_type_t shadows; // $DEFAULT: DT_FILMIC_CURVE_POLY_4 $DESCRIPTION: "contrast in shadows"
+      dt_iop_filmicrgb_curve_type_t highlights; // $DEFAULT: DT_FILMIC_CURVE_POLY_4 $DESCRIPTION: "contrast in highlights"
+      gboolean compensate_icc_black; // $DEFAULT: FALSE $DESCRIPTION: "compensate output ICC profile black point"
+      dt_iop_filmicrgb_spline_version_type_t spline_version; // $DEFAULT: DT_FILMIC_SPLINE_VERSION_V3 $DESCRIPTION: "spline handling"
+    } dt_iop_filmicrgb_params_v5_t;
+
+    dt_iop_filmicrgb_params_v5_t *o = (dt_iop_filmicrgb_params_v5_t *)old_params;
+    dt_iop_filmicrgb_params_t *n = (dt_iop_filmicrgb_params_t *)new_params;
+
+    // Init params with defaults
+    memcpy(new_params, self->default_params, sizeof(dt_iop_filmicrgb_params_t));
+
+    // Copy over the old parameters
+    n->grey_point_source = o->grey_point_source;
+    n->black_point_source = o->black_point_source;
+    n->white_point_source = o->white_point_source;
+    n->reconstruct_threshold = o->reconstruct_threshold;
+    n->reconstruct_feather = o->reconstruct_feather;
+    n->reconstruct_bloom_vs_details = o->reconstruct_bloom_vs_details;
+    n->reconstruct_grey_vs_color = o->reconstruct_grey_vs_color;
+    n->reconstruct_structure_vs_texture = o->reconstruct_structure_vs_texture;
+    n->security_factor = o->security_factor;
+    n->grey_point_target = o->grey_point_target;
+    n->black_point_target = o->black_point_target;
+    n->white_point_target = o->white_point_target;
+    n->output_power = o->output_power;
+    n->latitude = o->latitude;
+    n->contrast = o->contrast;
+    n->saturation = o->saturation;
+    n->balance = o->balance;
+    n->noise_level = o->noise_level;
+    n->preserve_color = o->preserve_color;
+    n->version = o->version;
+    n->auto_hardness = o->auto_hardness;
+    n->custom_grey = o->custom_grey;
+    n->high_quality_reconstruction = o->high_quality_reconstruction;
+    n->noise_distribution = o->noise_distribution;
+    n->shadows = o->shadows;
+    n->highlights = o->highlights;
+    n->compensate_icc_black = o->compensate_icc_black;
+    n->spline_version = o->spline_version;
+
+    // New parameter
+    n->enable_highlight_reconstruction = TRUE;
+
     return 0;
   }
   return 1;
 }
-
 
 #ifdef _OPENMP
 #pragma omp declare simd aligned(pixel:16)
@@ -636,7 +850,6 @@ static inline float get_pixel_norm(const dt_aligned_pixel_t pixel, const dt_iop_
   }
 }
 
-
 #ifdef _OPENMP
 #pragma omp declare simd uniform(grey, black, dynamic_range)
 #endif
@@ -644,17 +857,40 @@ static inline float log_tonemapping_v1(const float x, const float grey, const fl
                                        const float dynamic_range)
 {
   const float temp = (log2f(x / grey) - black) / dynamic_range;
-  return fmaxf(fminf(temp, 1.0f), NORM_MIN);
+  return CLAMP(temp, NORM_MIN, 1.0f);
 }
 
+
+static inline float log_tonemapping_v2_1ch(const float x,
+                                           const float grey,
+                                           const float black,
+                                           const float dynamic_range)
+{
+  return clamp_simd((log2f(x / grey) - black) / dynamic_range);
+}
 
 #ifdef _OPENMP
 #pragma omp declare simd uniform(grey, black, dynamic_range)
 #endif
-static inline float log_tonemapping_v2(const float x, const float grey, const float black,
-                                       const float dynamic_range)
+static inline void log_tonemapping_v2(dt_aligned_pixel_t mapped,
+                                      const dt_aligned_pixel_t x,
+                                      const float grey,
+                                      const float black,
+                                      const float dynamic_range)
 {
-  return clamp_simd((log2f(x / grey) - black) / dynamic_range);
+  // mapped = clamp_simd((log2f(x / grey) - black) / dynamic_range);
+  dt_aligned_pixel_t scaled;
+  for_each_channel(c, aligned(mapped, x))
+    scaled[c] = (x[c] / grey);
+  dt_aligned_pixel_t log;
+  // We can't use dt_vector_log here because its result is enough different to make
+  // some integration tests fail.  Hopefully the compiler will be able to substitute
+  // its own vectorized version of log2f().
+  for_each_channel(c,aligned(scaled,log))
+    log[c] = log2f(scaled[c]);
+  for_each_channel(c)
+    mapped[c] = (log[c] - black) / dynamic_range;
+  dt_vector_clip(mapped);
 }
 
 #ifdef _OPENMP
@@ -735,7 +971,6 @@ static inline float filmic_spline(const float x, const dt_aligned_pixel_t M1, co
   return result;
 }
 
-
 #ifdef _OPENMP
 #pragma omp declare simd uniform(sigma_toe, sigma_shoulder)
 #endif
@@ -744,7 +979,6 @@ static inline float filmic_desaturate_v1(const float x, const float sigma_toe, c
 {
   const float radius_toe = x;
   const float radius_shoulder = 1.0f - x;
-
   const float key_toe = expf(-0.5f * radius_toe * radius_toe / sigma_toe);
   const float key_shoulder = expf(-0.5f * radius_shoulder * radius_shoulder / sigma_shoulder);
 
@@ -781,11 +1015,11 @@ static inline float linear_saturation(const float x, const float luminance, cons
 
 
 #ifdef _OPENMP
-#pragma omp declare simd aligned(in, mask : 64) uniform(feathering, normalize, width, height, ch)
+#pragma omp declare simd aligned(in, mask : 64) uniform(feathering, normalize, width, height)
 #endif
 static inline gint mask_clipped_pixels(const float *const restrict in, float *const restrict mask,
                                        const float normalize, const float feathering, const size_t width,
-                                       const size_t height, const size_t ch)
+                                       const size_t height)
 {
   /* 1. Detect if pixels are clipped and count them,
    * 2. assign them a weight in [0. ; 1.] depending on how close from clipping they are. The weights are defined
@@ -793,25 +1027,19 @@ static inline gint mask_clipped_pixels(const float *const restrict in, float *co
    */
 
   int clipped = 0;
-
-  #ifdef __SSE2__
-    // flush denormals to zero for masking to avoid performance penalty
-    // if there are a lot of zero values in the mask
-    const unsigned int oldMode = _MM_GET_FLUSH_ZERO_MODE();
-    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-  #endif
+  const unsigned int oldMode = dt_mm_enable_flush_zero();
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(in, mask, normalize, feathering, width, height, ch) \
+  dt_omp_firstprivate(in, mask, normalize, feathering, width, height) \
   schedule(simd:static) aligned(mask, in:64) reduction(+:clipped)
 #endif
-  for(size_t k = 0; k < height * width * ch; k += ch)
+  for(size_t k = 0; k < 4 * height * width; k += 4)
   {
-    const float pix_max = fmaxf(sqrtf(sqf(in[k]) + sqf(in[k + 1]) + sqf(in[k + 2])), 0.f);
+    const float pix_max = sqrtf(sqf(in[k]) + sqf(in[k + 1]) + sqf(in[k + 2]));
     const float argument = -pix_max * normalize + feathering;
     const float weight = clamp_simd(1.0f / (1.0f + exp2f(argument)));
-    mask[k / ch] = weight;
+    mask[k / 4] = weight;
 
     // at x = 4, the sigmoid produces opacity = 5.882 %.
     // any x > 4 will produce negligible changes over the image,
@@ -819,10 +1047,7 @@ static inline gint mask_clipped_pixels(const float *const restrict in, float *co
     // so we discard pixels for argument > 4. for they are not worth computing.
     clipped += (4.f > argument);
   }
-
-  #ifdef __SSE2__
-    _MM_SET_FLUSH_ZERO_MODE(oldMode);
-  #endif
+  dt_mm_restore_flush_zero(oldMode);
 
   // If clipped area is < 9 pixels, recovery is not worth the computational cost, so skip it.
   return (clipped > 9);
@@ -850,7 +1075,8 @@ inline static void inpaint_noise(const float *const in, const float *const mask,
     for(size_t j = 0; j < width; j++)
     {
       // Init random number generator
-      uint32_t DT_ALIGNED_ARRAY state[4] = { splitmix32(j + 1), splitmix32((j + 1) * (i + 3)), splitmix32(1337), splitmix32(666) };
+      uint32_t DT_ALIGNED_ARRAY state[4]
+        = { splitmix32(j + 1), splitmix32((j + 1) * (i + 3)), splitmix32(1337), splitmix32(666) };
       xoshiro128plus(state);
       xoshiro128plus(state);
       xoshiro128plus(state);
@@ -872,27 +1098,29 @@ inline static void inpaint_noise(const float *const in, const float *const mask,
       dt_noise_generator_simd(noise_distribution, pix_in, sigma, flip, state, noise);
 
       // add noise to input
-      float *const restrict pix_out = __builtin_assume_aligned(inpainted + index, 16);
-      for_each_channel(c,aligned(pix_in,pix_out))
-        pix_out[c] = fmaxf(pix_in[c] * (1.0f - weight) + weight * noise[c], 0.f);
+      dt_aligned_pixel_t pix_out;
+      for_each_channel(c,aligned(pix_in,noise,pix_out))
+        pix_out[c] = MAX(pix_in[c] * (1.0f - weight) + weight * noise[c], 0.0f);
+      copy_pixel_nontemporal(inpainted + index, pix_out);
     }
+  dt_omploop_sfence();  // ensure that nontemporal write complete before we attempt to read the output
 }
 
 inline static void wavelets_reconstruct_RGB(const float *const restrict HF, const float *const restrict LF,
                                             const float *const restrict texture, const float *const restrict mask,
                                             float *const restrict reconstructed, const size_t width,
-                                            const size_t height, const size_t ch, const float gamma,
+                                            const size_t height, const float gamma,
                                             const float gamma_comp, const float beta, const float beta_comp,
                                             const float delta, const size_t s, const size_t scales)
 {
 #ifdef _OPENMP
 #pragma omp parallel for default(none)                                                                       \
-    dt_omp_firstprivate(width, height, ch, HF, LF, texture, mask, reconstructed, gamma, gamma_comp, beta,         \
+    dt_omp_firstprivate(width, height, HF, LF, texture, mask, reconstructed, gamma, gamma_comp, beta,         \
                         beta_comp, delta, s, scales) schedule(simd : static)
 #endif
-  for(size_t k = 0; k < height * width * ch; k += 4)
+  for(size_t k = 0; k < 4 * height * width; k += 4)
   {
-    const float alpha = mask[k / ch];
+    const float alpha = mask[k / 4];
 
     // cache RGB wavelets scales just to be sure the compiler doesn't reload them
     const float *const restrict HF_c = __builtin_assume_aligned(HF + k, 16);
@@ -900,7 +1128,7 @@ inline static void wavelets_reconstruct_RGB(const float *const restrict HF, cons
     const float *const restrict TT_c = __builtin_assume_aligned(texture + k, 16);
 
     // synthesize the max of all RGB channels texture as a flat texture term for the whole pixel
-    // this is useful if only 1 or 2 channels are clipped, so we transfer the valid/sharpest texture on the other
+    // this is useful if only 1 or 2 channels are clipped, so we transfer the valid/sharpest texture on the other
     // channels
     const float grey_texture = fmaxabsf(fmaxabsf(TT_c[0], TT_c[1]), TT_c[2]);
 
@@ -913,36 +1141,41 @@ inline static void wavelets_reconstruct_RGB(const float *const restrict HF, cons
     // magenta highlights.
     const float grey_HF = beta_comp * (gamma_comp * grey_details + gamma * grey_texture);
 
-    // synthesize the min of all low-frequency RGB channels as a flat structure term for the whole pixel
-    // when beta_comp ~= 1.0, we force the reconstruction to be achromatic, which may help with gamut issues or magenta highlights.
+    // synthesize the min of all low-frequency RGB channels as a flat
+    // structure term for the whole pixel
+    // when beta_comp ~= 1.0, we force the reconstruction to be
+    // achromatic, which may help with gamut issues or magenta
+    // highlights.
     const float grey_residual = beta_comp * (LF_c[0] + LF_c[1] + LF_c[2]) / 3.f;
 
-    #ifdef _OPENMP
-    #pragma omp simd aligned(reconstructed:64) aligned(HF_c, LF_c, TT_c:16)
-    #endif
-    for(size_t c = 0; c < 4; c++)
+    // synthesize interpolated/inpainted RGB channels color details residuals and weigh them
+    // this brings back some color on top of the grey_residual
+    dt_aligned_pixel_t details;
+    for_each_channel(c, aligned(details, HF_c, TT_c))
     {
-      // synthesize interpolated/inpainted RGB channels color details residuals and weigh them
-      // this brings back some color on top of the grey_residual
-
-      // synthesize interpolated/inpainted RGB channels color details and weigh them
-      // this brings back some color on top of the grey_details
-      const float details = (gamma_comp * HF_c[c] + gamma * TT_c[c]) * beta + grey_HF;
-
-      // reconstruction
-      const float residual = (s == scales - 1) ? (grey_residual + LF_c[c] * beta) : 0.f;
-      reconstructed[k + c] += alpha * (delta * details + residual);
+      details[c] = (gamma_comp * HF_c[c] + gamma * TT_c[c]) * beta + grey_HF;
     }
+    dt_aligned_pixel_t residual;
+    for_each_channel(c, aligned(LF_c))
+      residual[c] = (s == scales - 1) ? (grey_residual + LF_c[c] * beta) : 0.f;
+    for_each_channel(c,aligned(reconstructed))
+      reconstructed[k + c] += alpha * (delta * details[c] + residual[c]);
   }
 }
 
-inline static void wavelets_reconstruct_ratios(const float *const restrict HF, const float *const restrict LF,
+static inline void wavelets_reconstruct_ratios(const float *const restrict HF,
+                                               const float *const restrict LF,
                                                const float *const restrict texture,
                                                const float *const restrict mask,
-                                               float *const restrict reconstructed, const size_t width,
-                                               const size_t height, const size_t ch, const float gamma,
-                                               const float gamma_comp, const float beta, const float beta_comp,
-                                               const float delta, const size_t s, const size_t scales)
+                                               float *const restrict reconstructed,
+                                               const size_t width,
+                                               const size_t height,
+                                               const float gamma,
+                                               const float gamma_comp,
+                                               const float beta,
+                                               const float beta_comp,
+                                               const float delta,
+                                               const size_t s, const size_t scales)
 {
 /*
  * This is the adapted version of the RGB reconstruction
@@ -950,7 +1183,7 @@ inline static void wavelets_reconstruct_ratios(const float *const restrict HF, c
  * The ratios represent the chromaticity in image and contain low frequencies in the absence of noise or
  * aberrations, so, here, we favor them instead.
  *
- * Consequences : 
+ * Consequences :
  *  1. use min of interpolated channels details instead of max, to get smoother details
  *  4. use the max of low frequency channels instead of min, to favor achromatic solution.
  *
@@ -958,14 +1191,14 @@ inline static void wavelets_reconstruct_ratios(const float *const restrict HF, c
  * (more colorful)
  */
 #ifdef _OPENMP
-#pragma omp parallel for default(none)                                                                       \
-    dt_omp_firstprivate(width, height, ch, HF, LF, texture, mask, reconstructed, gamma, gamma_comp, beta,         \
-                        beta_comp, delta, s, scales) schedule(simd                                                \
-                                                              : static)
+#pragma omp parallel for default(none)                                  \
+  dt_omp_firstprivate(width, height, HF, LF, texture, mask, reconstructed, \
+                      gamma, gamma_comp, beta, beta_comp, delta, s, scales) \
+  schedule(simd:static)
 #endif
-  for(size_t k = 0; k < height * width * ch; k += 4)
+  for(size_t k = 0; k < 4 * height * width; k += 4)
   {
-    const float alpha = mask[k / ch];
+    const float alpha = mask[k / 4];
 
     // cache RGB wavelets scales just to be sure the compiler doesn't reload them
     const float *const restrict HF_c = __builtin_assume_aligned(HF + k, 16);
@@ -973,7 +1206,7 @@ inline static void wavelets_reconstruct_ratios(const float *const restrict HF, c
     const float *const restrict TT_c = __builtin_assume_aligned(texture + k, 16);
 
     // synthesize the max of all RGB channels texture as a flat texture term for the whole pixel
-    // this is useful if only 1 or 2 channels are clipped, so we transfer the valid/sharpest texture on the other
+    // this is useful if only 1 or 2 channels are clipped, so we transfer the valid/sharpest texture on the other
     // channels
     const float grey_texture = fmaxabsf(fmaxabsf(TT_c[0], TT_c[1]), TT_c[2]);
 
@@ -986,53 +1219,45 @@ inline static void wavelets_reconstruct_ratios(const float *const restrict HF, c
     // magenta highlights.
     const float grey_HF = (gamma_comp * grey_details + gamma * grey_texture);
 
-    #ifdef _OPENMP
-    #pragma omp simd aligned(reconstructed:64) aligned(HF_c, TT_c, LF_c:16) linear(k:4)
-    #endif
-    for(size_t c = 0; c < 4; c++)
+    dt_aligned_pixel_t details;
+    for_each_channel(c,aligned(reconstructed:64) aligned(HF_c, TT_c, LF_c:16) linear(k:4))
     {
       // synthesize interpolated/inpainted RGB channels color details residuals and weigh them
       // this brings back some color on top of the grey_residual
-      const float details = 0.5f * ((gamma_comp * HF_c[c] + gamma * TT_c[c]) + grey_HF);
-
-      // reconstruction
-      const float residual = (s == scales - 1) ? LF_c[c] : 0.f;
-      reconstructed[k + c] += alpha * (delta * details + residual);
+      details[c] = 0.5f * ((gamma_comp * HF_c[c] + gamma * TT_c[c]) + grey_HF);
     }
+    dt_aligned_pixel_t residual;
+    for_each_channel(c, aligned(LF_c))
+    {
+      // reconstruction
+      residual[c] = (s == scales - 1) ? LF_c[c] : 0.f;
+    }
+    for_each_channel(c, aligned(reconstructed, details, residual))
+      reconstructed[k + c] += alpha * (delta * details[c] + residual[c]);
   }
 }
 
 
-static inline void init_reconstruct(const float *const restrict in, const float *const restrict mask,
-                                    float *const restrict reconstructed, const size_t width, const size_t height)
+static inline void init_reconstruct(const float *const restrict in,
+                                    const float *const restrict mask,
+                                    float *const restrict reconstructed,
+                                    const size_t width,
+                                    const size_t height)
 {
 // init the reconstructed buffer with non-clipped and partially clipped pixels
-// Note : it's a simple multiplied alpha blending where mask = alpha weight
+// Note : it's a simple multiplied alpha blending where mask = alpha weight
 #ifdef _OPENMP
 #pragma omp parallel for default(none) dt_omp_firstprivate(in, mask, reconstructed, width, height) \
   schedule(static)
 #endif
   for(size_t k = 0; k < height * width; k++)
   {
+    dt_aligned_pixel_t re;
     for_each_channel(c,aligned(in,mask,reconstructed))
-      reconstructed[4*k + c] = fmaxf(in[4*k + c] * (1.f - mask[k]), 0.f);
+      re[c] = MAX(in[4*k + c] * (1.f - mask[k]), 0.0f);
+    copy_pixel_nontemporal(reconstructed + 4*k, re);
   }
-}
-
-
-static inline void wavelets_detail_level(const float *const restrict detail, const float *const restrict LF,
-                                             float *const restrict HF, float *const restrict texture,
-                                             const size_t width, const size_t height, const size_t ch)
-{
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) dt_omp_firstprivate(width, height, HF, LF, detail, texture)           \
-    schedule(simd                                                                                                 \
-             : static) aligned(HF, LF, detail, texture : 64)
-#endif
-  for(size_t k = 0; k < height * width; k++)
-  {
-    for(size_t c = 0; c < 4; ++c) HF[4*k + c] = texture[4*k + c] = detail[4*k + c] - LF[4*k + c];
-  }
+  dt_omploop_sfence();  // ensure that nontemporal write complete before we attempt to read the output
 }
 
 static int get_scales(const dt_iop_roi_t *roi_in, const dt_dev_pixelpipe_iop_t *const piece)
@@ -1054,11 +1279,14 @@ static int get_scales(const dt_iop_roi_t *roi_in, const dt_dev_pixelpipe_iop_t *
 }
 
 
-static inline gint reconstruct_highlights(const float *const restrict in, const float *const restrict mask,
+static inline gint reconstruct_highlights(const float *const restrict in,
+                                          const float *const restrict mask,
                                           float *const restrict reconstructed,
-                                          const dt_iop_filmicrgb_reconstruction_type_t variant, const size_t ch,
-                                          const dt_iop_filmicrgb_data_t *const data, dt_dev_pixelpipe_iop_t *piece,
-                                          const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+                                          const dt_iop_filmicrgb_reconstruction_type_t variant,
+                                          const dt_iop_filmicrgb_data_t *const data,
+                                          dt_dev_pixelpipe_iop_t *piece,
+                                          const dt_iop_roi_t *const roi_in,
+                                          const dt_iop_roi_t *const roi_out)
 {
   gint success = TRUE;
 
@@ -1066,15 +1294,18 @@ static inline gint reconstruct_highlights(const float *const restrict in, const 
   const int scales = get_scales(roi_in, piece);
 
   // wavelets scales buffers
-  float *const restrict LF_even = dt_alloc_sse_ps(ch * roi_out->width * roi_out->height); // low-frequencies RGB
-  float *const restrict LF_odd = dt_alloc_sse_ps(ch * roi_out->width * roi_out->height);  // low-frequencies RGB
-  float *const restrict HF_RGB = dt_alloc_sse_ps(ch * roi_out->width * roi_out->height);  // high-frequencies RGB
-  float *const restrict HF_grey = dt_alloc_sse_ps(ch * roi_out->width * roi_out->height); // high-frequencies RGB backup
+  float *const restrict LF_even
+    = dt_alloc_align_float(4 * roi_out->width * roi_out->height);  // low-frequencies RGB
+  float *const restrict LF_odd
+    = dt_alloc_align_float(4 * roi_out->width * roi_out->height);  // low-frequencies RGB
+  float *const restrict HF_RGB
+    = dt_alloc_align_float(4 * roi_out->width * roi_out->height);  // high-frequencies RGB
 
   // alloc a permanent reusable buffer for intermediate computations - avoid multiple alloc/free
-  float *const restrict temp = dt_alloc_sse_ps(dt_get_num_threads() * ch * roi_out->width);
+  size_t padded_size;
+  float *const restrict temp = dt_alloc_perthread_float(4 * roi_out->width, &padded_size);
 
-  if(!LF_even || !LF_odd || !HF_RGB || !HF_grey || !temp)
+  if(!LF_even || !LF_odd || !HF_RGB || !temp)
   {
     dt_control_log(_("filmic highlights reconstruction failed to allocate memory, check your RAM settings"));
     success = FALSE;
@@ -1106,7 +1337,7 @@ static inline gint reconstruct_highlights(const float *const restrict in, const 
     float *restrict LF;                 // output buffer for the current scale
     float *restrict HF_RGB_temp;        // temp buffer for HF_RBG terms before blurring
 
-    // swap buffers so we only need 2 LF buffers : the LF at scale (s-1) and the one at current scale (s)
+    // swap buffers so we only need 2 LF buffers : the LF at scale (s-1) and the one at current scale (s)
     if(s == 0)
     {
       detail = in;
@@ -1128,22 +1359,20 @@ static inline gint reconstruct_highlights(const float *const restrict in, const 
 
     const int mult = 1 << s; // fancy-pants C notation for 2^s with integer type, don't be afraid
 
-    // Compute wavelets low-frequency scales
-    blur_2D_Bspline(detail, LF, temp, roi_out->width, roi_out->height, mult);
-
-    // Compute wavelets high-frequency scales and save the minimum of texture over the RGB channels
-    // Note : HF_RGB = detail - LF, HF_grey = max(HF_RGB)
-    wavelets_detail_level(detail, LF, HF_RGB_temp, HF_grey, roi_out->width, roi_out->height, ch);
+    // Compute wavelets - split data into high- and low-frequency scales
+    float *texture = HF_RGB_temp;
+    decompose_2D_Bspline(detail, HF_RGB_temp, LF, roi_out->width, roi_out->height, mult, temp, padded_size);
 
     // interpolate/blur/inpaint (same thing) the RGB high-frequency to fill holes
-    blur_2D_Bspline(HF_RGB_temp, HF_RGB, temp, roi_out->width, roi_out->height, 1);
+    blur_2D_Bspline(HF_RGB_temp, HF_RGB, temp, roi_out->width, roi_out->height, 1, TRUE); // clip negatives
+    // FIXME: HF have legitimate negatives, so clipping them is wrong, but compatibility…
 
     // Reconstruct clipped parts
     if(variant == DT_FILMIC_RECONSTRUCT_RGB)
-      wavelets_reconstruct_RGB(HF_RGB, LF, HF_grey, mask, reconstructed, roi_out->width, roi_out->height, ch,
+      wavelets_reconstruct_RGB(HF_RGB, LF, texture, mask, reconstructed, roi_out->width, roi_out->height,
                                gamma, gamma_comp, beta, beta_comp, delta, s, scales);
     else if(variant == DT_FILMIC_RECONSTRUCT_RATIOS)
-      wavelets_reconstruct_ratios(HF_RGB, LF, HF_grey, mask, reconstructed, roi_out->width, roi_out->height, ch,
+      wavelets_reconstruct_ratios(HF_RGB, LF, texture, mask, reconstructed, roi_out->width, roi_out->height,
                                gamma, gamma_comp, beta, beta_comp, delta, s, scales);
   }
 
@@ -1152,31 +1381,34 @@ error:
   if(LF_even) dt_free_align(LF_even);
   if(LF_odd) dt_free_align(LF_odd);
   if(HF_RGB) dt_free_align(HF_RGB);
-  if(HF_grey) dt_free_align(HF_grey);
   return success;
 }
 
 
-static inline void filmic_split_v1(const float *const restrict in, float *const restrict out,
+static inline void filmic_split_v1(const float *const restrict in,
+                                   float *const restrict out,
                                    const dt_iop_order_iccprofile_info_t *const work_profile,
                                    const dt_iop_filmicrgb_data_t *const data,
-                                   const dt_iop_filmic_rgb_spline_t spline, const size_t width,
+                                   const dt_iop_filmic_rgb_spline_t spline,
+                                   const size_t width,
                                    const size_t height)
 {
+  const dt_aligned_pixel_t output_power
+    = { data->output_power, data->output_power, data->output_power, data->output_power };
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(width, height, data, in, out, work_profile, spline) \
+  dt_omp_firstprivate(width, height, data, in, out, work_profile, spline, output_power) \
   schedule(simd : static)
 #endif
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     const float *const restrict pix_in = in + k;
-    float *const restrict pix_out = out + k;
     dt_aligned_pixel_t temp;
 
     // Log tone-mapping
     for(int c = 0; c < 3; c++)
-      temp[c] = log_tonemapping_v1(fmaxf(pix_in[c], NORM_MIN), data->grey_source, data->black_source,
+      temp[c] = log_tonemapping_v1(MAX(pix_in[c], NORM_MIN), data->grey_source, data->black_source,
                                    data->dynamic_range);
 
     // Get the desaturation coeff based on the log value
@@ -1190,36 +1422,43 @@ static inline void filmic_split_v1(const float *const restrict in, float *const 
     // Desaturate on the non-linear parts of the curve
     // Filmic S curve on the max RGB
     // Apply the transfer function of the display
+    dt_aligned_pixel_t pix_out = { 0.0f, 0.0f, 0.0f, 0.0f };
     for(int c = 0; c < 3; c++)
-      pix_out[c] = powf(
-          clamp_simd(filmic_spline(linear_saturation(temp[c], lum, desaturation), spline.M1, spline.M2, spline.M3,
-                                   spline.M4, spline.M5, spline.latitude_min, spline.latitude_max, spline.type)),
-          data->output_power);
+      pix_out[c] = filmic_spline(linear_saturation(temp[c], lum, desaturation), spline.M1, spline.M2, spline.M3,
+                                 spline.M4, spline.M5, spline.latitude_min, spline.latitude_max, spline.type);
+    dt_vector_clip(pix_out);
+    dt_vector_powf(pix_out, output_power, pix_out);
+    copy_pixel_nontemporal(out + k, pix_out);
   }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
 }
 
 
-static inline void filmic_split_v2_v3(const float *const restrict in, float *const restrict out,
+static inline void filmic_split_v2_v3(const float *const restrict in,
+                                      float *const restrict out,
                                       const dt_iop_order_iccprofile_info_t *const work_profile,
                                       const dt_iop_filmicrgb_data_t *const data,
-                                      const dt_iop_filmic_rgb_spline_t spline, const size_t width,
+                                      const dt_iop_filmic_rgb_spline_t spline,
+                                      const size_t width,
                                       const size_t height)
 {
+  const dt_aligned_pixel_t output_power
+    = { data->output_power, data->output_power, data->output_power, data->output_power };
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(width, height, data, in, out, work_profile, spline) \
+  dt_omp_firstprivate(width, height, data, in, out, work_profile, spline, output_power) \
   schedule(simd : static)
 #endif
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     const float *const restrict pix_in = in + k;
-    float *const restrict pix_out = out + k;
     dt_aligned_pixel_t temp;
+    for_each_channel(c,aligned(pix_in,temp))
+      temp[c] = MAX(pix_in[c], NORM_MIN);
 
     // Log tone-mapping
-    for(int c = 0; c < 3; c++)
-      temp[c] = log_tonemapping_v2(fmaxf(pix_in[c], NORM_MIN), data->grey_source, data->black_source,
-                                   data->dynamic_range);
+    log_tonemapping_v2(temp, temp, data->grey_source, data->black_source, data->dynamic_range);
 
     // Get the desaturation coeff based on the log value
     const float lum = (work_profile)
@@ -1232,12 +1471,17 @@ static inline void filmic_split_v2_v3(const float *const restrict in, float *con
     // Desaturate on the non-linear parts of the curve
     // Filmic S curve on the max RGB
     // Apply the transfer function of the display
-    for(int c = 0; c < 3; c++)
-      pix_out[c] = powf(
-          clamp_simd(filmic_spline(linear_saturation(temp[c], lum, desaturation), spline.M1, spline.M2, spline.M3,
-                                   spline.M4, spline.M5, spline.latitude_min, spline.latitude_max, spline.type)),
-          data->output_power);
+    dt_aligned_pixel_t pix_out = { 0.0f, 0.0f, 0.0f, 0.0f };
+    for(size_t c = 0; c < 3; c++)
+    {
+      pix_out[c] = filmic_spline(linear_saturation(temp[c], lum, desaturation), spline.M1, spline.M2, spline.M3,
+                                spline.M4, spline.M5, spline.latitude_min, spline.latitude_max, spline.type);
+    }
+    dt_vector_clip(pix_out);
+    dt_vector_powf(pix_out, output_power, pix_out);
+    copy_pixel_nontemporal(out + k, pix_out);
   }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
 }
 
 
@@ -1254,17 +1498,16 @@ static inline void filmic_chroma_v1(const float *const restrict in, float *const
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
     const float *const restrict pix_in = in + k;
-    float *const restrict pix_out = out + k;
 
-    dt_aligned_pixel_t ratios = { 0.0f };
-    float norm = fmaxf(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
+    dt_aligned_pixel_t ratios = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float norm = MAX(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
 
     // Save the ratios
     for_each_channel(c,aligned(pix_in))
       ratios[c] = pix_in[c] / norm;
 
     // Sanitize the ratios
-    const float min_ratios = fminf(fminf(ratios[0], ratios[1]), ratios[2]);
+    const float min_ratios = MIN(MIN(ratios[0], ratios[1]), ratios[2]);
     if(min_ratios < 0.0f)
       for_each_channel(c) ratios[c] -= min_ratios;
 
@@ -1282,7 +1525,8 @@ static inline void filmic_chroma_v1(const float *const restrict in, float *const
                                      : dt_camera_rgb_luminance(ratios);
 
     // Desaturate on the non-linear parts of the curve and save ratios
-    for(int c = 0; c < 3; c++) ratios[c] = linear_saturation(ratios[c], lum, desaturation) / norm;
+    for_each_channel(c, aligned(ratios))
+      ratios[c] = linear_saturation(ratios[c], lum, desaturation) / norm;
 
     // Filmic S curve on the max RGB
     // Apply the transfer function of the display
@@ -1291,30 +1535,34 @@ static inline void filmic_chroma_v1(const float *const restrict in, float *const
                 data->output_power);
 
     // Re-apply ratios
-    for_each_channel(c,aligned(pix_out)) pix_out[c] = ratios[c] * norm;
+    dt_aligned_pixel_t pix_out;
+    for_each_channel(c,aligned(ratios,pix_out))
+      pix_out[c] = ratios[c] * norm;
+    copy_pixel_nontemporal(out + k, pix_out);
   }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
 }
 
 
-static inline void filmic_chroma_v2_v3(const float *const restrict in, float *const restrict out,
+static inline void filmic_chroma_v2_v3(const float *const restrict in,
+                                       float *const restrict out,
                                        const dt_iop_order_iccprofile_info_t *const work_profile,
                                        const dt_iop_filmicrgb_data_t *const data,
-                                       const dt_iop_filmic_rgb_spline_t spline, const int variant,
-                                       const size_t width, const size_t height, const size_t ch,
+                                       const dt_iop_filmic_rgb_spline_t spline,
+                                       const int variant,
+                                       const size_t width,
+                                       const size_t height,
                                        const dt_iop_filmicrgb_colorscience_type_t colorscience_version)
 {
-
 #ifdef _OPENMP
 #pragma omp parallel for default(none)                                                                       \
-    dt_omp_firstprivate(width, height, ch, data, in, out, work_profile, variant, spline, colorscience_version)    \
+    dt_omp_firstprivate(width, height, data, in, out, work_profile, variant, spline, colorscience_version)    \
     schedule(simd :static)
 #endif
-  for(size_t k = 0; k < height * width * ch; k += ch)
+  for(size_t k = 0; k < 4 * height * width; k += 4)
   {
     const float *const restrict pix_in = in + k;
-    float *const restrict pix_out = out + k;
-
-    float norm = fmaxf(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
+    float norm = MAX(get_pixel_norm(pix_in, variant, work_profile), NORM_MIN);
 
     // Save the ratios
     dt_aligned_pixel_t ratios = { 0.0f };
@@ -1323,7 +1571,7 @@ static inline void filmic_chroma_v2_v3(const float *const restrict in, float *co
       ratios[c] = pix_in[c] / norm;
 
     // Sanitize the ratios
-    const float min_ratios = fminf(fminf(ratios[0], ratios[1]), ratios[2]);
+    const float min_ratios = MIN(MIN(ratios[0], ratios[1]), ratios[2]);
     const int sanitize = (min_ratios < 0.0f);
 
     if(sanitize)
@@ -1331,30 +1579,32 @@ static inline void filmic_chroma_v2_v3(const float *const restrict in, float *co
         ratios[c] -= min_ratios;
 
     // Log tone-mapping
-    norm = log_tonemapping_v2(norm, data->grey_source, data->black_source, data->dynamic_range);
+    norm = log_tonemapping_v2_1ch(norm, data->grey_source, data->black_source, data->dynamic_range);
 
     // Get the desaturation value based on the log value
     const float desaturation = filmic_desaturate_v2(norm, data->sigma_toe, data->sigma_shoulder, data->saturation);
 
     // Filmic S curve on the max RGB
     // Apply the transfer function of the display
-    norm = powf(clamp_simd(filmic_spline(norm, spline.M1, spline.M2, spline.M3, spline.M4, spline.M5,
-                                         spline.latitude_min, spline.latitude_max, spline.type)),
+    norm = powf(CLIP(filmic_spline(norm, spline.M1, spline.M2, spline.M3, spline.M4, spline.M5,
+                                   spline.latitude_min, spline.latitude_max, spline.type)),
                 data->output_power);
 
     // Re-apply ratios with saturation change
-    for(int c = 0; c < 3; c++) ratios[c] = fmaxf(ratios[c] + (1.0f - ratios[c]) * (1.0f - desaturation), 0.0f);
+    for_each_channel(c, aligned(ratios))
+      ratios[c] = MAX(ratios[c] + (1.0f - ratios[c]) * (1.0f - desaturation), 0.0f);
 
     // color science v3: normalize again after desaturation - the norm might have changed by the desaturation
     // operation.
     if(colorscience_version == DT_FILMIC_COLORSCIENCE_V3)
-      norm /= fmaxf(get_pixel_norm(ratios, variant, work_profile), NORM_MIN);
+      norm /= MAX(get_pixel_norm(ratios, variant, work_profile), NORM_MIN);
 
+    dt_aligned_pixel_t pix_out;
     for_each_channel(c,aligned(pix_out))
       pix_out[c] = ratios[c] * norm;
 
     // Gamut mapping
-    const float max_pix = fmaxf(fmaxf(pix_out[0], pix_out[1]), pix_out[2]);
+    const float max_pix = MAX(MAX(pix_out[0], pix_out[1]), pix_out[2]);
     const int penalize = (max_pix > 1.0f);
 
     // Penalize the ratios by the amount of clipping
@@ -1363,31 +1613,464 @@ static inline void filmic_chroma_v2_v3(const float *const restrict in, float *co
       for_each_channel(c,aligned(pix_out))
       {
         ratios[c] = fmaxf(ratios[c] + (1.0f - max_pix), 0.0f);
-        pix_out[c] = clamp_simd(ratios[c] * norm);
+        pix_out[c] = CLIP(ratios[c] * norm);
       }
     }
+    copy_pixel_nontemporal(out + k, pix_out);
+  }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
+}
+
+
+static inline void filmic_desaturate_v4(const dt_aligned_pixel_t Ych_original,
+                                        dt_aligned_pixel_t Ych_final,
+                                        const float saturation)
+{
+  // Note : Ych is normalized trough the LMS conversion,
+  // meaning c is actually a saturation (saturation ~= chroma / brightness).
+  // So copy-pasting c and h from a different Y is equivalent to
+  // tonemapping with a norm, which is equivalent to doing exposure compensation :
+  // it's saturation-invariant, aka chroma will get increased
+  // if Y is increased, and the other way around.
+  const float chroma_original = Ych_original[1] * Ych_original[0];  // c2
+  float chroma_final = Ych_final[1] * Ych_final[0];                 // c1
+
+  // fit a linear model `chroma = f(y)`:
+  // `chroma = c1 + (yc - y1) * (c2 - c1) / (y2 - y1)`
+  // where `(yc - y1)` is user-defined as `saturation * (y2 - y1)`
+  // so `chroma = c1 + saturation * (c2 - c1)`
+  // when saturation = 0, we stay at the saturation-invariant final chroma
+  // when saturation > 0, we go back towards the initial chroma before tone-mapping
+  // when saturation < 0, we amplify the initial -> final chroma change
+  const float delta_chroma = saturation * (chroma_original - chroma_final);
+
+  const int filmic_brightens = (Ych_final[0] > Ych_original[0]);
+  const int filmic_resat = (chroma_original < chroma_final);
+  const int filmic_desat = (chroma_original > chroma_final);
+  const int user_resat = (saturation > 0.f);
+  const int user_desat = (saturation < 0.f);
+
+  chroma_final = (filmic_brightens && filmic_resat)
+                      ? (chroma_original + chroma_final) / 2.f // force original lower sat if brightening
+                  : ((user_resat && filmic_desat) || user_desat)
+                      ? chroma_final + delta_chroma // allow resaturation only if filmic desaturated, allow desat anytime
+                      : chroma_final;
+
+  Ych_final[1] = MAX(chroma_final / Ych_final[0], 0.f);
+}
+
+
+static inline void gamut_check_RGB(const dt_colormatrix_t matrix_in_trans,
+                                   const dt_colormatrix_t matrix_out,
+                                   const dt_colormatrix_t matrix_out_trans,
+                                   const float display_black,
+                                   const float display_white,
+                                   const dt_aligned_pixel_t Ych_in,
+                                   dt_aligned_pixel_t RGB_out)
+{
+  // Heuristic: if there are negatives, calculate the amount (luminance) of white light that
+  // would need to be mixed in to bring the pixel back in gamut.
+  dt_aligned_pixel_t RGB_brightened = { 0.f };
+  Ych_to_RGB(Ych_in, matrix_out_trans, RGB_brightened);
+  const float min_pix = MIN(MIN(RGB_brightened[0], RGB_brightened[1]), RGB_brightened[2]);
+  const float black_offset = MAX(-min_pix, 0.f);
+  for_each_channel(c) RGB_brightened[c] += black_offset;
+  dt_aligned_pixel_t Ych_brightened = { 0.f };
+  RGB_to_Ych(RGB_brightened, matrix_in_trans, Ych_brightened);
+
+  // Increase the input luminance a little by the value we calculated above.
+  // Note, however, that this doesn't actually desaturate the color like mixing
+  // white would do. We will next find the chroma change needed to bring the pixel
+  // into gamut.
+  const float Y = CLAMP((Ych_in[0] + Ych_brightened[0]) / 2.f,
+                        CIE_Y_1931_to_CIE_Y_2006(display_black),
+                        CIE_Y_1931_to_CIE_Y_2006(display_white));
+
+  const float cos_h = Ych_in[2];
+  const float sin_h = Ych_in[3];
+  const float new_chroma = MIN(Ych_in[1], Ych_max_chroma(matrix_out, display_white, Y, cos_h, sin_h));
+
+  // Go to RGB, using existing luminance and hue and the new chroma
+  const dt_aligned_pixel_t Ych = { Y, new_chroma, cos_h, sin_h };
+  Ych_to_RGB(Ych, matrix_out_trans, RGB_out);
+
+  // Clamp in target RGB as a final catch-all
+  for_each_channel(c, aligned(RGB_out))
+    RGB_out[c] = CLAMP(RGB_out[c], 0.f, display_white);
+}
+
+
+#ifdef _OPENMP
+#pragma omp declare simd \
+  uniform(input_matrix_trans, output_matrix, export_input_matrix_trans, export_output_matrix, use_output_profile) \
+  aligned(Ych_final, Ych_original, pix_out:16) \
+  aligned(input_matrix_trans, output_matrix, export_input_matrix_trans, export_output_matrix:64)
+#endif
+static inline void gamut_mapping(dt_aligned_pixel_t Ych_final,
+                                 dt_aligned_pixel_t Ych_original,
+                                 dt_aligned_pixel_t pix_out,
+                                 const dt_colormatrix_t input_matrix_trans,
+                                 const dt_colormatrix_t output_matrix,
+                                 const dt_colormatrix_t output_matrix_trans,
+                                 const dt_colormatrix_t export_input_matrix_trans,
+                                 const dt_colormatrix_t export_output_matrix,
+                                 const dt_colormatrix_t export_output_matrix_trans,
+                                 const float display_black,
+                                 const float display_white,
+                                 const float saturation,
+                                 const int use_output_profile)
+{
+  // Force final hue to original
+  Ych_final[2] = Ych_original[2];
+  Ych_final[3] = Ych_original[3];
+
+  // Clip luminance
+  Ych_final[0] = CLAMP(Ych_final[0],
+                        CIE_Y_1931_to_CIE_Y_2006(display_black),
+                        CIE_Y_1931_to_CIE_Y_2006(display_white));
+
+  // Massage chroma
+  filmic_desaturate_v4(Ych_original, Ych_final, saturation);
+  gamut_check_Yrg(Ych_final);
+
+  if(!use_output_profile)
+  {
+    // Now, it is still possible that one channel > display white because of saturation.
+    // We have already clipped Y, so we know that any problem now is caused by c
+    gamut_check_RGB(input_matrix_trans, output_matrix, output_matrix_trans,
+                    display_black, display_white, Ych_final, pix_out);
+  }
+  else
+  {
+    // Now, it is still possible that one channel > display white because of saturation.
+    // We have already clipped Y, so we know that any problem now is caused by c
+    gamut_check_RGB(export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                    display_black, display_white, Ych_final, pix_out);
+
+    // Go from export RGB to CIE LMS 2006 D65
+    dt_aligned_pixel_t LMS = { 0.f };
+    dt_apply_transposed_color_matrix(pix_out, export_input_matrix_trans, LMS);
+
+    // Go from CIE LMS 2006 D65 to pipeline RGB D50
+    dt_apply_transposed_color_matrix(LMS, output_matrix_trans, pix_out);
   }
 }
 
 
-static inline void display_mask(const float *const restrict mask, float *const restrict out, const size_t width,
+static int filmic_v4_prepare_matrices(dt_colormatrix_t input_matrix_trans,
+                                      dt_colormatrix_t output_matrix,
+                                      dt_colormatrix_t output_matrix_trans,
+                                      dt_colormatrix_t export_input_matrix_trans,
+                                      dt_colormatrix_t export_output_matrix,
+                                      dt_colormatrix_t export_output_matrix_trans,
+                                      const dt_iop_order_iccprofile_info_t *const work_profile,
+                                      const dt_iop_order_iccprofile_info_t *const export_profile)
+
+{
+  dt_colormatrix_t input_temp = { { 0.0f } };
+  prepare_RGB_Yrg_matrices(work_profile, input_temp, output_matrix);
+  dt_colormatrix_transpose(input_matrix_trans, input_temp);
+  dt_colormatrix_transpose(output_matrix_trans, output_matrix);
+
+  // If the pipeline output profile is supported (matrix profile), we gamut map against it
+  const int use_output_profile = (export_profile != NULL);
+  if(use_output_profile)
+  {
+    prepare_RGB_Yrg_matrices(export_profile, input_temp, export_output_matrix);
+    dt_colormatrix_transpose(export_input_matrix_trans, input_temp);
+    dt_colormatrix_transpose(export_output_matrix_trans, export_output_matrix);
+  }
+
+  return use_output_profile;
+}
+
+#ifdef _OPENMP
+#pragma omp declare simd \
+  uniform(work_profile, data, spline, norm_min, norm_max, display_black, display_white, type) \
+  aligned(pix_in, pix_out:16)
+#endif
+static inline void norm_tone_mapping_v4(const dt_aligned_pixel_t pix_in,
+                                        dt_aligned_pixel_t pix_out,
+                                        const dt_iop_filmicrgb_methods_type_t type,
+                                        const dt_iop_order_iccprofile_info_t *const work_profile,
+                                        const dt_iop_filmicrgb_data_t *const data,
+                                        const dt_iop_filmic_rgb_spline_t spline,
+                                        const float norm_min,
+                                        const float norm_max,
+                                        const float display_black,
+                                        const float display_white)
+    {
+  // Norm must be clamped early to the valid input range, otherwise it will be clamped
+  // later in log_tonemapping_v2 and the ratios will be then incorrect.
+  // This would result in colorful patches darker than their surrounding in places
+  // where the raw data is clipped.
+  float norm = CLAMPF(get_pixel_norm(pix_in, type, work_profile), norm_min, norm_max);
+
+  // Save the ratios
+  dt_aligned_pixel_t ratios = { 0.0f };
+  for_each_channel(c,aligned(pix_in))
+    ratios[c] = pix_in[c] / norm;
+
+  // Log tone-mapping
+  norm = log_tonemapping_v2_1ch(norm, data->grey_source, data->black_source, data->dynamic_range);
+
+  // Filmic S curve on the max RGB
+  // Apply the transfer function of the display
+  norm = powf(CLAMP(filmic_spline(norm, spline.M1, spline.M2, spline.M3, spline.M4, spline.M5,
+                                        spline.latitude_min, spline.latitude_max, spline.type),
+                    display_black,
+                    display_white),
+              data->output_power);
+
+  // Restore RGB
+  for_each_channel(c,aligned(pix_out))
+    pix_out[c] = ratios[c] * norm;
+}
+
+#ifdef _OPENMP
+#pragma omp declare simd uniform(data, spline, display_black, display_white) \
+  aligned(pix_in, pix_out:16)
+#endif
+static inline void RGB_tone_mapping_v4(const dt_aligned_pixel_t pix_in,
+                                       dt_aligned_pixel_t pix_out,
+                                       const dt_iop_filmicrgb_data_t *const data,
+                                       const dt_iop_filmic_rgb_spline_t spline,
+                                       const float display_black,
+                                       const float display_white)
+{
+  dt_aligned_pixel_t mapped;
+  log_tonemapping_v2(mapped, pix_in, data->grey_source, data->black_source, data->dynamic_range);
+//  for_each_channel(c,aligned(mapped))
+  for(size_t c = 0; c < 3; c++)
+  {
+    mapped[c] = filmic_spline(mapped[c], spline.M1, spline.M2, spline.M3, spline.M4, spline.M5,
+                              spline.latitude_min, spline.latitude_max, spline.type);
+  }
+  for_each_channel(c,aligned(mapped))
+  {
+    // individual components can always go to zero, luminance is clamped later
+    mapped[c] = CLAMP(mapped[c], 0.0f, display_white);
+  }
+  dt_vector_pow1(mapped, data->output_power, pix_out);
+}
+
+static inline void filmic_chroma_v4(const float *const restrict in,
+                                    float *const restrict out,
+                                    const dt_iop_order_iccprofile_info_t *const work_profile,
+                                    const dt_iop_order_iccprofile_info_t *const export_profile,
+                                    const dt_iop_filmicrgb_data_t *const data,
+                                    const dt_iop_filmic_rgb_spline_t spline,
+                                    const int variant,
+                                    const size_t width,
+                                    const size_t height,
+                                    const dt_iop_filmicrgb_colorscience_type_t colorscience_version,
+                                    const float display_black,
+                                    const float display_white)
+{
+  // See colorbalancergb.c for details
+  dt_colormatrix_t input_matrix_trans;         // pipeline RGB -> LMS 2006
+  dt_colormatrix_t output_matrix;              // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t output_matrix_trans;        // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t export_input_matrix_trans;  // output RGB -> LMS 2006
+  dt_colormatrix_t export_output_matrix;       // LMS 2006 -> output RGB
+  dt_colormatrix_t export_output_matrix_trans; // LMS 2006 -> output RGB
+
+  const int use_output_profile
+    = filmic_v4_prepare_matrices(input_matrix_trans, output_matrix, output_matrix_trans,
+                                 export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                                 work_profile, export_profile);
+
+  const float norm_min = exp_tonemapping_v2(0.f, data->grey_source, data->black_source, data->dynamic_range);
+  const float norm_max = exp_tonemapping_v2(1.f, data->grey_source, data->black_source, data->dynamic_range);
+
+#ifdef _OPENMP
+#pragma omp parallel for default(none)                                                                       \
+    dt_omp_firstprivate(width, height, data, in, out, work_profile, input_matrix_trans, output_matrix, \
+                        output_matrix_trans, variant, spline, display_white, display_black, \
+                        export_input_matrix_trans, export_output_matrix, export_output_matrix_trans, \
+                        use_output_profile, norm_min, norm_max)         \
+    schedule(simd :static)
+#endif
+  for(size_t k = 0; k < 4 * height * width; k += 4)
+  {
+    const float *const restrict pix_in = in + k;
+    dt_aligned_pixel_t pix_out;
+    norm_tone_mapping_v4(pix_in, pix_out, variant, work_profile, data, spline,
+                         norm_min, norm_max, display_black, display_white);
+
+    // Save Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_original = { 0.f };
+    RGB_to_Ych(pix_in, input_matrix_trans, Ych_original);
+
+    // Get final Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_final = { 0.f };
+    RGB_to_Ych(pix_out, input_matrix_trans, Ych_final);
+
+    gamut_mapping(Ych_final, Ych_original, pix_out, input_matrix_trans, output_matrix, output_matrix_trans,
+                  export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                  display_black, display_white, data->saturation, use_output_profile);
+    copy_pixel_nontemporal(out + k, pix_out);
+  }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
+}
+
+static inline void filmic_split_v4(const float *const restrict in,
+                                   float *const restrict out,
+                                   const dt_iop_order_iccprofile_info_t *const work_profile,
+                                   const dt_iop_order_iccprofile_info_t *const export_profile,
+                                   const dt_iop_filmicrgb_data_t *const data,
+                                   const dt_iop_filmic_rgb_spline_t spline,
+                                   const int variant,
+                                   const size_t width,
+                                   const size_t height,
+                                   const dt_iop_filmicrgb_colorscience_type_t colorscience_version,
+                                   const float display_black,
+                                   const float display_white)
+
+{
+  // See colorbalancergb.c for details
+  dt_colormatrix_t input_matrix_trans;         // pipeline RGB -> LMS 2006
+  dt_colormatrix_t output_matrix;              // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t output_matrix_trans;        // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t export_input_matrix_trans;  // output RGB -> LMS 2006
+  dt_colormatrix_t export_output_matrix;       // LMS 2006 -> output RGB
+  dt_colormatrix_t export_output_matrix_trans; // LMS 2006 -> output RGB
+
+  const int use_output_profile
+    = filmic_v4_prepare_matrices(input_matrix_trans, output_matrix, output_matrix_trans,
+                                 export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                                 work_profile, export_profile);
+
+#ifdef _OPENMP
+#pragma omp parallel for default(none)                                                                       \
+    dt_omp_firstprivate(width, height, data, in, out, work_profile, input_matrix_trans, output_matrix, \
+                        output_matrix_trans, variant, spline, display_white, display_black, \
+                        export_input_matrix_trans, export_output_matrix, export_output_matrix_trans, \
+                        use_output_profile)                             \
+    schedule(simd :static)
+#endif
+  for(size_t k = 0; k < 4 * height * width; k += 4)
+  {
+    const float *const restrict pix_in = in + k;
+    dt_aligned_pixel_t pix_out;
+
+    RGB_tone_mapping_v4(pix_in, pix_out, data, spline, display_black, display_white);
+
+    // Save Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_original = { 0.f };
+    RGB_to_Ych(pix_in, input_matrix_trans, Ych_original);
+
+    // Get final Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_final = { 0.f };
+    RGB_to_Ych(pix_out, input_matrix_trans, Ych_final);
+
+    Ych_final[1] = MIN(Ych_original[1], Ych_final[1]);
+
+    gamut_mapping(Ych_final, Ych_original, pix_out, input_matrix_trans, output_matrix, output_matrix_trans,
+                  export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                  display_black, display_white, data->saturation, use_output_profile);
+    copy_pixel_nontemporal(out + k, pix_out);
+  }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
+}
+
+
+static inline void filmic_v5(const float *const restrict in, float *const restrict out,
+                                    const dt_iop_order_iccprofile_info_t *const work_profile,
+                                    const dt_iop_order_iccprofile_info_t *const export_profile,
+                                    const dt_iop_filmicrgb_data_t *const data,
+                                    const dt_iop_filmic_rgb_spline_t spline,
+                                    const size_t width, const size_t height,
+                                    const float display_black, const float display_white)
+
+{
+  // See colorbalancergb.c for details
+  dt_colormatrix_t input_matrix_trans;         // pipeline RGB -> LMS 2006
+  dt_colormatrix_t output_matrix;              // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t output_matrix_trans;        // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t export_input_matrix_trans;  // output RGB -> LMS 2006
+  dt_colormatrix_t export_output_matrix;       // LMS 2006 -> output RGB
+  dt_colormatrix_t export_output_matrix_trans; // LMS 2006 -> output RGB
+
+  const int use_output_profile
+    = filmic_v4_prepare_matrices(input_matrix_trans, output_matrix, output_matrix_trans,
+                                 export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                                 work_profile, export_profile);
+
+  const float norm_min = exp_tonemapping_v2(0.f, data->grey_source, data->black_source, data->dynamic_range);
+  const float norm_max = exp_tonemapping_v2(1.f, data->grey_source, data->black_source, data->dynamic_range);
+
+#ifdef _OPENMP
+#pragma omp parallel for default(none)                                                                       \
+    dt_omp_firstprivate(width, height, data, in, out, work_profile, input_matrix_trans, output_matrix, \
+                        output_matrix_trans, spline, display_white, display_black, norm_min, norm_max, \
+                        export_input_matrix_trans, export_output_matrix, export_output_matrix_trans, \
+                        use_output_profile)                             \
+    schedule(simd :static)
+#endif
+  for(size_t k = 0; k < height * width * 4; k += 4)
+  {
+    const float *const restrict pix_in = in + k;
+
+    dt_aligned_pixel_t max_rgb = { 0.f };
+    dt_aligned_pixel_t naive_rgb = { 0.f };
+
+    RGB_tone_mapping_v4(pix_in, naive_rgb, data, spline, display_black, display_white);
+    norm_tone_mapping_v4(pix_in, max_rgb, DT_FILMIC_METHOD_MAX_RGB, work_profile, data,
+                         spline, norm_min, norm_max, display_black, display_white);
+
+    // Mix max RGB with naive RGB
+    dt_aligned_pixel_t pix_out;
+    for_each_channel(c, aligned(pix_out, max_rgb, naive_rgb))
+      pix_out[c] = (0.5f - data->saturation) * naive_rgb[c] + (0.5f + data->saturation) * max_rgb[c];
+
+    // Save Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_original = { 0.f };
+    RGB_to_Ych(pix_in, input_matrix_trans, Ych_original);
+
+    // Get final Ych in Kirk/Filmlight Yrg
+    dt_aligned_pixel_t Ych_final = { 0.f };
+    RGB_to_Ych(pix_out, input_matrix_trans, Ych_final);
+
+    Ych_final[1] = fminf(Ych_original[1], Ych_final[1]);
+
+    gamut_mapping(Ych_final, Ych_original, pix_out, input_matrix_trans, output_matrix, output_matrix_trans,
+                  export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                  display_black, display_white, data->saturation, use_output_profile);
+    copy_pixel_nontemporal(out + k, pix_out);
+  }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
+}
+
+
+static inline void display_mask(const float *const restrict mask,
+                                float *const restrict out,
+                                const size_t width,
                                 const size_t height)
 {
 #ifdef _OPENMP
-#pragma omp parallel for default(none) dt_omp_firstprivate(width, height, out, mask) schedule(static)
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(width, height, out, mask) \
+  schedule(static)
 #endif
   for(size_t k = 0; k < height * width; k++)
   {
+    dt_aligned_pixel_t pix;
     for_each_channel(c,aligned(out))
-      out[4*k+c] = mask[k];
+      pix[c] = mask[k];
+    copy_pixel_nontemporal(out + 4*k, pix);
   }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
 }
 
 
-static inline void compute_ratios(const float *const restrict in, float *const restrict norms,
+static inline void compute_ratios(const float *const restrict in,
+                                  float *const restrict norms,
                                   float *const restrict ratios,
-                                  const dt_iop_order_iccprofile_info_t *const work_profile, const int variant,
-                                  const size_t width, const size_t height)
+                                  const dt_iop_order_iccprofile_info_t *const work_profile,
+                                  const int variant,
+                                  const size_t width,
+                                  const size_t height)
 {
 #ifdef _OPENMP
 #pragma omp parallel for default(none)                                  \
@@ -1395,16 +2078,21 @@ static inline void compute_ratios(const float *const restrict in, float *const r
 #endif
   for(size_t k = 0; k < height * width * 4; k += 4)
   {
-    const float norm = fmaxf(get_pixel_norm(in + k, variant, work_profile), NORM_MIN);
+    const float norm = MAX(get_pixel_norm(in + k, variant, work_profile), NORM_MIN);
     norms[k / 4] = norm;
+    dt_aligned_pixel_t ratio;
     for_each_channel(c,aligned(ratios,in))
-      ratios[k + c] = in[k + c] / norm;
+      ratio[c] = in[k + c] / norm;
+    copy_pixel_nontemporal(ratios + k, ratio);
   }
+  dt_omploop_sfence();	// ensure that nontemporal writes complete before we attempt to read output
 }
 
 
-static inline void restore_ratios(float *const restrict ratios, const float *const restrict norms,
-                                  const size_t width, const size_t height)
+static inline void restore_ratios(float *const restrict ratios,
+                                  const float *const restrict norms,
+                                  const size_t width,
+                                  const size_t height)
 {
   #ifdef _OPENMP
   #pragma omp parallel for default(none) \
@@ -1412,8 +2100,10 @@ static inline void restore_ratios(float *const restrict ratios, const float *con
     schedule(simd:static)
   #endif
   for(size_t k = 0; k < height * width; k++)
+  {
     for_each_channel(c,aligned(norms,ratios))
       ratios[4*k + c] = clamp_simd(ratios[4*k + c]) * norms[k];
+  }
 }
 
 void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
@@ -1422,10 +2112,15 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 {
   const int scales = get_scales(roi_in, piece);
   const int max_filter_radius = (1 << scales);
+  const dt_iop_filmicrgb_data_t *const data = (dt_iop_filmicrgb_data_t *)piece->data;
+  const gboolean run_fast = !data->enable_highlight_reconstruction || piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
 
-  // in + out + 2 * tmp + 2 * LF + 2 * temp + ratios
-  tiling->factor = 9.0f;
-  tiling->factor_cl = 9.0f;
+  // without reconstruction: in + out + 1ch_mask
+  // with reconstruction: in + out + reconst + inpaint + 2 * scales + temp + 1ch_mask
+  // with HQ reconstruction: in + out + reconst + inpaint + tmp + 2 * scales + temp + ratios + 1ch_mask + 1ch_norms
+  const float hq = data->high_quality_reconstruction > 0 ? 1.25f : 0.0f;
+  tiling->factor = run_fast ? 2.25f : (7.25f + hq);
+  tiling->factor_cl = run_fast ? 9.0f : 9.0f;
 
   tiling->maxbuf = 1.0f;
   tiling->maxbuf_cl = 1.0f;
@@ -1436,19 +2131,20 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   return;
 }
 
-void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const restrict ivoid,
-             void *const restrict ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void process(dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const restrict ivoid,
+             void *const restrict ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                        ivoid, ovoid, roi_in, roi_out))
+    return;
+
   const dt_iop_filmicrgb_data_t *const data = (dt_iop_filmicrgb_data_t *)piece->data;
   const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
-
-  if(piece->colors != 4)
-  {
-    dt_control_log(_("filmic works only on RGB input"));
-    return;
-  }
-
-  const size_t ch = 4;
+  const dt_iop_order_iccprofile_info_t *const export_profile = dt_ioppr_get_pipe_output_profile_info(piece->pipe);
 
   /** The log2(x) -> -INF when x -> 0
    * thus very low values (noise) will get even lower, resulting in noise negative amplification,
@@ -1461,16 +2157,17 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
 
   float *restrict in = (float *)ivoid;
   float *const restrict out = (float *)ovoid;
-  float *const restrict mask = dt_alloc_sse_ps((size_t)roi_out->width * roi_out->height);
+  float *const restrict mask = dt_alloc_align_float((size_t)roi_out->width * roi_out->height);
 
   // used to adjuste noise level depending on size. Don't amplify noise if magnified > 100%
   const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
 
   // build a mask of clipped pixels
-  const int recover_highlights = mask_clipped_pixels(in, mask, data->normalize, data->reconstruct_feather, roi_out->width, roi_out->height, 4);
+  const int recover_highlights = data->enable_highlight_reconstruction
+    && mask_clipped_pixels(in, mask, data->normalize, data->reconstruct_feather, roi_out->width, roi_out->height);
 
   // display mask and exit
-  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == DT_DEV_PIXELPIPE_FULL && mask)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) && mask)
   {
     dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
 
@@ -1482,23 +2179,29 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
     }
   }
 
-  float *const restrict reconstructed = dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
-  const gboolean run_fast = (piece->pipe->type & DT_DEV_PIXELPIPE_FAST) == DT_DEV_PIXELPIPE_FAST;
+  const gboolean run_fast = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
+  // allocate reconstruction buffer, but only if we actually want to use it
+  float *const restrict reconstructed
+    = run_fast ? NULL : dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
 
-  // if fast mode is not in use
+  // if fast mode is not in use and we we able to allocate buffer
   if(!run_fast && recover_highlights && mask && reconstructed)
   {
     // init the blown areas with noise to create particles
     float *const restrict inpainted =  dt_alloc_align_float((size_t)roi_out->width * roi_out->height * 4);
-    inpaint_noise(in, mask, inpainted, data->noise_level / scale, data->reconstruct_threshold, data->noise_distribution,
-                  roi_out->width, roi_out->height);
-
-    // diffuse particles with wavelets reconstruction
-    // PASS 1 on RGB channels
-    const gint success_1 = reconstruct_highlights(inpainted, mask, reconstructed, DT_FILMIC_RECONSTRUCT_RGB, ch, data, piece, roi_in, roi_out);
+    gint success_1 = FALSE;
     gint success_2 = TRUE;
+    if(inpainted)
+    {
+      inpaint_noise(in, mask, inpainted, data->noise_level / scale, data->reconstruct_threshold,
+                    data->noise_distribution, roi_out->width, roi_out->height);
 
-    dt_free_align(inpainted);
+      // diffuse particles with wavelets reconstruction
+      // PASS 1 on RGB channels
+      success_1 = reconstruct_highlights(inpainted, mask, reconstructed, DT_FILMIC_RECONSTRUCT_RGB,
+                                         data, piece, roi_in, roi_out);
+      dt_free_align(inpainted);
+    }
 
     if(data->high_quality_reconstruction > 0 && success_1)
     {
@@ -1513,7 +2216,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
           compute_ratios(reconstructed, norms, ratios, work_profile, DT_FILMIC_METHOD_EUCLIDEAN_NORM_V1,
                          roi_out->width, roi_out->height);
           success_2 = success_2
-                      && reconstruct_highlights(ratios, mask, reconstructed, DT_FILMIC_RECONSTRUCT_RATIOS, ch,
+                      && reconstruct_highlights(ratios, mask, reconstructed, DT_FILMIC_RECONSTRUCT_RATIOS,
                                                 data, piece, roi_in, roi_out);
           restore_ratios(reconstructed, norms, roi_out->width, roi_out->height);
         }
@@ -1528,29 +2231,45 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
 
   if(mask) dt_free_align(mask);
 
-  if(data->preserve_color == DT_FILMIC_METHOD_NONE)
+  const float white_display = powf(data->spline.y[4], data->output_power);
+  const float black_display = powf(data->spline.y[0], data->output_power);
+
+  if(data->version == DT_FILMIC_COLORSCIENCE_V5)
   {
-    // no chroma preservation
-    if(data->version == DT_FILMIC_COLORSCIENCE_V1)
-      filmic_split_v1(in, out, work_profile, data, data->spline, roi_out->width, roi_in->height);
-    else if(data->version == DT_FILMIC_COLORSCIENCE_V2 || data->version == DT_FILMIC_COLORSCIENCE_V3)
-      filmic_split_v2_v3(in, out, work_profile, data, data->spline, roi_out->width, roi_in->height);
+    filmic_v5(in, out, work_profile, export_profile, data, data->spline, roi_out->width,
+              roi_out->height, black_display, white_display);
   }
   else
   {
-    // chroma preservation
-    if(data->version == DT_FILMIC_COLORSCIENCE_V1)
-      filmic_chroma_v1(in, out, work_profile, data, data->spline, data->preserve_color, roi_out->width,
-                       roi_out->height);
-    else if(data->version == DT_FILMIC_COLORSCIENCE_V2 || data->version == DT_FILMIC_COLORSCIENCE_V3)
-      filmic_chroma_v2_v3(in, out, work_profile, data, data->spline, data->preserve_color, roi_out->width,
-                          roi_out->height, ch, data->version);
+    if(data->preserve_color == DT_FILMIC_METHOD_NONE)
+    {
+      // no chroma preservation
+      if(data->version == DT_FILMIC_COLORSCIENCE_V1)
+        filmic_split_v1(in, out, work_profile, data, data->spline, roi_out->width, roi_in->height);
+      else if(data->version == DT_FILMIC_COLORSCIENCE_V2 || data->version == DT_FILMIC_COLORSCIENCE_V3)
+        filmic_split_v2_v3(in, out, work_profile, data, data->spline, roi_out->width, roi_in->height);
+      else if(data->version == DT_FILMIC_COLORSCIENCE_V4)
+        filmic_split_v4(in, out, work_profile, export_profile, data, data->spline,
+                        data->preserve_color, roi_out->width, roi_out->height,
+                        data->version, black_display, white_display);
+    }
+    else
+    {
+      // chroma preservation
+      if(data->version == DT_FILMIC_COLORSCIENCE_V1)
+        filmic_chroma_v1(in, out, work_profile, data, data->spline, data->preserve_color, roi_out->width,
+                        roi_out->height);
+      else if(data->version == DT_FILMIC_COLORSCIENCE_V2 || data->version == DT_FILMIC_COLORSCIENCE_V3)
+        filmic_chroma_v2_v3(in, out, work_profile, data, data->spline, data->preserve_color, roi_out->width,
+                            roi_out->height, data->version);
+      else if(data->version == DT_FILMIC_COLORSCIENCE_V4)
+        filmic_chroma_v4(in, out, work_profile, export_profile, data, data->spline,
+                         data->preserve_color, roi_out->width, roi_out->height,
+                         data->version, black_display, white_display);
+    }
   }
 
   if(reconstructed) dt_free_align(reconstructed);
-
-  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
-    dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
 
 #ifdef HAVE_OPENCL
@@ -1559,11 +2278,11 @@ static inline cl_int reconstruct_highlights_cl(cl_mem in, cl_mem mask, cl_mem re
                                           const dt_iop_filmicrgb_data_t *const data, dt_dev_pixelpipe_iop_t *piece,
                                           const dt_iop_roi_t *const roi_in)
 {
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
   // wavelets scales
   const int scales = get_scales(roi_in, piece);
@@ -1585,11 +2304,8 @@ static inline cl_int reconstruct_highlights_cl(cl_mem in, cl_mem mask, cl_mem re
   }
 
   // Init reconstructed with valid parts of image
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_init_reconstruct, 0, sizeof(cl_mem), (void *)&in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_init_reconstruct, 1, sizeof(cl_mem), (void *)&mask);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_init_reconstruct, 2, sizeof(cl_mem), (void *)&reconstructed);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_init_reconstruct, 3, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_init_reconstruct, 4, sizeof(int), (void *)&height);
+  dt_opencl_set_kernel_args(devid, gd->kernel_filmic_init_reconstruct, 0, CLARG(in), CLARG(mask),
+    CLARG(reconstructed), CLARG(width), CLARG(height));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_init_reconstruct, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -1614,7 +2330,7 @@ static inline cl_int reconstruct_highlights_cl(cl_mem in, cl_mem mask, cl_mem re
     cl_mem detail;
     cl_mem LF;
 
-    // swap buffers so we only need 2 LF buffers : the LF at scale (s-1) and the one at current scale (s)
+    // swap buffers so we only need 2 LF buffers : the LF at scale (s-1) and the one at current scale (s)
     if(s == 0)
     {
       detail = in;
@@ -1634,69 +2350,45 @@ static inline cl_int reconstruct_highlights_cl(cl_mem in, cl_mem mask, cl_mem re
     const int mult = 1 << s; // fancy-pants C notation for 2^s with integer type, don't be afraid
 
     // Compute wavelets low-frequency scales
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 0, sizeof(cl_mem), (void *)&detail);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 1, sizeof(cl_mem), (void *)&temp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 4, sizeof(int), (void *)&mult);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0, CLARG(detail), CLARG(temp),
+      CLARG(width), CLARG(height), CLARG(mult));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) goto error;
 
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 0, sizeof(cl_mem), (void *)&temp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 1, sizeof(cl_mem), (void *)&LF);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 4, sizeof(int), (void *)&mult);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0, CLARG(temp), CLARG(LF),
+      CLARG(width), CLARG(height), CLARG(mult));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // Compute wavelets high-frequency scales and backup the maximum of texture over the RGB channels
-    // Note : HF_RGB = detail - LF, HF_grey = HF_RGB
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 0, sizeof(cl_mem), (void *)&detail);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 1, sizeof(cl_mem), (void *)&LF);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 2, sizeof(cl_mem), (void *)&HF_RGB);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 3, sizeof(cl_mem), (void *)&HF_grey);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 4, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 5, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_detail, 6, sizeof(int), (void *)&variant);
+    // Note : HF_RGB = detail - LF
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_detail, 0, CLARG(detail), CLARG(LF),
+      CLARG(HF_RGB), CLARG(width), CLARG(height));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_detail, sizes);
+    if(err != CL_SUCCESS) goto error;
+
+    // Take a backup copy of HF_RGB in HF_grey - only HF_RGB will be blurred
+    size_t origin[] = { 0, 0, 0 };
+    err = dt_opencl_enqueue_copy_image(devid, HF_RGB, HF_grey, origin, origin, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // interpolate/blur/inpaint (same thing) the RGB high-frequency to fill holes
     const int blur_size = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 0, sizeof(cl_mem), (void *)&HF_RGB);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 1, sizeof(cl_mem), (void *)&temp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_vertical, 4, sizeof(int), (void *)&blur_size);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0, CLARG(HF_RGB), CLARG(temp),
+      CLARG(width), CLARG(height), CLARG(blur_size));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) goto error;
 
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 0, sizeof(cl_mem), (void *)&temp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 1, sizeof(cl_mem), (void *)&HF_RGB);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_bspline_horizontal, 4, sizeof(int), (void *)&blur_size);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0, CLARG(temp), CLARG(HF_RGB),
+      CLARG(width), CLARG(height), CLARG(blur_size));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // Reconstruct clipped parts
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 0, sizeof(cl_mem), (void *)&HF_RGB);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 1, sizeof(cl_mem), (void *)&LF);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 2, sizeof(cl_mem), (void *)&HF_grey);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 3, sizeof(cl_mem), (void *)&mask);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 4, sizeof(cl_mem), (void *)&reconstructed);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 5, sizeof(cl_mem), (void *)&reconstructed);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 6, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 7, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 8, sizeof(float), (void *)&gamma);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 9, sizeof(float), (void *)&gamma_comp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 10, sizeof(float), (void *)&beta);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 11, sizeof(float), (void *)&beta_comp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 12, sizeof(float), (void *)&delta);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 13, sizeof(int), (void *)&s);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 14, sizeof(int), (void *)&scales);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_wavelets_reconstruct, 15, sizeof(int), (void *)&variant);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_reconstruct, 0, CLARG(HF_RGB), CLARG(LF),
+      CLARG(HF_grey), CLARG(mask), CLARG(reconstructed), CLARG(reconstructed), CLARG(width), CLARG(height),
+      CLARG(gamma), CLARG(gamma_comp), CLARG(beta), CLARG(beta_comp), CLARG(delta), CLARG(s), CLARG(scales),
+      CLARG(variant));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_reconstruct, sizes);
     if(err != CL_SUCCESS) goto error;
   }
@@ -1711,13 +2403,16 @@ error:
 }
 
 
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(struct dt_iop_module_t *self,
+               dt_dev_pixelpipe_iop_t *piece,
+               cl_mem dev_in, cl_mem dev_out,
+               const dt_iop_roi_t *const roi_in,
+               const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_filmicrgb_data_t *const d = (dt_iop_filmicrgb_data_t *)piece->data;
   dt_iop_filmicrgb_global_data_t *const gd = (dt_iop_filmicrgb_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
 
   if(piece->colors != 4)
   {
@@ -1729,7 +2424,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const int width = roi_in->width;
   const int height = roi_in->height;
 
-  size_t sizes[] = { ROUNDUPWD(width), ROUNDUPHT(height), 1 };
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
   cl_mem in = dev_in;
   cl_mem inpainted = NULL;
@@ -1740,7 +2435,32 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   // fetch working color profile
   const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+  const dt_iop_order_iccprofile_info_t *const export_profile = dt_ioppr_get_pipe_output_profile_info(piece->pipe);
   const int use_work_profile = (work_profile == NULL) ? 0 : 1;
+
+  // See colorbalancergb.c for details
+  dt_colormatrix_t input_matrix_trans;         // pipeline RGB -> LMS 2006
+  dt_colormatrix_t output_matrix;              // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t output_matrix_trans;        // LMS 2006 -> pipeline RGB
+  dt_colormatrix_t export_input_matrix_trans;  // output RGB -> LMS 2006
+  dt_colormatrix_t export_output_matrix;       // LMS 2006 -> output RGB
+  dt_colormatrix_t export_output_matrix_trans; // LMS 2006 -> output RGB
+
+  const int use_output_profile
+    = filmic_v4_prepare_matrices(input_matrix_trans, output_matrix, output_matrix_trans,
+                                 export_input_matrix_trans, export_output_matrix, export_output_matrix_trans,
+                                 work_profile, export_profile);
+  dt_colormatrix_t input_matrix;
+  dt_colormatrix_transpose(input_matrix, input_matrix_trans);
+
+  const float norm_min = exp_tonemapping_v2(0.f, d->grey_source, d->black_source, d->dynamic_range);
+  const float norm_max = exp_tonemapping_v2(1.f, d->grey_source, d->black_source, d->dynamic_range);
+
+  cl_mem input_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), input_matrix);
+  cl_mem output_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), output_matrix);
+  cl_mem export_input_matrix_cl = NULL;
+  cl_mem export_output_matrix_cl = NULL;
+
   cl_mem dev_profile_info = NULL;
   cl_mem dev_profile_lut = NULL;
   dt_colorspaces_iccprofile_info_cl_t *profile_info_cl;
@@ -1750,8 +2470,16 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
                                             &dev_profile_info, &dev_profile_lut);
   if(err != CL_SUCCESS) goto error;
 
+  if(use_output_profile)
+  {
+    dt_colormatrix_t export_input_matrix;
+    dt_colormatrix_transpose(export_input_matrix, export_input_matrix_trans);
+    export_input_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), export_input_matrix);
+    export_output_matrix_cl = dt_opencl_copy_host_to_device_constant(devid, 12 * sizeof(float), export_output_matrix);
+  }
+
   // used to adjust noise level depending on size. Don't amplify noise if magnified > 100%
-  const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
+  const float scale = MAX(piece->iscale / roi_in->scale, 1.f);
 
   // get the number of OpenCL threads
   uint16_t is_clipped = 0;
@@ -1759,13 +2487,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   // build a mask of clipped pixels
   mask = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float));
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 0, sizeof(cl_mem), (void *)&in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 1, sizeof(cl_mem), (void *)&mask);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 3, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 4, sizeof(float), (void *)&d->normalize);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 5, sizeof(float), (void *)&d->reconstruct_feather);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_mask, 6, sizeof(cl_mem), (void *)&clipped);
+  dt_opencl_set_kernel_args(devid, gd->kernel_filmic_mask, 0, CLARG(in), CLARG(mask), CLARG(width),
+    CLARG(height), CLARG(d->normalize), CLARG(d->reconstruct_feather), CLARG(clipped));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_mask, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -1775,16 +2498,14 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   clipped = NULL;
 
   // display mask and exit
-  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == DT_DEV_PIXELPIPE_FULL)
+  if(self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
   {
     dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
 
     if(g->show_mask)
     {
-      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_show_mask, 0, sizeof(cl_mem), (void *)&mask);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_show_mask, 1, sizeof(cl_mem), (void *)&dev_out);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_show_mask, 2, sizeof(int), (void *)&width);
-      dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_show_mask, 3, sizeof(int), (void *)&height);
+      dt_opencl_set_kernel_args(devid, gd->kernel_filmic_show_mask, 0, CLARG(mask), CLARG(dev_out), CLARG(width),
+        CLARG(height));
       err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_show_mask, sizes);
       dt_opencl_release_mem_object(mask);
       dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
@@ -1792,21 +2513,15 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
     }
   }
 
-  const gboolean run_fast = (piece->pipe->type & DT_DEV_PIXELPIPE_FAST) == DT_DEV_PIXELPIPE_FAST;
+  const gboolean run_fast = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
 
-  if(!run_fast && is_clipped > 0)
+  if(!run_fast && is_clipped > 0 && d->enable_highlight_reconstruction)
   {
     // Inpaint noise
     const float noise_level = d->noise_level / scale;
     inpainted = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 0, sizeof(cl_mem), (void *)&in);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 1, sizeof(cl_mem), (void *)&mask);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 2, sizeof(cl_mem), (void *)&inpainted);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 3, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 4, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 5, sizeof(float), (void *)&noise_level);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 6, sizeof(float), (void *)&d->reconstruct_threshold);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_inpaint_noise, 7, sizeof(float), (void *)&d->noise_distribution);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_inpaint_noise, 0, CLARG(in), CLARG(mask), CLARG(inpainted),
+      CLARG(width), CLARG(height), CLARG(noise_level), CLARG(d->reconstruct_threshold), CLARG(d->noise_distribution));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_inpaint_noise, sizes);
     if(err != CL_SUCCESS) goto error;
 
@@ -1827,12 +2542,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
         for(int i = 0; i < d->high_quality_reconstruction; i++)
         {
           // break ratios and norms
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 0, sizeof(cl_mem), (void *)&reconstructed);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 1, sizeof(cl_mem), (void *)&norms);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 2, sizeof(cl_mem), (void *)&ratios);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 3, sizeof(int), (void *)&d->preserve_color);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 4, sizeof(int), (void *)&width);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_compute_ratios, 5, sizeof(int), (void *)&height);
+          dt_opencl_set_kernel_args(devid, gd->kernel_filmic_compute_ratios, 0, CLARG(reconstructed), CLARG(norms),
+            CLARG(ratios), CLARG(d->preserve_color), CLARG(width), CLARG(height));
           err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_compute_ratios, sizes);
           if(err != CL_SUCCESS) goto error;
 
@@ -1841,11 +2552,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
           if(err != CL_SUCCESS) goto error;
 
           // restore ratios to RGB
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_restore_ratios, 0, sizeof(cl_mem), (void *)&reconstructed);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_restore_ratios, 1, sizeof(cl_mem), (void *)&norms);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_restore_ratios, 2, sizeof(cl_mem), (void *)&reconstructed);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_restore_ratios, 3, sizeof(int), (void *)&width);
-          dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_restore_ratios, 4, sizeof(int), (void *)&height);
+          dt_opencl_set_kernel_args(devid, gd->kernel_filmic_restore_ratios, 0, CLARG(reconstructed), CLARG(norms),
+            CLARG(reconstructed), CLARG(width), CLARG(height));
           err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_restore_ratios, sizes);
           if(err != CL_SUCCESS) goto error;
         }
@@ -1865,63 +2573,33 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   const dt_iop_filmic_rgb_spline_t spline = (dt_iop_filmic_rgb_spline_t)d->spline;
 
-  if(d->preserve_color == DT_FILMIC_METHOD_NONE)
+  const float white_display = powf(spline.y[4], d->output_power);
+  const float black_display = powf(spline.y[0], d->output_power);
+
+  if(d->preserve_color == DT_FILMIC_METHOD_NONE && d->version != DT_FILMIC_COLORSCIENCE_V5)
   {
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 0, sizeof(cl_mem), (void *)&in);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 1, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 4, sizeof(float), (void *)&d->dynamic_range);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 5, sizeof(float), (void *)&d->black_source);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 6, sizeof(float), (void *)&d->grey_source);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 7, sizeof(cl_mem), (void *)&dev_profile_info);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 8, sizeof(cl_mem), (void *)&dev_profile_lut);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 9, sizeof(int), (void *)&use_work_profile);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 10, sizeof(float), (void *)&d->sigma_toe);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 11, sizeof(float), (void *)&d->sigma_shoulder);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 12, sizeof(float), (void *)&d->saturation);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 13, 4 * sizeof(float), (void *)&spline.M1);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 14, 4 * sizeof(float), (void *)&spline.M2);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 15, 4 * sizeof(float), (void *)&spline.M3);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 16, 4 * sizeof(float), (void *)&spline.M4);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 17, 4 * sizeof(float), (void *)&spline.M5);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 18, sizeof(float), (void *)&spline.latitude_min);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 19, sizeof(float), (void *)&spline.latitude_max);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 20, sizeof(float), (void *)&d->output_power);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 21, sizeof(int), (void *)&d->version);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 22, sizeof(int), (void *)&spline.type[0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_split, 23, sizeof(int), (void *)&spline.type[1]);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_rgb_split, 0, CLARG(in), CLARG(dev_out), CLARG(width),
+      CLARG(height), CLARG(d->dynamic_range), CLARG(d->black_source), CLARG(d->grey_source), CLARG(dev_profile_info),
+      CLARG(dev_profile_lut), CLARG(use_work_profile), CLARG(d->sigma_toe), CLARG(d->sigma_shoulder),
+      CLARG(d->saturation), CLARG(spline.M1), CLARG(spline.M2), CLARG(spline.M3), CLARG(spline.M4), CLARG(spline.M5),
+      CLARG(spline.latitude_min), CLARG(spline.latitude_max), CLARG(d->output_power), CLARG(d->version),
+      CLARG(spline.type[0]), CLARG(spline.type[1]), CLARG(input_matrix_cl), CLARG(output_matrix_cl),
+      CLARG(black_display), CLARG(white_display), CLARG(use_output_profile), CLARG(export_input_matrix_cl),
+      CLARG(export_output_matrix_cl));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_rgb_split, sizes);
     if(err != CL_SUCCESS) goto error;
   }
   else
   {
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 0, sizeof(cl_mem), (void *)&in);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 1, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 2, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 3, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 4, sizeof(float), (void *)&d->dynamic_range);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 5, sizeof(float), (void *)&d->black_source);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 6, sizeof(float), (void *)&d->grey_source);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 7, sizeof(cl_mem), (void *)&dev_profile_info);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 8, sizeof(cl_mem), (void *)&dev_profile_lut);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 9, sizeof(int), (void *)&use_work_profile);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 10, sizeof(float), (void *)&d->sigma_toe);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 11, sizeof(float), (void *)&d->sigma_shoulder);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 12, sizeof(float), (void *)&d->saturation);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 13, 4 * sizeof(float), (void *)&spline.M1);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 14, 4 * sizeof(float), (void *)&spline.M2);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 15, 4 * sizeof(float), (void *)&spline.M3);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 16, 4 * sizeof(float), (void *)&spline.M4);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 17, 4 * sizeof(float), (void *)&spline.M5);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 18, sizeof(float), (void *)&spline.latitude_min);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 19, sizeof(float), (void *)&spline.latitude_max);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 20, sizeof(float), (void *)&d->output_power);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 21, sizeof(int), (void *)&d->preserve_color);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 22, sizeof(int), (void *)&d->version);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 23, sizeof(int), (void *)&spline.type[0]);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_filmic_rgb_chroma, 24, sizeof(int), (void *)&spline.type[1]);
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_rgb_chroma, 0, CLARG(in), CLARG(dev_out), CLARG(width),
+      CLARG(height), CLARG(d->dynamic_range), CLARG(d->black_source), CLARG(d->grey_source), CLARG(dev_profile_info),
+      CLARG(dev_profile_lut), CLARG(use_work_profile), CLARG(d->sigma_toe), CLARG(d->sigma_shoulder),
+      CLARG(d->saturation), CLARG(spline.M1), CLARG(spline.M2), CLARG(spline.M3), CLARG(spline.M4), CLARG(spline.M5),
+      CLARG(spline.latitude_min), CLARG(spline.latitude_max), CLARG(d->output_power), CLARG(d->preserve_color),
+      CLARG(d->version), CLARG(spline.type[0]), CLARG(spline.type[1]), CLARG(input_matrix_cl), CLARG(output_matrix_cl),
+      CLARG(black_display), CLARG(white_display), CLARG(use_output_profile), CLARG(export_input_matrix_cl),
+      CLARG(export_output_matrix_cl), CLARG(norm_min), CLARG(norm_max));
 
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_rgb_chroma, sizes);
     if(err != CL_SUCCESS) goto error;
@@ -1929,6 +2607,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   dt_opencl_release_mem_object(reconstructed);
   dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
+  dt_opencl_release_mem_object(input_matrix_cl);
+  dt_opencl_release_mem_object(output_matrix_cl);
+  dt_opencl_release_mem_object(export_input_matrix_cl);
+  dt_opencl_release_mem_object(export_output_matrix_cl);
   return TRUE;
 
 error:
@@ -1938,7 +2620,11 @@ error:
   dt_opencl_release_mem_object(mask);
   dt_opencl_release_mem_object(ratios);
   dt_opencl_release_mem_object(norms);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_filmicrgb] couldn't enqueue kernel! %d\n", err);
+  dt_opencl_release_mem_object(input_matrix_cl);
+  dt_opencl_release_mem_object(output_matrix_cl);
+  dt_opencl_release_mem_object(export_input_matrix_cl);
+  dt_opencl_release_mem_object(export_output_matrix_cl);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_filmicrgb] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -1963,10 +2649,10 @@ static void apply_auto_grey(dt_iop_module_t *self)
                     / logf(-p->black_point_source / (p->white_point_source - p->black_point_source));
 
   ++darktable.gui->reset;
-  dt_bauhaus_slider_set_soft(g->grey_point_source, p->grey_point_source);
-  dt_bauhaus_slider_set_soft(g->black_point_source, p->black_point_source);
-  dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
-  dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
+  dt_bauhaus_slider_set(g->grey_point_source, p->grey_point_source);
+  dt_bauhaus_slider_set(g->black_point_source, p->black_point_source);
+  dt_bauhaus_slider_set(g->white_point_source, p->white_point_source);
+  dt_bauhaus_slider_set(g->output_power, p->output_power);
   --darktable.gui->reset;
 
   gtk_widget_queue_draw(self->widget);
@@ -1992,8 +2678,8 @@ static void apply_auto_black(dt_iop_module_t *self)
                     / logf(-p->black_point_source / (p->white_point_source - p->black_point_source));
 
   ++darktable.gui->reset;
-  dt_bauhaus_slider_set_soft(g->black_point_source, p->black_point_source);
-  dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
+  dt_bauhaus_slider_set(g->black_point_source, p->black_point_source);
+  dt_bauhaus_slider_set(g->output_power, p->output_power);
   --darktable.gui->reset;
 
   gtk_widget_queue_draw(self->widget);
@@ -2020,8 +2706,8 @@ static void apply_auto_white_point_source(dt_iop_module_t *self)
                     / logf(-p->black_point_source / (p->white_point_source - p->black_point_source));
 
   ++darktable.gui->reset;
-  dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
-  dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
+  dt_bauhaus_slider_set(g->white_point_source, p->white_point_source);
+  dt_bauhaus_slider_set(g->output_power, p->output_power);
   --darktable.gui->reset;
 
   gtk_widget_queue_draw(self->widget);
@@ -2058,10 +2744,10 @@ static void apply_autotune(dt_iop_module_t *self)
                     / logf(-p->black_point_source / (p->white_point_source - p->black_point_source));
 
   ++darktable.gui->reset;
-  dt_bauhaus_slider_set_soft(g->grey_point_source, p->grey_point_source);
-  dt_bauhaus_slider_set_soft(g->black_point_source, p->black_point_source);
-  dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
-  dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
+  dt_bauhaus_slider_set(g->grey_point_source, p->grey_point_source);
+  dt_bauhaus_slider_set(g->black_point_source, p->black_point_source);
+  dt_bauhaus_slider_set(g->white_point_source, p->white_point_source);
+  dt_bauhaus_slider_set(g->output_power, p->output_power);
   --darktable.gui->reset;
 
   gtk_widget_queue_draw(self->widget);
@@ -2082,27 +2768,28 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpi
     apply_autotune(self);
 }
 
-static void show_mask_callback(GtkWidget *slider, gpointer user_data)
+static void show_mask_callback(GtkToggleButton *button, GdkEventButton *event, gpointer user_data)
 {
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   if(darktable.gui->reset) return;
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->off), TRUE);
   dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
+  ++darktable.gui->reset;
   g->show_mask = !(g->show_mask);
-  dt_bauhaus_widget_set_quad_active(g->show_highlight_mask, g->show_mask);
-  dt_bauhaus_widget_set_quad_toggle(g->show_highlight_mask, g->show_mask);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->show_highlight_mask), g->show_mask);
+  --darktable.gui->reset;
   dt_dev_reprocess_center(self->dev);
 }
-
 
 #define ORDER_4 5
 #define ORDER_3 4
 
-
-inline static void dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_params_t *const p,
+// returns true if contrast was clamped, false otherwise
+// used in GUI, to show user when contrast clamping is happening
+inline static gboolean dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_params_t *const p,
                                                     struct dt_iop_filmic_rgb_spline_t *const spline)
 {
   float grey_display = 0.4638f;
+  gboolean clamping = FALSE;
 
   if(p->custom_grey)
   {
@@ -2128,7 +2815,7 @@ inline static void dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_param
   // target luminance desired after filmic curve
   float black_display, white_display;
 
-  if(p->internal_version == 2019)
+  if(p->spline_version == DT_FILMIC_SPLINE_VERSION_V1)
   {
     // this is a buggy version that doesn't take the output power function into account
     // it was silent because black and white display were set to 0 and 1 and users were advised to not touch them.
@@ -2137,7 +2824,7 @@ inline static void dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_param
     black_display = CLAMP(p->black_point_target, 0.0f, p->grey_point_target) / 100.0f; // in %
     white_display = fmaxf(p->white_point_target, p->grey_point_target) / 100.0f;       // in %
   }
-  else //(p->internal_version == 2020)
+  else //(p->spline_version >= DT_FILMIC_SPLINE_VERSION_V2)
   {
     // this is the fixed version
     black_display = powf(CLAMP(p->black_point_target, 0.0f, p->grey_point_target) / 100.0f,
@@ -2146,32 +2833,88 @@ inline static void dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_param
         = powf(fmaxf(p->white_point_target, p->grey_point_target) / 100.0f, 1.0f / (p->output_power)); // in %
   }
 
-  float latitude = CLAMP(p->latitude, 0.0f, 100.0f) / 100.0f * dynamic_range; // in % of dynamic range
-  float balance = CLAMP(p->balance, -50.0f, 50.0f) / 100.0f;                  // in %
-  float contrast = CLAMP(p->contrast, 1.00001f, 6.0f);
+  float toe_log, shoulder_log, toe_display, shoulder_display, contrast;
+  float balance = CLAMP(p->balance, -50.0f, 50.0f) / 100.0f; // in %
+  if(p->spline_version < DT_FILMIC_SPLINE_VERSION_V3)
+  {
+    float latitude = CLAMP(p->latitude, 0.0f, 100.0f) / 100.0f * dynamic_range; // in % of dynamic range
+    contrast = CLAMP(p->contrast, 1.00001f, 6.0f);
 
-  // nodes for mapping from log encoding to desired target luminance
-  // X coordinates
-  float toe_log = grey_log - latitude / dynamic_range * fabsf(black_source / dynamic_range);
-  float shoulder_log = grey_log + latitude / dynamic_range * fabsf(white_source / dynamic_range);
+    // nodes for mapping from log encoding to desired target luminance
+    // X coordinates
+    toe_log = grey_log - latitude / dynamic_range * fabsf(black_source / dynamic_range);
+    shoulder_log = grey_log + latitude / dynamic_range * fabsf(white_source / dynamic_range);
 
-  // interception
-  float linear_intercept = grey_display - (contrast * grey_log);
+    // interception
+    float linear_intercept = grey_display - (contrast * grey_log);
 
-  // y coordinates
-  float toe_display = (toe_log * contrast + linear_intercept);
-  float shoulder_display = (shoulder_log * contrast + linear_intercept);
+    // y coordinates
+    toe_display = (toe_log * contrast + linear_intercept);
+    shoulder_display = (shoulder_log * contrast + linear_intercept);
 
-  // Apply the highlights/shadows balance as a shift along the contrast slope
-  const float norm = sqrtf(contrast * contrast + 1.0f);
+    // Apply the highlights/shadows balance as a shift along the contrast slope
+    const float norm = sqrtf(contrast * contrast + 1.0f);
 
-  // negative values drag to the left and compress the shadows, on the UI negative is the inverse
-  const float coeff = -((2.0f * latitude) / dynamic_range) * balance;
+    // negative values drag to the left and compress the shadows, on the UI negative is the inverse
+    const float coeff = -((2.0f * latitude) / dynamic_range) * balance;
 
-  toe_display += coeff * contrast / norm;
-  shoulder_display += coeff * contrast / norm;
-  toe_log += coeff / norm;
-  shoulder_log += coeff / norm;
+    toe_display += coeff * contrast / norm;
+    shoulder_display += coeff * contrast / norm;
+    toe_log += coeff / norm;
+    shoulder_log += coeff / norm;
+  }
+  else // p->spline_version >= DT_FILMIC_SPLINE_VERSION_V3. Slope dependent on contrast only, and latitude as % of display range.
+  {
+    const float hardness = p->output_power;
+    // latitude in %
+    float latitude = CLAMP(p->latitude, 0.0f, 100.0f) / 100.0f;
+    float slope = p->contrast * dynamic_range / 8.0f;
+    float min_contrast = 1.0f; // otherwise, white_display and black_display cannot be reached
+    // make sure there is enough contrast to be able to construct the top right part of the curve
+    min_contrast = fmaxf(min_contrast, (white_display - grey_display) / (white_log - grey_log));
+    // make sure there is enough contrast to be able to construct the bottom left part of the curve
+    min_contrast = fmaxf(min_contrast, (grey_display - black_display) / (grey_log - black_log));
+    min_contrast += SAFETY_MARGIN;
+    // we want a slope that depends only on contrast at gray point.
+    // let's consider f(x) = (contrast*x+linear_intercept)^hardness
+    // f'(x) = contrast * hardness * (contrast*x+linear_intercept)^(hardness-1)
+    // linear_intercept = grey_display - (contrast * grey_log);
+    // f'(grey_log) = contrast * hardness * (contrast * grey_log + grey_display - (contrast * grey_log))^(hardness-1)
+    //              = contrast * hardness * grey_display^(hardness-1)
+    // f'(grey_log) = target_contrast <=> contrast = target_contrast / (hardness * grey_display^(hardness-1))
+    contrast = slope / (hardness * powf(grey_display, hardness - 1.0f));
+    float clamped_contrast = CLAMP(contrast, min_contrast, 100.0f);
+    clamping = (clamped_contrast != contrast);
+    contrast = clamped_contrast;
+
+    // interception
+    float linear_intercept = grey_display - (contrast * grey_log);
+
+    // consider the line of equation y = contrast * x + linear_intercept
+    // we want to keep y in [black_display, white_display] (with some safety margin)
+    // thus, we compute x values such as y=black_display and y=white_display
+    // latitude will influence position of toe and shoulder in the [xmin, xmax] segment
+    const float xmin = (black_display + SAFETY_MARGIN * (white_display - black_display) - linear_intercept) / contrast;
+    const float xmax = (white_display - SAFETY_MARGIN * (white_display - black_display) - linear_intercept) / contrast;
+
+    // nodes for mapping from log encoding to desired target luminance
+    // X coordinates
+    toe_log = (1.0f - latitude) * grey_log + latitude * xmin;
+    shoulder_log = (1.0f - latitude) * grey_log + latitude * xmax;
+
+    // Apply the highlights/shadows balance as a shift along the contrast slope
+    // negative values drag to the left and compress the shadows, on the UI negative is the inverse
+    float balance_correction = (balance > 0.0f) ? 2.0f * balance * (shoulder_log - grey_log)
+                                                : 2.0f * balance * (grey_log - toe_log);
+    toe_log -= balance_correction;
+    shoulder_log -= balance_correction;
+    toe_log = fmaxf(toe_log, xmin);
+    shoulder_log = MIN(shoulder_log, xmax);
+
+    // y coordinates
+    toe_display = (toe_log * contrast + linear_intercept);
+    shoulder_display = (shoulder_log * contrast + linear_intercept);
+  }
 
   /**
    * Now we have 3 segments :
@@ -2338,6 +3081,7 @@ inline static void dt_iop_filmic_rgb_compute_spline(const dt_iop_filmicrgb_param
     spline->M3[1] = c;
     spline->M4[1] = shoulder_display;
   }
+  return clamping;
 }
 
 void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
@@ -2371,9 +3115,10 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 
 
   float contrast = p->contrast;
-  if(contrast < grey_display / grey_log)
+  if((p->spline_version < DT_FILMIC_SPLINE_VERSION_V3) && (contrast < grey_display / grey_log))
   {
     // We need grey_display - (contrast * grey_log) <= 0.0
+    // this clamping is handled automatically for spline_version >= DT_FILMIC_SPLINE_VERSION_V3
     contrast = 1.0001f * grey_display / grey_log;
   }
 
@@ -2384,6 +3129,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   d->output_power = p->output_power;
   d->contrast = contrast;
   d->version = p->version;
+  d->spline_version = p->spline_version;
   d->preserve_color = p->preserve_color;
   d->high_quality_reconstruction = p->high_quality_reconstruction;
   d->noise_level = p->noise_level;
@@ -2392,7 +3138,11 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   // compute the curves and their LUT
   dt_iop_filmic_rgb_compute_spline(p, &d->spline);
 
-  d->saturation = (2.0f * p->saturation / 100.0f + 1.0f);
+  if(p->version >= DT_FILMIC_COLORSCIENCE_V4)
+    d->saturation = p->saturation / 100.0f;
+  else
+    d->saturation = (2.0f * p->saturation / 100.0f + 1.0f);
+
   d->sigma_toe = powf(d->spline.latitude_min / 3.0f, 2.0f);
   d->sigma_shoulder = powf((1.0f - d->spline.latitude_max) / 3.0f, 2.0f);
 
@@ -2404,6 +3154,8 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   d->reconstruct_structure_vs_texture = (p->reconstruct_structure_vs_texture / 100.0f + 1.f) / 2.f;
   d->reconstruct_bloom_vs_details = (p->reconstruct_bloom_vs_details / 100.0f + 1.f) / 2.f;
   d->reconstruct_grey_vs_color = (p->reconstruct_grey_vs_color / 100.0f + 1.f) / 2.f;
+
+  d->enable_highlight_reconstruction = p->enable_highlight_reconstruction;
 }
 
 void gui_focus(struct dt_iop_module_t *self, gboolean in)
@@ -2415,20 +3167,19 @@ void gui_focus(struct dt_iop_module_t *self, gboolean in)
     // lost focus - hide the mask
     gint mask_was_shown = g->show_mask;
     g->show_mask = FALSE;
-    dt_bauhaus_widget_set_quad_toggle(g->show_highlight_mask, FALSE);
-    dt_bauhaus_widget_set_quad_active(g->show_highlight_mask, FALSE);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->show_highlight_mask), FALSE);
     if(mask_was_shown) dt_dev_reprocess_center(self->dev);
   }
 }
 
 void init_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  piece->data = calloc(1, sizeof(dt_iop_filmicrgb_data_t));
+  piece->data = dt_calloc_align(64, sizeof(dt_iop_filmicrgb_data_t));
 }
 
 void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  free(piece->data);
+  dt_free_align(piece->data);
   piece->data = NULL;
 }
 
@@ -2447,38 +3198,11 @@ void gui_update(dt_iop_module_t *self)
 
   // fetch last view in dartablerc
 
-  dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
-  dt_bauhaus_slider_set_soft(g->grey_point_source, p->grey_point_source);
-  dt_bauhaus_slider_set_soft(g->black_point_source, p->black_point_source);
-  dt_bauhaus_slider_set_soft(g->security_factor, p->security_factor);
-  dt_bauhaus_slider_set_soft(g->reconstruct_threshold, p->reconstruct_threshold);
-  dt_bauhaus_slider_set_soft(g->reconstruct_feather, p->reconstruct_feather);
-  dt_bauhaus_slider_set_soft(g->reconstruct_bloom_vs_details, p->reconstruct_bloom_vs_details);
-  dt_bauhaus_slider_set_soft(g->reconstruct_grey_vs_color, p->reconstruct_grey_vs_color);
-  dt_bauhaus_slider_set_soft(g->reconstruct_structure_vs_texture, p->reconstruct_structure_vs_texture);
-  dt_bauhaus_slider_set_soft(g->white_point_target, p->white_point_target);
-  dt_bauhaus_slider_set_soft(g->grey_point_target, p->grey_point_target);
-  dt_bauhaus_slider_set_soft(g->black_point_target, p->black_point_target);
-  dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
-  dt_bauhaus_slider_set_soft(g->latitude, p->latitude);
-  dt_bauhaus_slider_set_soft(g->contrast, p->contrast);
-  dt_bauhaus_slider_set_soft(g->saturation, p->saturation);
-  dt_bauhaus_slider_set_soft(g->balance, p->balance);
-
-  dt_bauhaus_combobox_set_from_value(g->version, p->version);
-  dt_bauhaus_combobox_set_from_value(g->preserve_color, p->preserve_color);
-  dt_bauhaus_combobox_set_from_value(g->shadows, p->shadows);
-  dt_bauhaus_combobox_set_from_value(g->highlights, p->highlights);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->auto_hardness), p->auto_hardness);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->custom_grey), p->custom_grey);
-
-  dt_bauhaus_slider_set_soft(g->high_quality_reconstruction, p->high_quality_reconstruction);
-  dt_bauhaus_slider_set_soft(g->noise_level, p->noise_level);
-  dt_bauhaus_combobox_set(g->noise_distribution, p->noise_distribution);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->enable_highlight_reconstruction), p->enable_highlight_reconstruction);
 
   gui_changed(self, NULL, NULL);
-
-  gtk_widget_queue_draw(self->widget);
 }
 
 void reload_defaults(dt_iop_module_t *module)
@@ -2491,13 +3215,14 @@ void reload_defaults(dt_iop_module_t *module)
 
   module->default_enabled = FALSE;
 
-  const gboolean is_scene_referred = dt_conf_is_equal("plugins/darkroom/workflow", "scene-referred");
+  const gboolean is_scene_referred = dt_is_scene_referred();
 
-  if(dt_image_is_matrix_correction_supported(&module->dev->image_storage) && is_scene_referred)
+  if(dt_image_is_matrix_correction_supported(&module->dev->image_storage)
+     && is_scene_referred)
   {
     // For scene-referred workflow, auto-enable and adjust based on exposure
     // TODO: fetch actual exposure in module, don't assume 1.
-    const float exposure = 0.5f - dt_image_get_exposure_bias(&module->dev->image_storage);
+    const float exposure = 0.7f - dt_image_get_exposure_bias(&module->dev->image_storage);
 
     // As global exposure increases, white exposure increases faster than black
     // this is probably because raw black/white points offsets the lower bound of the dynamic range to 0
@@ -2509,6 +3234,28 @@ void reload_defaults(dt_iop_module_t *module)
   }
 }
 
+void init_presets(dt_iop_module_so_t *self)
+{
+  // auto-applied scene-referred default
+  self->pref_based_presets = TRUE;
+
+  const char *workflow = dt_conf_get_string_const("plugins/darkroom/workflow");
+  const gboolean auto_apply_filmic = strcmp(workflow, "scene-referred (filmic)") == 0;
+
+  if(auto_apply_filmic)
+  {
+    dt_gui_presets_add_generic
+      (_("scene-referred default"), self->op, self->version(),
+       NULL, 0,
+       1, DEVELOP_BLEND_CS_RGB_SCENE);
+
+    dt_gui_presets_update_ldr(_("scene-referred default"), self->op,
+                              self->version(), FOR_RAW | FOR_MATRIX);
+
+    dt_gui_presets_update_autoapply(_("scene-referred default"),
+                                    self->op, self->version(), TRUE);
+  }
+}
 
 void init_global(dt_iop_module_so_t *module)
 {
@@ -2522,13 +3269,15 @@ void init_global(dt_iop_module_so_t *module)
   gd->kernel_filmic_mask = dt_opencl_create_kernel(program, "filmic_mask_clipped_pixels");
   gd->kernel_filmic_show_mask = dt_opencl_create_kernel(program, "filmic_show_mask");
   gd->kernel_filmic_inpaint_noise = dt_opencl_create_kernel(program, "filmic_inpaint_noise");
-  gd->kernel_filmic_bspline_vertical = dt_opencl_create_kernel(program, "blur_2D_Bspline_vertical");
-  gd->kernel_filmic_bspline_horizontal = dt_opencl_create_kernel(program, "blur_2D_Bspline_horizontal");
   gd->kernel_filmic_init_reconstruct = dt_opencl_create_kernel(program, "init_reconstruct");
-  gd->kernel_filmic_wavelets_detail = dt_opencl_create_kernel(program, "wavelets_detail_level");
   gd->kernel_filmic_wavelets_reconstruct = dt_opencl_create_kernel(program, "wavelets_reconstruct");
   gd->kernel_filmic_compute_ratios = dt_opencl_create_kernel(program, "compute_ratios");
   gd->kernel_filmic_restore_ratios = dt_opencl_create_kernel(program, "restore_ratios");
+
+  const int wavelets = 35; // bspline.cl, from programs.conf
+  gd->kernel_filmic_bspline_horizontal = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_horizontal");
+  gd->kernel_filmic_bspline_vertical = dt_opencl_create_kernel(wavelets, "blur_2D_Bspline_vertical");
+  gd->kernel_filmic_wavelets_detail = dt_opencl_create_kernel(wavelets, "wavelets_detail_level");
 }
 
 void cleanup_global(dt_iop_module_so_t *module)
@@ -2620,8 +3369,7 @@ void filmic_gui_draw_icon(cairo_t *cr, struct dt_iop_filmicrgb_gui_button_data_t
 
   const float scale = 0.85;
   cairo_scale(cr, scale, scale);
-  button->icon(cr, -scale * button->w / 2., -scale * button->h / 2., scale * button->w, scale * button->h,
-               CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+  button->icon(cr, -scale * button->w / 2., -scale * button->h / 2., scale * button->w, scale * button->h, 0, NULL);
   cairo_restore(cr);
 }
 
@@ -2631,7 +3379,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   dt_iop_filmicrgb_params_t *p = (dt_iop_filmicrgb_params_t *)self->params;
   dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
-  dt_iop_filmic_rgb_compute_spline(p, &g->spline);
+  gboolean contrast_clamped = dt_iop_filmic_rgb_compute_spline(p, &g->spline);
 
   // Cache the graph objects to avoid recomputing all the view at each redraw
   gtk_widget_get_allocation(widget, &g->allocation);
@@ -2729,7 +3477,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
 
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 
-  // write the graph legend at GUI default size
+  // write the graph legend at GUI default size
   pango_font_description_set_size(desc, font_size);
   pango_layout_set_font_description(layout, desc);
   if(g->gui_mode == DT_FILMIC_GUI_LOOK)
@@ -2848,7 +3596,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
     // draw the tone curve
     float x_start = 0.f;
     if(g->gui_mode == DT_FILMIC_GUI_BASECURVE || g->gui_mode == DT_FILMIC_GUI_BASECURVE_LOG)
-      x_start = log_tonemapping_v2(x_start, grey, p->black_point_source, DR);
+      x_start = log_tonemapping_v2_1ch(x_start, grey, p->black_point_source, DR);
 
     if(g->gui_mode == DT_FILMIC_GUI_BASECURVE_LOG) x_start = dt_log_scale_axis(x_start, LOGBASE);
 
@@ -2870,19 +3618,26 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
       float value = x;
 
       if(g->gui_mode == DT_FILMIC_GUI_BASECURVE || g->gui_mode == DT_FILMIC_GUI_BASECURVE_LOG)
-        value = log_tonemapping_v2(x, grey, p->black_point_source, DR);
+        value = log_tonemapping_v2_1ch(x, grey, p->black_point_source, DR);
 
       if(g->gui_mode == DT_FILMIC_GUI_BASECURVE_LOG) x = dt_log_scale_axis(x, LOGBASE);
 
       float y = filmic_spline(value, g->spline.M1, g->spline.M2, g->spline.M3, g->spline.M4, g->spline.M5,
                               g->spline.latitude_min, g->spline.latitude_max, g->spline.type);
 
-      if(y > g->spline.y[4])
+      // curve is drawn in orange when above maximum
+      // or below minimum.
+      // we use a small margin in the comparison
+      // to avoid drawing curve in orange when it
+      // is right above or right below the limit
+      // due to floating point errors
+      const float margin = 1E-5;
+      if(y > g->spline.y[4] + margin)
       {
         y = fminf(y, 1.0f);
         cairo_set_source_rgb(cr, 0.75, .5, 0.);
       }
-      else if(y < g->spline.y[0])
+      else if(y < g->spline.y[0] - margin)
       {
         y = fmaxf(y, 0.f);
         cairo_set_source_rgb(cr, 0.75, .5, 0.);
@@ -2938,6 +3693,8 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
     float x_white = 1.f;
     float y_white = 1.f;
 
+    const float central_slope = (g->spline.y[3] - g->spline.y[1]) * g->graph_width / ((g->spline.x[3] - g->spline.x[1]) * g->graph_height);
+    const float central_slope_angle = atanf(central_slope) + M_PI / 2.0f;
     set_color(cr, darktable.bauhaus->graph_fg);
     for(int k = 0; k < 5; k++)
     {
@@ -2945,6 +3702,29 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
       {
         float x = g->spline.x[k];
         float y = g->spline.y[k];
+        const float ymin = g->spline.y[0];
+        const float ymax = g->spline.y[4];
+        // we multiply SAFETY_MARGIN by 1.1f to avoid possible false negatives due to float errors
+        const float y_margin = SAFETY_MARGIN * 1.1f * (ymax - ymin);
+        gboolean red = (((k == 1) && (y - ymin <= y_margin))
+                     || ((k == 3) && (ymax - y <= y_margin)));
+        float start_angle = 0.0f;
+        float end_angle = 2.f * M_PI;
+        // if contrast is clamped, show it on GUI with half circles
+        // for points 1 and 3
+        if(contrast_clamped)
+        {
+          if(k == 1)
+          {
+            start_angle = central_slope_angle + M_PI;
+            end_angle = central_slope_angle;
+          }
+          if(k == 3)
+          {
+            start_angle = central_slope_angle;
+            end_angle = start_angle + M_PI;
+          }
+        }
 
         if(g->gui_mode == DT_FILMIC_GUI_BASECURVE)
         {
@@ -2969,10 +3749,15 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
           y_white = y;
         }
 
+        if(red) cairo_set_source_rgb(cr, 0.8, 0.35, 0.35);
+
         // draw bullet
-        cairo_arc(cr, x * g->graph_width, (1.0 - y) * g->graph_height, DT_PIXEL_APPLY_DPI(4), 0, 2. * M_PI);
+        cairo_arc(cr, x * g->graph_width, (1.0 - y) * g->graph_height, DT_PIXEL_APPLY_DPI(4), start_angle, end_angle);
         cairo_fill(cr);
         cairo_stroke(cr);
+
+        // reset color for next points
+        if(red) set_color(cr, darktable.bauhaus->graph_fg);
       }
     }
     cairo_restore(cr);
@@ -3093,6 +3878,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
       pango_cairo_show_layout(cr, layout);
       cairo_stroke(cr);
 
+
       // mark the x axis legend
       set_color(cr, darktable.bauhaus->graph_fg);
       if(g->gui_mode == DT_FILMIC_GUI_LOOK)
@@ -3118,7 +3904,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
     // draw the dynamic range of display
     // if white = 100%, assume -11.69 EV because of uint8 output + sRGB OETF.
     // for uint10 output, white should be set to 400%, so anything above 100% increases DR
-    // FIXME : if darktable becomes HDR-10bits compatible (for output), this needs to be updated
+    // FIXME : if darktable becomes HDR-10bits compatible (for output), this needs to be updated
     const float display_DR = 12.f + log2f(p->white_point_target / 100.f);
 
     const float y_display = g->allocation.height / 3.f + g->line_height;
@@ -3197,7 +3983,7 @@ static gboolean dt_iop_tonecurve_draw(GtkWidget *widget, cairo_t *crf, gpointer 
     const float max_DR = ceilf(fmaxf(display_HL_EV, scene_HL_EV)) + ceilf(fmaxf(display_LL_EV, scene_LL_EV));
     const float EV = (column_right) / max_DR;
 
-    // all greys are aligned vertically in GUI since they are the fulcrum of the transform
+    // all greys are aligned vertically in GUI since they are the fulcrum of the transform
     // so, get their coordinates
     const float grey_EV = fmaxf(ceilf(display_HL_EV), ceilf(scene_HL_EV));
     const float grey_x = g->allocation.width - (grey_EV)*EV - darktable.bauhaus->quad_width;
@@ -3524,29 +4310,12 @@ static gboolean area_button_press(GtkWidget *widget, GdkEventButton *event, gpoi
   return FALSE;
 }
 
-static gboolean area_enter_notify(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
+static gboolean area_enter_leave_notify(GtkWidget *widget, GdkEventCrossing *event, dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
-  if(darktable.gui->reset) return 1;
-  if(!self->enabled) return 0;
-
   dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
-  g->gui_hover = TRUE;
+  g->gui_hover = event->type == GDK_ENTER_NOTIFY;
   gtk_widget_queue_draw(GTK_WIDGET(g->area));
-  return TRUE;
-}
-
-
-static gboolean area_leave_notify(GtkWidget *widget, GdkEventCrossing *event, gpointer user_data)
-{
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
-  if(darktable.gui->reset) return 1;
-  if(!self->enabled) return 0;
-
-  dt_iop_filmicrgb_gui_data_t *g = (dt_iop_filmicrgb_gui_data_t *)self->gui_data;
-  g->gui_hover = FALSE;
-  gtk_widget_queue_draw(GTK_WIDGET(g->area));
-  return TRUE;
+  return FALSE;
 }
 
 static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpointer user_data)
@@ -3605,7 +4374,7 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
       gtk_widget_set_tooltip_text(GTK_WIDGET(g->area), _("cycle through graph views.\n"
                                                          "left click: cycle forward.\n"
                                                          "right click: cycle backward.\n"
-                                                         "double click: reset to look view."));
+                                                         "double-click: reset to look view."));
     }
     else
     {
@@ -3623,25 +4392,6 @@ static gboolean area_motion_notify(GtkWidget *widget, GdkEventMotion *event, gpo
   }
 }
 
-static gboolean area_scroll_callback(GtkWidget *widget, GdkEventScroll *event, gpointer user_data)
-{
-  if(dt_gui_ignore_scroll(event)) return FALSE;
-
-  if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
-  {
-    int delta_y;
-    if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
-    {
-      //adjust aspect
-      const int aspect = dt_conf_get_int("plugins/darkroom/filmicrgb/aspect_percent");
-      dt_conf_set_int("plugins/darkroom/filmicrgb/aspect_percent", aspect + delta_y);
-      dtgtk_drawing_area_set_aspect_ratio(widget, aspect / 100.0);
-    }
-    return TRUE; // Ensure that scrolling cannot move side panel when no delta
-  }
-  return FALSE;
-}
-
 void gui_init(dt_iop_module_t *self)
 {
   dt_iop_filmicrgb_gui_data_t *g = IOP_GUI_ALLOC(filmicrgb);
@@ -3652,21 +4402,16 @@ void gui_init(dt_iop_module_t *self)
   g->gui_hover = FALSE;
   g->gui_sizes_inited = FALSE;
 
-  // don't make the area square to safe some vertical space -- it's not interactive anyway
-  const float aspect = dt_conf_get_int("plugins/darkroom/filmicrgb/aspect_percent") / 100.0;
-  g->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(aspect));
+  g->area = GTK_DRAWING_AREA(dt_ui_resize_wrap(NULL, 0, "plugins/darkroom/filmicrgb/aspect_percent"));
   g_object_set_data(G_OBJECT(g->area), "iop-instance", self);
   dt_action_define_iop(self, NULL, N_("graph"), GTK_WIDGET(g->area), NULL);
 
   gtk_widget_set_can_focus(GTK_WIDGET(g->area), TRUE);
-  gtk_widget_add_events(GTK_WIDGET(g->area), GDK_BUTTON_PRESS_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK
-                                                 | GDK_POINTER_MOTION_MASK | darktable.gui->scroll_mask);
   g_signal_connect(G_OBJECT(g->area), "draw", G_CALLBACK(dt_iop_tonecurve_draw), self);
   g_signal_connect(G_OBJECT(g->area), "button-press-event", G_CALLBACK(area_button_press), self);
-  g_signal_connect(G_OBJECT(g->area), "leave-notify-event", G_CALLBACK(area_leave_notify), self);
-  g_signal_connect(G_OBJECT(g->area), "enter-notify-event", G_CALLBACK(area_enter_notify), self);
+  g_signal_connect(G_OBJECT(g->area), "leave-notify-event", G_CALLBACK(area_enter_leave_notify), self);
+  g_signal_connect(G_OBJECT(g->area), "enter-notify-event", G_CALLBACK(area_enter_leave_notify), self);
   g_signal_connect(G_OBJECT(g->area), "motion-notify-event", G_CALLBACK(area_motion_notify), self);
-  g_signal_connect(G_OBJECT(g->area), "scroll-event", G_CALLBACK(area_scroll_callback), self);
 
   // Init GTK notebook
   static struct dt_action_def_t notebook_def = { };
@@ -3677,19 +4422,22 @@ void gui_init(dt_iop_module_t *self)
   self->widget = dt_ui_notebook_page(g->notebook, N_("scene"), NULL);
 
   g->grey_point_source
-      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_slider_from_params(self, "grey_point_source"));
+      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA | DT_COLOR_PICKER_DENOISE,
+                            dt_bauhaus_slider_from_params(self, "grey_point_source"));
   dt_bauhaus_slider_set_soft_range(g->grey_point_source, .1, 36.0);
-  dt_bauhaus_slider_set_format(g->grey_point_source, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->grey_point_source, "%");
   gtk_widget_set_tooltip_text(g->grey_point_source,
+                              /* xgettext:no-c-format */
                               _("adjust to match the average luminance of the image's subject.\n"
                                 "the value entered here will then be remapped to 18.45%.\n"
                                 "decrease the value to increase the overall brightness."));
 
   // White slider
   g->white_point_source
-      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_slider_from_params(self, "white_point_source"));
+      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA | DT_COLOR_PICKER_DENOISE,
+                            dt_bauhaus_slider_from_params(self, "white_point_source"));
   dt_bauhaus_slider_set_soft_range(g->white_point_source, 2.0, 8.0);
-  dt_bauhaus_slider_set_format(g->white_point_source, _("%+.2f EV"));
+  dt_bauhaus_slider_set_format(g->white_point_source, _(" EV"));
   gtk_widget_set_tooltip_text(g->white_point_source,
                               _("number of stops between middle gray and pure white.\n"
                                 "this is a reading a lightmeter would give you on the scene.\n"
@@ -3697,9 +4445,10 @@ void gui_init(dt_iop_module_t *self)
 
   // Black slider
   g->black_point_source
-      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_slider_from_params(self, "black_point_source"));
+      = dt_color_picker_new(self, DT_COLOR_PICKER_AREA | DT_COLOR_PICKER_DENOISE,
+                            dt_bauhaus_slider_from_params(self, "black_point_source"));
   dt_bauhaus_slider_set_soft_range(g->black_point_source, -14.0, -3);
-  dt_bauhaus_slider_set_format(g->black_point_source, _("%+.2f EV"));
+  dt_bauhaus_slider_set_format(g->black_point_source, _(" EV"));
   gtk_widget_set_tooltip_text(
       g->black_point_source, _("number of stops between middle gray and pure black.\n"
                                "this is a reading a lightmeter would give you on the scene.\n"
@@ -3708,12 +4457,13 @@ void gui_init(dt_iop_module_t *self)
   // Dynamic range scaling
   g->security_factor = dt_bauhaus_slider_from_params(self, "security_factor");
   dt_bauhaus_slider_set_soft_max(g->security_factor, 50);
-  dt_bauhaus_slider_set_format(g->security_factor, "%+.2f %%");
+  dt_bauhaus_slider_set_format(g->security_factor, "%");
   gtk_widget_set_tooltip_text(g->security_factor, _("symmetrically enlarge or shrink the computed dynamic range.\n"
                                                     "useful to give a safety margin to extreme luminances."));
 
   // Auto tune slider
-  g->auto_button = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_combobox_new(self));
+  g->auto_button = dt_color_picker_new(self, DT_COLOR_PICKER_AREA | DT_COLOR_PICKER_DENOISE,
+                                       dt_bauhaus_combobox_new(self));
   dt_bauhaus_widget_set_label(g->auto_button, NULL, N_("auto tune levels"));
   gtk_widget_set_tooltip_text(g->auto_button, _("try to optimize the settings with some statistical assumptions.\n"
                                                 "this will fit the luminance range inside the histogram bounds.\n"
@@ -3726,13 +4476,13 @@ void gui_init(dt_iop_module_t *self)
   // Page RECONSTRUCT
   self->widget = dt_ui_notebook_page(g->notebook, N_("reconstruct"), NULL);
 
-  GtkWidget *label = dt_ui_section_label_new(_("highlights clipping"));
-  GtkStyleContext *context = gtk_widget_get_style_context(GTK_WIDGET(label));
-  gtk_style_context_add_class(context, "section_label_top");
+  GtkWidget *label = dt_ui_section_label_new(C_("section", "highlights clipping"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, FALSE, FALSE, 0);
 
+  g->enable_highlight_reconstruction = dt_bauhaus_toggle_from_params(self, "enable_highlight_reconstruction");
+
   g->reconstruct_threshold = dt_bauhaus_slider_from_params(self, "reconstruct_threshold");
-  dt_bauhaus_slider_set_format(g->reconstruct_threshold, _("%+.2f EV"));
+  dt_bauhaus_slider_set_format(g->reconstruct_threshold, _(" EV"));
   gtk_widget_set_tooltip_text(g->reconstruct_threshold,
                               _("set the exposure threshold upon which\n"
                                 "clipped highlights get reconstructed.\n"
@@ -3742,27 +4492,27 @@ void gui_init(dt_iop_module_t *self)
                                 "increase to exclude more areas."));
 
   g->reconstruct_feather = dt_bauhaus_slider_from_params(self, "reconstruct_feather");
-  dt_bauhaus_slider_set_format(g->reconstruct_feather, _("%+.2f EV"));
+  dt_bauhaus_slider_set_format(g->reconstruct_feather, _(" EV"));
   gtk_widget_set_tooltip_text(g->reconstruct_feather,
                               _("soften the transition between clipped highlights and valid pixels.\n"
                                 "decrease to make the transition harder and sharper,\n"
                                 "increase to make the transition softer and blurrier."));
 
   // Highlight Reconstruction Mask
-  g->show_highlight_mask = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->show_highlight_mask, NULL, N_("display highlight reconstruction mask"));
-  dt_bauhaus_widget_set_quad_paint(g->show_highlight_mask, dtgtk_cairo_paint_showmask,
-                                   CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
-  dt_bauhaus_widget_set_quad_toggle(g->show_highlight_mask, TRUE);
-  g_signal_connect(G_OBJECT(g->show_highlight_mask), "quad-pressed", G_CALLBACK(show_mask_callback), self);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->show_highlight_mask, FALSE, FALSE, 0);
+  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_box_pack_start(GTK_BOX(hbox), dt_ui_label_new(_("display highlight reconstruction mask")), TRUE, TRUE, 0);
+  g->show_highlight_mask = dt_iop_togglebutton_new(self, NULL, N_("display highlight reconstruction mask"), NULL, G_CALLBACK(show_mask_callback),
+                                           FALSE, 0, 0, dtgtk_cairo_paint_showmask, hbox);
+  dtgtk_togglebutton_set_paint(DTGTK_TOGGLEBUTTON(g->show_highlight_mask), dtgtk_cairo_paint_showmask, 0, NULL);
+  dt_gui_add_class(g->show_highlight_mask, "dt_bauhaus_alignment");
+  dt_gui_add_class(g->show_highlight_mask, "dt_transparent_background");
+  gtk_box_pack_start(GTK_BOX(self->widget), hbox, FALSE, FALSE, 0);
 
-  label = dt_ui_section_label_new(_("balance"));
+  label = dt_ui_section_label_new(C_("section", "balance"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, FALSE, FALSE, 0);
 
   g->reconstruct_structure_vs_texture = dt_bauhaus_slider_from_params(self, "reconstruct_structure_vs_texture");
-  dt_bauhaus_slider_set_step(g->reconstruct_structure_vs_texture, 0.1);
-  dt_bauhaus_slider_set_format(g->reconstruct_structure_vs_texture, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->reconstruct_structure_vs_texture, "%");
   gtk_widget_set_tooltip_text(g->reconstruct_structure_vs_texture,
                               /* xgettext:no-c-format */
                               _("decide which reconstruction strategy to favor,\n"
@@ -3773,8 +4523,7 @@ void gui_init(dt_iop_module_t *self)
                                 "decrease if all RGB channels are clipped over large areas."));
 
   g->reconstruct_bloom_vs_details = dt_bauhaus_slider_from_params(self, "reconstruct_bloom_vs_details");
-  dt_bauhaus_slider_set_step(g->reconstruct_bloom_vs_details, 0.1);
-  dt_bauhaus_slider_set_format(g->reconstruct_bloom_vs_details, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->reconstruct_bloom_vs_details, "%");
   gtk_widget_set_tooltip_text(g->reconstruct_bloom_vs_details,
                               /* xgettext:no-c-format */
                               _("decide which reconstruction strategy to favor,\n"
@@ -3786,8 +4535,7 @@ void gui_init(dt_iop_module_t *self)
 
   // Bloom threshold
   g->reconstruct_grey_vs_color = dt_bauhaus_slider_from_params(self, "reconstruct_grey_vs_color");
-  dt_bauhaus_slider_set_step(g->reconstruct_grey_vs_color, 0.1);
-  dt_bauhaus_slider_set_format(g->reconstruct_grey_vs_color, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->reconstruct_grey_vs_color, "%");
   gtk_widget_set_tooltip_text(g->reconstruct_grey_vs_color,
                               /* xgettext:no-c-format */
                               _("decide which reconstruction strategy to favor,\n"
@@ -3801,9 +4549,8 @@ void gui_init(dt_iop_module_t *self)
   self->widget = dt_ui_notebook_page(g->notebook, N_("look"), NULL);
 
   g->contrast = dt_bauhaus_slider_from_params(self, N_("contrast"));
-  dt_bauhaus_slider_set_soft_range(g->contrast, 1.0, 2.0);
+  dt_bauhaus_slider_set_soft_range(g->contrast, 0.5, 3.0);
   dt_bauhaus_slider_set_digits(g->contrast, 3);
-  dt_bauhaus_slider_set_step(g->contrast, .01);
   gtk_widget_set_tooltip_text(g->contrast, _("slope of the linear part of the curve\n"
                                              "affects mostly the mid-tones"));
 
@@ -3814,25 +4561,24 @@ void gui_init(dt_iop_module_t *self)
                                                  "decrease to mute highlights."));
 
   g->latitude = dt_bauhaus_slider_from_params(self, N_("latitude"));
-  dt_bauhaus_slider_set_soft_range(g->latitude, 5.0, 50.0);
-  dt_bauhaus_slider_set_format(g->latitude, "%.2f %%");
+  dt_bauhaus_slider_set_soft_range(g->latitude, 0.1, 90.0);
+  dt_bauhaus_slider_set_format(g->latitude, "%");
   gtk_widget_set_tooltip_text(g->latitude,
                               _("width of the linear domain in the middle of the curve,\n"
-                                "in percent of the dynamic range (white exposure - black exposure).\n"
                                 "increase to get more contrast and less desaturation at extreme luminances,\n"
                                 "decrease otherwise. no desaturation happens in the latitude range.\n"
                                 "this has no effect on mid-tones."));
 
   g->balance = dt_bauhaus_slider_from_params(self, "balance");
-  dt_bauhaus_slider_set_format(g->balance, "%.2f %%");
+  dt_bauhaus_slider_set_format(g->balance, "%");
   gtk_widget_set_tooltip_text(g->balance, _("slides the latitude along the slope\n"
                                             "to give more room to shadows or highlights.\n"
                                             "use it if you need to protect the details\n"
                                             "at one extremity of the histogram."));
 
   g->saturation = dt_bauhaus_slider_from_params(self, "saturation");
-  dt_bauhaus_slider_set_soft_max(g->saturation, 50.0);
-  dt_bauhaus_slider_set_format(g->saturation, "%.2f %%");
+  dt_bauhaus_slider_set_soft_range(g->saturation, -50.0, 50.0);
+  dt_bauhaus_slider_set_format(g->saturation, "%");
   gtk_widget_set_tooltip_text(g->saturation, _("desaturates the output of the module\n"
                                                "specifically at extreme luminances.\n"
                                                "increase if shadows and/or highlights are under-saturated."));
@@ -3842,25 +4588,22 @@ void gui_init(dt_iop_module_t *self)
 
   // Black slider
   g->black_point_target = dt_bauhaus_slider_from_params(self, "black_point_target");
-  dt_bauhaus_slider_set_step(g->black_point_target, .001);
   dt_bauhaus_slider_set_digits(g->black_point_target, 4);
-  dt_bauhaus_slider_set_format(g->black_point_target, "%.4f %%");
+  dt_bauhaus_slider_set_format(g->black_point_target, "%");
   gtk_widget_set_tooltip_text(g->black_point_target, _("luminance of output pure black, "
                                                        "this should be 0%\nexcept if you want a faded look"));
 
   g->grey_point_target = dt_bauhaus_slider_from_params(self, "grey_point_target");
-  dt_bauhaus_slider_set_step(g->grey_point_target, .01);
   dt_bauhaus_slider_set_digits(g->grey_point_target, 4);
-  dt_bauhaus_slider_set_format(g->grey_point_target, "%.4f %%");
+  dt_bauhaus_slider_set_format(g->grey_point_target, "%");
   gtk_widget_set_tooltip_text(g->grey_point_target,
                               _("middle gray value of the target display or color space.\n"
                                 "you should never touch that unless you know what you are doing."));
 
   g->white_point_target = dt_bauhaus_slider_from_params(self, "white_point_target");
   dt_bauhaus_slider_set_soft_max(g->white_point_target, 100.0);
-  dt_bauhaus_slider_set_step(g->white_point_target, .01);
   dt_bauhaus_slider_set_digits(g->white_point_target, 4);
-  dt_bauhaus_slider_set_format(g->white_point_target, "%.4f %%");
+  dt_bauhaus_slider_set_format(g->white_point_target, "%");
   gtk_widget_set_tooltip_text(g->white_point_target, _("luminance of output pure white, "
                                                        "this should be 100%\nexcept if you want a faded look"));
 
@@ -3874,9 +4617,12 @@ void gui_init(dt_iop_module_t *self)
                                 "v4 is a newer desaturation method, based on spectral purity of light."));
 
   g->preserve_color = dt_bauhaus_combobox_from_params(self, "preserve_color");
-  gtk_widget_set_tooltip_text(g->preserve_color, _("ensure the original color are preserved.\n"
+  gtk_widget_set_tooltip_text(g->preserve_color, _("ensure the original colors are preserved.\n"
                                                    "may reinforce chromatic aberrations and chroma noise,\n"
-                                                   "so ensure they are properly corrected elsewhere.\n"));
+                                                   "so ensure they are properly corrected elsewhere."));
+  // hide legacy Euclidean norm by default
+  const int pos = dt_bauhaus_combobox_get_from_value(g->preserve_color, DT_FILMIC_METHOD_EUCLIDEAN_NORM_V1);
+  dt_bauhaus_combobox_remove_at(g->preserve_color, pos);
 
   // Curve type
   g->highlights = dt_bauhaus_combobox_from_params(self, "highlights");
@@ -3890,10 +4636,12 @@ void gui_init(dt_iop_module_t *self)
                                             "soft uses a low curvature resulting in less tonal compression."));
 
   g->custom_grey = dt_bauhaus_toggle_from_params(self, "custom_grey");
-  gtk_widget_set_tooltip_text(g->custom_grey, _("enable to input custom middle-gray values.\n"
-                                                "this is not recommended in general.\n"
-                                                "fix the global exposure in the exposure module instead.\n"
-                                                "disable to use standard 18.45 %% middle gray."));
+  gtk_widget_set_tooltip_text(g->custom_grey,
+                              /* xgettext:no-c-format */
+                              _("enable to input custom middle-gray values.\n"
+                                "this is not recommended in general.\n"
+                                "fix the global exposure in the exposure module instead.\n"
+                                "disable to use standard 18.45% middle gray."));
 
   g->auto_hardness = dt_bauhaus_toggle_from_params(self, "auto_hardness");
   gtk_widget_set_tooltip_text(
@@ -3904,7 +4652,7 @@ void gui_init(dt_iop_module_t *self)
   g->high_quality_reconstruction = dt_bauhaus_slider_from_params(self, "high_quality_reconstruction");
   gtk_widget_set_tooltip_text(g->high_quality_reconstruction,
                               _("run extra passes of chromaticity reconstruction.\n"
-                                "more iterations means more color propagation from neighbourhood.\n"
+                                "more iterations means more color propagation from neighborhood.\n"
                                 "this will be slower but will yield more neutral highlights.\n"
                                 "it also helps with difficult cases of magenta highlights."));
 
@@ -3918,7 +4666,7 @@ void gui_init(dt_iop_module_t *self)
   // Noise distribution
   g->noise_distribution = dt_bauhaus_combobox_from_params(self, "noise_distribution");
   gtk_widget_set_tooltip_text(g->noise_distribution, _("choose the statistical distribution of noise.\n"
-                                                       "this is useful to match natural sensor noise pattern.\n"));
+                                                       "this is useful to match natural sensor noise pattern."));
 
   // start building top level widget
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
@@ -3960,8 +4708,8 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
         p->white_point_source = p->white_point_source + grey_var;
       }
 
-      dt_bauhaus_slider_set_soft(g->white_point_source, p->white_point_source);
-      dt_bauhaus_slider_set_soft(g->black_point_source, p->black_point_source);
+      dt_bauhaus_slider_set(g->white_point_source, p->white_point_source);
+      dt_bauhaus_slider_set(g->black_point_source, p->black_point_source);
     }
 
     if(p->auto_hardness)
@@ -3969,17 +4717,59 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
                         / logf(-p->black_point_source / (p->white_point_source - p->black_point_source));
 
     gtk_widget_set_visible(GTK_WIDGET(g->output_power), !p->auto_hardness);
-    dt_bauhaus_slider_set_soft(g->output_power, p->output_power);
+    dt_bauhaus_slider_set(g->output_power, p->output_power);
 
     --darktable.gui->reset;
   }
 
   if(!w || w == g->version)
   {
-    if(p->version == DT_FILMIC_COLORSCIENCE_V1)
+    if(p->version == DT_FILMIC_COLORSCIENCE_V1 || p->version == DT_FILMIC_COLORSCIENCE_V4)
+    {
       dt_bauhaus_widget_set_label(g->saturation, NULL, N_("extreme luminance saturation"));
+      gtk_widget_set_tooltip_text(g->saturation, _("desaturates the output of the module\n"
+                                                   "specifically at extreme luminances.\n"
+                                                   "increase if shadows and/or highlights are under-saturated."));
+    }
     else if(p->version == DT_FILMIC_COLORSCIENCE_V2 || p->version == DT_FILMIC_COLORSCIENCE_V3)
+    {
       dt_bauhaus_widget_set_label(g->saturation, NULL, N_("mid-tones saturation"));
+      gtk_widget_set_tooltip_text(g->saturation, _("desaturates the output of the module\n"
+                                                   "specifically at medium luminances.\n"
+                                                   "increase if midtones are under-saturated."));
+    }
+    else if(p->version == DT_FILMIC_COLORSCIENCE_V5)
+    {
+      dt_bauhaus_widget_set_label(g->saturation, NULL, N_("highlights saturation mix"));
+      gtk_widget_set_tooltip_text(g->saturation, _("positive values ensure saturation is kept unchanged over the whole range.\n"
+                                                   "negative values bleach highlights at constant hue and luminance.\n"
+                                                   "zero is an equal mix of both strategies."));
+      gtk_widget_set_visible(GTK_WIDGET(g->preserve_color), FALSE);
+    }
+
+    if(p->version != DT_FILMIC_COLORSCIENCE_V5)
+      gtk_widget_set_visible(GTK_WIDGET(g->preserve_color), TRUE);
+
+  }
+
+  if(w == g->reconstruct_threshold || w == g->reconstruct_feather)
+  {
+    // Sliding threshold or feather sliders enables the highlight reconstruction
+    gtk_widget_set_sensitive(g->reconstruct_bloom_vs_details, TRUE);
+    gtk_widget_set_sensitive(g->reconstruct_grey_vs_color, TRUE);
+    gtk_widget_set_sensitive(g->reconstruct_structure_vs_texture, TRUE);
+
+    ++darktable.gui->reset;
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->enable_highlight_reconstruction), TRUE);
+    p->enable_highlight_reconstruction = TRUE;
+    --darktable.gui->reset;
+  }
+
+  if(!w || w == g->enable_highlight_reconstruction)
+  {
+    gtk_widget_set_sensitive(g->reconstruct_bloom_vs_details, p->enable_highlight_reconstruction);
+    gtk_widget_set_sensitive(g->reconstruct_grey_vs_color, p->enable_highlight_reconstruction);
+    gtk_widget_set_sensitive(g->reconstruct_structure_vs_texture, p->enable_highlight_reconstruction);
   }
 
   if(!w || w == g->reconstruct_bloom_vs_details)
@@ -3993,7 +4783,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     }
     else
     {
-      gtk_widget_set_sensitive(g->reconstruct_structure_vs_texture, TRUE);
+      gtk_widget_set_sensitive(g->reconstruct_structure_vs_texture, p->enable_highlight_reconstruction);
     }
   }
 
@@ -4003,9 +4793,11 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     gtk_widget_set_visible(g->grey_point_target, p->custom_grey);
   }
 
-  if(w) gtk_widget_queue_draw(self->widget);
+  gtk_widget_queue_draw(GTK_WIDGET(g->area));
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

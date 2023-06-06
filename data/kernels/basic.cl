@@ -1,8 +1,9 @@
 /*
     This file is part of darktable,
-    copyright (c) 2009--2013 johannes hanika.
+    copyright (c) 2009-2013 johannes hanika.
     copyright (c) 2014 Ulrich Pegelow.
     copyright (c) 2014 LebedevRI.
+    Copyright (C) 2022-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -22,6 +23,8 @@
 #include "color_conversion.h"
 #include "common.h"
 #include "rgb_norms.h"
+
+#include "diffuse.cl"
 
 int
 BL(const int row, const int col)
@@ -50,6 +53,48 @@ rawprepare_1f(read_only image2d_t in, write_only image2d_t out,
 }
 
 kernel void
+rawprepare_1f_gainmap(read_only image2d_t in, write_only image2d_t out,
+              const int width, const int height,
+              const int cx, const int cy,
+              global const float *sub, global const float *div,
+              const int rx, const int ry,
+              read_only image2d_t map0, read_only image2d_t map1,
+              read_only image2d_t map2, read_only image2d_t map3,
+              const int2 map_size, const float2 im_to_rel,
+              const float2 rel_to_map, const float2 map_origin)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width || y >= height) return;
+
+  const float pixel = read_imageui(in, sampleri, (int2)(x + cx, y + cy)).x;
+
+  const int id = BL(ry+cy+y, rx+cx+x);
+  float pixel_scaled = (pixel - sub[id]) / div[id];
+
+  // Add 0.5 to compensate for CLK_FILTER_LINEAR subtracting 0.5 from the specified coordinates
+  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map + (float2)(0.5, 0.5);
+  switch(id)
+  {
+    case 0:
+      pixel_scaled *= read_imagef(map0, samplerf, map_pt).x;
+      break;
+    case 1:
+      pixel_scaled *= read_imagef(map1, samplerf, map_pt).x;
+      break;
+    case 2:
+      pixel_scaled *= read_imagef(map2, samplerf, map_pt).x;
+      break;
+    case 3:
+      pixel_scaled *= read_imagef(map3, samplerf, map_pt).x;
+      break;
+  }
+
+  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+}
+
+kernel void
 rawprepare_1f_unnormalized(read_only image2d_t in, write_only image2d_t out,
                            const int width, const int height,
                            const int cx, const int cy,
@@ -70,6 +115,48 @@ rawprepare_1f_unnormalized(read_only image2d_t in, write_only image2d_t out,
 }
 
 kernel void
+rawprepare_1f_unnormalized_gainmap(read_only image2d_t in, write_only image2d_t out,
+                           const int width, const int height,
+                           const int cx, const int cy,
+                           global const float *sub, global const float *div,
+                           const int rx, const int ry,
+                           read_only image2d_t map0, read_only image2d_t map1,
+                           read_only image2d_t map2, read_only image2d_t map3,
+                           const int2 map_size, const float2 im_to_rel,
+                           const float2 rel_to_map, const float2 map_origin)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width  || y >= height) return;
+
+  const float pixel = read_imagef(in, sampleri, (int2)(x + cx, y + cy)).x;
+
+  const int id = BL(ry+cy+y, rx+cx+x);
+  float pixel_scaled = (pixel - sub[id]) / div[id];
+
+  // Add 0.5 to compensate for CLK_FILTER_LINEAR subtracting 0.5 from the specified coordinates
+  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map + (float2)(0.5, 0.5);
+  switch(id)
+  {
+    case 0:
+      pixel_scaled *= read_imagef(map0, samplerf, map_pt).x;
+      break;
+    case 1:
+      pixel_scaled *= read_imagef(map1, samplerf, map_pt).x;
+      break;
+    case 2:
+      pixel_scaled *= read_imagef(map2, samplerf, map_pt).x;
+      break;
+    case 3:
+      pixel_scaled *= read_imagef(map3, samplerf, map_pt).x;
+      break;
+  }
+
+  write_imagef(out, (int2)(x, y), (float4)(pixel_scaled, 0.0f, 0.0f, 0.0f));
+}
+
+kernel void
 rawprepare_4f(read_only image2d_t in, write_only image2d_t out,
               const int width, const int height,
               const int cx, const int cy,
@@ -80,8 +167,10 @@ rawprepare_4f(read_only image2d_t in, write_only image2d_t out,
 
   if(x >= width || y >= height) return;
 
+  const float4 black4 = (const float4)(black[0], black[1], black[2], black[3]);
+  const float4 div4 = (const float4)(div[0], div[1], div[2], div[3]);
   float4 pixel = read_imagef(in, sampleri, (int2)(x + cx, y + cy));
-  pixel.xyz = (pixel.xyz - black[0]) / div[0];
+  pixel.xyz = (pixel.xyz - black4.xyz) / div4.xyz;
 
   write_imagef(out, (int2)(x, y), pixel);
 }
@@ -194,8 +283,262 @@ highlights_1f_clip (read_only image2d_t in, write_only image2d_t out, const int 
   float pixel = read_imagef(in, sampleri, (int2)(x, y)).x;
 
   pixel = fmin(clip, pixel);
-
   write_imagef (out, (int2)(x, y), pixel);
+}
+
+kernel void highlights_false_color(
+        read_only image2d_t in,
+        write_only image2d_t out,
+        const int owidth,
+        const int oheight,
+        const int iwidth,
+        const int iheight,
+        const int rx,
+        const int ry,
+        const unsigned int filters,
+        global const unsigned char (*const xtrans)[6],
+        global const float *clips)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= owidth || y >= oheight) return;
+
+  const int irow = y + ry;
+  const int icol = x + rx;
+  float oval = 0.0f;
+
+  if((irow >= 0) && (icol >= 0) && (icol < iwidth) && (irow < iheight))
+  { 
+    const float ival = read_imagef(in, sampleri, (int2)(icol, irow)).x;
+    const int c = (filters == 9u) ? FCxtrans(irow, icol, xtrans) : FC(irow, icol, filters);
+    oval = (ival < clips[c]) ? 0.2f * ival : 1.0f;
+  }
+  write_imagef (out, (int2)(x, y), oval);
+}
+
+static float _calc_refavg(
+        read_only image2d_t in,
+        global const unsigned char (*const xtrans)[6],
+        const unsigned int filters,
+        int row,
+        int col,
+        int maxrow,
+        int maxcol)
+{
+  float mean[3] = { 0.0f, 0.0f, 0.0f };
+  float sum[3] =  { 0.0f, 0.0f, 0.0f };
+  float cnt[3]  = { 0.0f, 0.0f, 0.0f };
+
+  const int dymin = (row > 0) ? -1 : 0;
+  const int dxmin = (col > 0) ? -1 : 0;
+  const int dymax = (row < maxrow -1) ? 2 : 1;
+  const int dxmax = (col < maxcol -1) ? 2 : 1;
+
+  for(int dy = dymin; dy < dymax; dy++)
+  {
+    for(int dx = dxmin; dx < dxmax; dx++)
+    {
+      const float val = fmax(0.0f, read_imagef(in, samplerA, (int2)(col+dx, row+dy)).x);
+      const int c = (filters == 9u) ? FCxtrans(row + dy, col + dx, xtrans) : FC(row + dy, col + dx, filters);
+      sum[c] += val;
+      cnt[c] += 1.0f;
+    }
+  }
+
+  const float onethird = 1.0f / 3.0f;
+  for(int c = 0; c < 3; c++)
+    mean[c] = (cnt[c] > 0.0f) ? pow(sum[c] / cnt[c], onethird) : 0.0f;
+
+  const float croot_refavg[3] = { 0.5f * (mean[1] + mean[2]), 0.5f * (mean[0] + mean[2]), 0.5f * (mean[0] + mean[1])};
+  const int color = (filters == 9u) ? FCxtrans(row, col, xtrans) : FC(row, col, filters);
+  return pow(croot_refavg[color], 3.0f);
+}
+
+kernel void highlights_initmask(
+        read_only image2d_t in,
+        global char *inmask,
+        const int msize,
+        const int mwidth,
+        const int mheight,
+        const unsigned int filters,
+        global const unsigned char (*const xtrans)[6],
+        global const float *clips)
+{
+  const int mcol = get_global_id(0);
+  const int mrow = get_global_id(1);
+
+  if((mcol >= mwidth) || (mrow >= mheight))
+    return;
+
+  const int mdx = mad24(mrow, mwidth, mcol);
+
+  if((mcol < 1) || (mrow < 1) || (mcol > mwidth -2) || (mrow > mheight-2))
+  {
+    for(int c = 0; c < 3; c++)
+      inmask[c*msize + mdx] = 0;
+    return;
+  }
+
+  char mbuff[3] = { 0, 0, 0 };
+  for(int y = -1; y < 2; y++)
+  {
+    for(int x = -1; x < 2; x++)
+    {
+      const int color = (filters == 9u) ? FCxtrans(mrow+y, mcol+x, xtrans) : FC(mrow+y, mcol+x, filters);
+      const float val = fmax(0.0f, read_imagef(in, samplerA, (int2)(3 * mcol + x, 3 * mrow + y)).x);
+      mbuff[color] += (val >= clips[color]) ? 1 : 0;
+    }
+  }
+
+  for(int c = 0; c < 3; c++)
+    inmask[c*msize + mdx] = (mbuff[c] != 0) ? 1 : 0;
+}
+
+kernel void highlights_dilatemask(
+        global char *in,
+        global char *out,
+        const int msize,
+        const int mwidth,
+        const int mheight)
+{
+  const int col = get_global_id(0);
+  const int row = get_global_id(1);
+
+  if((col >= mwidth) || (row >= mheight))
+    return;
+
+  const int w1 = mwidth;
+  const int w2 = 2 * mwidth;
+  const int w3 = 3 * mwidth;
+  const int moff = mad24(row, w1, col);
+
+  if((col < 3) || (row < 3) || (col > mwidth - 4) || (row > mheight - 4))
+  {
+    out[moff] = 0;
+    out[moff + msize] = 0;
+    out[moff + 2*msize] = 0;
+    return;
+  }
+
+  int i = moff;
+  out[i] = (in[i-w1-1] | in[i-w1] | in[i-w1+1] |
+         in[i-1]    | in[i]    | in[i+1] |
+         in[i+w1-1] | in[i+w1] | in[i+w1+1] |
+         in[i-w2-1] | in[i-w2] | in[i-w2+1] |
+         in[i-w1-2] | in[i-w1+2] | in[i-2]    | in[i+2] | in[i+w1-2] | in[i+w1+2] |
+         in[i+w2-1] | in[i+w2]   | in[i+w2+1] |
+         in[i-w3-2] | in[i-w3-1] | in[i-w3] | in[i-w3+1] | in[i-w3+2] |
+         in[i-w2-3] | in[i-w2-2] | in[i-w2+2] | in[i-w2+3] |
+         in[i-w1-3] | in[i-w1+3] | in[i-3] | in[i+3] | in[i+w1-3] | in[i+w1+3] |
+         in[i+w2-3] | in[i+w2-2] | in[i+w2+2] | in[i+w2+3] |
+         in[i+w3-2] | in[i+w3-1] | in[i+w3] | in[i+w3+1] | in[i+w3+2]) ? 1 : 0;
+
+  i = msize + moff;
+  out[i] = (in[i-w1-1] | in[i-w1] | in[i-w1+1] |
+         in[i-1]    | in[i]    | in[i+1] |
+         in[i+w1-1] | in[i+w1] | in[i+w1+1] |
+         in[i-w2-1] | in[i-w2] | in[i-w2+1] |
+         in[i-w1-2] | in[i-w1+2] | in[i-2]    | in[i+2] | in[i+w1-2] | in[i+w1+2] |
+         in[i+w2-1] | in[i+w2]   | in[i+w2+1] |
+         in[i-w3-2] | in[i-w3-1] | in[i-w3] | in[i-w3+1] | in[i-w3+2] |
+         in[i-w2-3] | in[i-w2-2] | in[i-w2+2] | in[i-w2+3] |
+         in[i-w1-3] | in[i-w1+3] | in[i-3] | in[i+3] | in[i+w1-3] | in[i+w1+3] |
+         in[i+w2-3] | in[i+w2-2] | in[i+w2+2] | in[i+w2+3] |
+         in[i+w3-2] | in[i+w3-1] | in[i+w3] | in[i+w3+1] | in[i+w3+2]) ? 1 : 0;
+
+  i = 2*msize + moff;
+  out[i] = (in[i-w1-1] | in[i-w1] | in[i-w1+1] |
+         in[i-1]    | in[i]    | in[i+1] |
+         in[i+w1-1] | in[i+w1] | in[i+w1+1] |
+         in[i-w2-1] | in[i-w2] | in[i-w2+1] |
+         in[i-w1-2] | in[i-w1+2] | in[i-2]    | in[i+2] | in[i+w1-2] | in[i+w1+2] |
+         in[i+w2-1] | in[i+w2]   | in[i+w2+1] |
+         in[i-w3-2] | in[i-w3-1] | in[i-w3] | in[i-w3+1] | in[i-w3+2] |
+         in[i-w2-3] | in[i-w2-2] | in[i-w2+2] | in[i-w2+3] |
+         in[i-w1-3] | in[i-w1+3] | in[i-3] | in[i+3] | in[i+w1-3] | in[i+w1+3] |
+         in[i+w2-3] | in[i+w2-2] | in[i+w2+2] | in[i+w2+3] |
+         in[i+w3-2] | in[i+w3-1] | in[i+w3] | in[i+w3+1] | in[i+w3+2]) ? 1 : 0;
+}
+
+
+kernel void highlights_chroma(
+        read_only image2d_t in,
+        global char *mask,
+        global float *accu,
+        const int width,
+        const int height,
+        const int msize,
+        const int mwidth,
+        const unsigned int filters,
+        global const unsigned char (*const xtrans)[6],
+        global const float *clips)
+{
+  const int row = get_global_id(0);
+
+  if((row < 3) || (row > height - 4)) return;
+
+  float sum[3] = {0.0f, 0.0f, 0.0f};
+  float cnt[3] = {0.0f, 0.0f, 0.0f};
+
+  for(int col = 3; col < width-3; col++)
+  {
+    const int idx = mad24(row, width, col);
+    const int color = (filters == 9u) ? FCxtrans(row, col, xtrans) : FC(row, col, filters);
+    const float inval = fmax(0.0f, read_imagef(in, samplerA, (int2)(col, row)).x);
+    const int px = color * msize + mad24(row/3, mwidth, col/3);
+    if(mask[px] && (inval > 0.2f*clips[color]) && (inval < clips[color]))
+    {
+      const float ref = _calc_refavg(in, xtrans, filters, row, col, height, width);
+      sum[color] += inval - ref;
+      cnt[color] += 1.0f;
+    }
+  }
+
+  for(int c = 0; c < 3; c++)
+  {
+    if(cnt[c] > 0.0f)
+    {
+      accu[row*6 + 2*c] = sum[c];
+      accu[row*6 + 2*c +1] = cnt[c];
+    }
+  }
+}
+
+kernel void highlights_opposed(
+        read_only image2d_t in,
+        write_only image2d_t out,
+        const int owidth,
+        const int oheight,
+        const int iwidth,
+        const int iheight,
+        const int dx,
+        const int dy,
+        const unsigned int filters,
+        global const unsigned char (*const xtrans)[6],
+        global const float *clips,
+        global const float *chroma)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+  if(x >= owidth || y >= oheight) return;
+
+  const int irow = y + dy;
+  const int icol = x + dx;
+  float val = 0.0f;
+
+  if((icol >= 0) && (icol < iwidth) && (irow >= 0) && (irow < iheight))
+  {
+    val = fmax(0.0f, read_imagef(in, samplerA, (int2)(icol, irow)).x);
+
+    const int color = (filters == 9u) ? FCxtrans(irow, icol, xtrans) : FC(irow, icol, filters);
+    if(val >= clips[color])
+    {
+      const float ref = _calc_refavg(in, xtrans, filters, irow, icol, iheight, iwidth);
+      val = fmax(val, ref + chroma[color]);
+    }
+  }
+  write_imagef (out, (int2)(x, y), val);
 }
 
 #define SQRT3 1.7320508075688772935274463415058723669f
@@ -426,6 +769,546 @@ highlights_1f_lch_xtrans (read_only image2d_t in, write_only image2d_t out, cons
 }
 #undef SQRT3
 #undef SQRT12
+
+
+kernel void
+interpolate_and_mask(read_only image2d_t input,
+                     write_only image2d_t interpolated,
+                     write_only image2d_t clipping_mask,
+                     constant float *clips,
+                     constant float *wb,
+                     const unsigned int filters,
+                     const int width,
+                     const int height)
+{
+  // Bilinear interpolation
+  const int j = get_global_id(0); // = x
+  const int i = get_global_id(1); // = y
+
+  if(j >= width || i >= height) return;
+  const float center = read_imagef(input, sampleri, (int2)(j, i)).x;
+
+  const int c = FC(i, j, filters);
+
+  float R = 0.f;
+  float G = 0.f;
+  float B = 0.f;
+
+  int R_clipped = 0;
+  int G_clipped = 0;
+  int B_clipped = 0;
+
+  if(i == 0 || j == 0 || i == height - 1 || j == width - 1)
+  {
+    // We are on the image edges. We don't need to demosaic,
+    // just set R = G = B = center and record clipping.
+    // This will introduce a marginal error close to edges, mostly irrelevant
+    // because we are dealing with local averages anyway, later on.
+    // Also we remosaic the image at the end, so only the relevant channel gets picked.
+    // Finally, it's unlikely that the borders of the image get clipped due to vignetting.
+    R = G = B = center;
+    R_clipped = G_clipped = B_clipped = (center > clips[c]);
+  }
+  else
+  {
+    // fetch neighbours and cache them for perf
+    const size_t i_prev = (i - 1);
+    const size_t i_next = (i + 1);
+    const size_t j_prev = (j - 1);
+    const size_t j_next = (j + 1);
+
+    const float north = read_imagef(input, samplerA, (int2)(j, i_prev)).x;
+    const float south = read_imagef(input, samplerA, (int2)(j, i_next)).x;
+    const float west = read_imagef(input, samplerA, (int2)(j_prev, i)).x;
+    const float east = read_imagef(input, samplerA, (int2)(j_next, i)).x;
+
+    const float north_east = read_imagef(input, samplerA, (int2)(j_next, i_prev)).x;
+    const float north_west = read_imagef(input, samplerA, (int2)(j_prev, i_prev)).x;
+    const float south_east = read_imagef(input, samplerA, (int2)(j_next, i_next)).x;
+    const float south_west = read_imagef(input, samplerA, (int2)(j_prev, i_next)).x;
+
+    if(c == GREEN) // green pixel
+    {
+      G = center;
+      G_clipped = (center > clips[GREEN]);
+    }
+    else // non-green pixel
+    {
+      // interpolate inside an X/Y cross
+      G = (north + south + east + west) / 4.f;
+      G_clipped = (north > clips[GREEN] || south > clips[GREEN] || east > clips[GREEN] || west > clips[GREEN]);
+    }
+
+    if(c == RED ) // red pixel
+    {
+      R = center;
+      R_clipped = (center > clips[RED]);
+    }
+    else // non-red pixel
+    {
+      if(FC(i - 1, j, filters) == RED && FC(i + 1, j, filters) == RED)
+      {
+        // we are on a red column, so interpolate column-wise
+        R = (north + south) / 2.f;
+        R_clipped = (north > clips[RED] || south > clips[RED]);
+      }
+      else if(FC(i, j - 1, filters) == RED && FC(i, j + 1, filters) == RED)
+      {
+        // we are on a red row, so interpolate row-wise
+        R = (west + east) / 2.f;
+        R_clipped = (west > clips[RED] || east > clips[RED]);
+      }
+      else
+      {
+        // we are on a blue row, so interpolate inside a square
+        R = (north_west + north_east + south_east + south_west) / 4.f;
+        R_clipped = (north_west > clips[RED] || north_east > clips[RED] || south_west > clips[RED]
+                      || south_east > clips[RED]);
+      }
+    }
+
+    if(c == BLUE ) // blue pixel
+    {
+      B = center;
+      B_clipped = (center > clips[BLUE]);
+    }
+    else // non-blue pixel
+    {
+      if(FC(i - 1, j, filters) == BLUE && FC(i + 1, j, filters) == BLUE)
+      {
+        // we are on a blue column, so interpolate column-wise
+        B = (north + south) / 2.f;
+        B_clipped = (north > clips[BLUE] || south > clips[BLUE]);
+      }
+      else if(FC(i, j - 1, filters) == BLUE && FC(i, j + 1, filters) == BLUE)
+      {
+        // we are on a red row, so interpolate row-wise
+        B = (west + east) / 2.f;
+        B_clipped = (west > clips[BLUE] || east > clips[BLUE]);
+      }
+      else
+      {
+        // we are on a red row, so interpolate inside a square
+        B = (north_west + north_east + south_east + south_west) / 4.f;
+
+        B_clipped = (north_west > clips[BLUE] || north_east > clips[BLUE] || south_west > clips[BLUE]
+                    || south_east > clips[BLUE]);
+      }
+    }
+  }
+
+  float4 RGB = {R, G, B, native_sqrt(R * R + G * G + B * B) };
+  float4 clipped = { R_clipped, G_clipped, B_clipped, (R_clipped || G_clipped || B_clipped) };
+  const float4 WB4 = { wb[0], wb[1], wb[2], wb[3] };
+  write_imagef(interpolated, (int2)(j, i), RGB / WB4);
+  write_imagef(clipping_mask, (int2)(j, i), clipped);
+}
+
+
+kernel void
+remosaic_and_replace(read_only image2d_t input,
+                     read_only image2d_t interpolated,
+                     read_only image2d_t clipping_mask,
+                     write_only image2d_t output,
+                     constant float *wb,
+                     const unsigned int filters,
+                     const int width,
+                     const int height)
+{
+  // Take RGB ratios and norm, reconstruct RGB and remosaic the image
+  const int j = get_global_id(0); // = x
+  const int i = get_global_id(1); // = y
+
+  if(j >= width || i >= height) return;
+
+  const int c = FC(i, j, filters);
+  const float4 center = read_imagef(interpolated, sampleri, (int2)(j, i));
+  float *rgb = (float *)&center;
+  const float opacity = read_imagef(clipping_mask, sampleri, (int2)(j, i)).w;
+  const float4 pix_in = read_imagef(input, sampleri, (int2)(j, i));
+  const float4 pix_out = opacity * fmax(rgb[c] * wb[c], 0.f) + (1.f - opacity) * pix_in;
+  write_imagef(output, (int2)(j, i), pix_out);
+}
+
+kernel void
+box_blur_5x5(read_only image2d_t in,
+             write_only image2d_t out,
+             const int width,
+             const int height)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width || y >= height) return;
+
+  float4 acc = 0.f;
+
+  for(int ii = -2; ii < 3; ++ii)
+    for(int jj = -2; jj < 3; ++jj)
+    {
+      const int row = clamp(y + ii, 0, height - 1);
+      const int col = clamp(x + jj, 0, width - 1);
+      acc += read_imagef(in, samplerA, (int2)(col, row)) / 25.f;
+    }
+
+  write_imagef(out, (int2)(x, y), acc);
+}
+
+
+kernel void
+interpolate_bilinear(read_only image2d_t in,
+                     const int width_in,
+                     const int height_in,
+                     write_only image2d_t out,
+                     const int width_out,
+                     const int height_out,
+                     const int RGBa)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width_out || y >= height_out) return;
+
+  // Relative coordinates of the pixel in output space
+  const float x_out = (float)x /(float)width_out;
+  const float y_out = (float)y /(float)height_out;
+
+  // Corresponding absolute coordinates of the pixel in input space
+  const float x_in = x_out * (float)width_in;
+  const float y_in = y_out * (float)height_in;
+
+  // Nearest neighbours coordinates in input space
+  int x_prev = (int)floor(x_in);
+  int x_next = x_prev + 1;
+  int y_prev = (int)floor(y_in);
+  int y_next = y_prev + 1;
+
+  x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+  x_next = (x_next < width_in) ? x_next : width_in - 1;
+  y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+  y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+  // Nearest pixels in input array (nodes in grid)
+  const float4 Q_NW = read_imagef(in, samplerA, (int2)(x_prev, y_prev));
+  const float4 Q_NE = read_imagef(in, samplerA, (int2)(x_next, y_prev));
+  const float4 Q_SE = read_imagef(in, samplerA, (int2)(x_next, y_next));
+  const float4 Q_SW = read_imagef(in, samplerA, (int2)(x_prev, y_next));
+
+  // Spatial differences between nodes
+  const float Dy_next = (float)y_next - y_in;
+  const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
+  const float Dx_next = (float)x_next - x_in;
+  const float Dx_prev = 1.f - Dx_next; // because next - prev = 1
+
+  // Interpolate
+  const float4 pix_out = Dy_prev * (Q_SW * Dx_next + Q_SE * Dx_prev) +
+                         Dy_next * (Q_NW * Dx_next + Q_NE * Dx_prev);
+
+  // Full RGBa copy - 4 channels
+  write_imagef(out, (int2)(x, y), pix_out);
+}
+
+
+enum wavelets_scale_t
+{
+  ANY_SCALE   = 1 << 0, // any wavelets scale   : reconstruct += HF
+  FIRST_SCALE = 1 << 1, // first wavelets scale : reconstruct = 0
+  LAST_SCALE  = 1 << 2, // last wavelets scale  : reconstruct += residual
+};
+
+
+kernel void
+guide_laplacians(read_only image2d_t HF,
+                 read_only image2d_t LF,
+                 read_only image2d_t mask,
+                 read_only image2d_t output_r,
+                 write_only image2d_t output_w,
+                 const int width,
+                 const int height,
+                 const int mult,
+                 const float noise_level,
+                 const int salt,
+                 const unsigned int scale,
+                 const float radius_sq)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width || y >= height) return;
+
+  const float alpha = read_imagef(mask, samplerA, (int2)(x, y)).w;
+  const float alpha_comp = 1.f - alpha;
+
+  float4 high_frequency = read_imagef(HF, samplerA, (int2)(x, y));
+
+  float4 out;
+
+  if(alpha > 0.f) // reconstruct
+  {
+    // non-local neighbours coordinates
+    const int j_neighbours[3] = {
+      max(x - mult, 0),
+      x,
+      min(x + mult, width - 1) };
+    const int i_neighbours[3] = {
+      max(y - mult, 0),
+      y,
+      min(y + mult, height - 1) };
+
+    // fetch non-local pixels and store them locally and contiguously
+    float4 neighbour_pixel_HF[9];
+    neighbour_pixel_HF[3 * 0 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[0]));
+    neighbour_pixel_HF[3 * 0 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[0]));
+    neighbour_pixel_HF[3 * 0 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[0]));
+
+    neighbour_pixel_HF[3 * 1 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[1]));
+    neighbour_pixel_HF[3 * 1 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[1]));
+    neighbour_pixel_HF[3 * 1 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[1]));
+
+    neighbour_pixel_HF[3 * 2 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[2]));
+    neighbour_pixel_HF[3 * 2 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[2]));
+    neighbour_pixel_HF[3 * 2 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[2]));
+
+    // Compute the linear fit of the laplacian of chromaticity against the laplacian of the norm
+    // that is the chromaticity filter guided by the norm
+
+    // Get the local average per channel
+    float4 means_HF = 0.f;
+    for(int k = 0; k < 9; k++)
+    {
+      means_HF += neighbour_pixel_HF[k] / 9.f;
+    }
+
+    // Get the local variance per channel
+    float4 variance_HF = 0.f;
+    for(int k = 0; k < 9; k++)
+    {
+      variance_HF += sqf(neighbour_pixel_HF[k] - means_HF) / 9.f;
+    }
+
+    // Find the channel most likely to contain details = max( variance(HF) )
+    // But since OpenCL is not designed to iterate over float4,
+    // we need to check each channel in sequence
+    int guiding_channel_HF = ALPHA;
+    float guiding_value_HF = 0.f;
+
+    if(variance_HF.x > guiding_value_HF)
+    {
+      guiding_value_HF = variance_HF.x;
+      guiding_channel_HF = RED;
+    }
+    if(variance_HF.y > guiding_value_HF)
+    {
+      guiding_value_HF = variance_HF.y;
+      guiding_channel_HF = GREEN;
+    }
+    if(variance_HF.z > guiding_value_HF)
+    {
+      guiding_value_HF = variance_HF.z;
+      guiding_channel_HF = BLUE;
+    }
+
+    // Extract the guiding values for HF and LF now
+    // so we can proceed after with vectorized code
+    float means_HF_guide = 0.f;
+    float variance_HF_guide = 0.f;
+    float channel_guide_HF[9];
+    float high_frequency_guide = 0.f;
+
+    if(guiding_channel_HF == RED)
+    {
+      means_HF_guide = means_HF.x;
+      variance_HF_guide = variance_HF.x;
+      high_frequency_guide = high_frequency.x;
+      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].x;
+    }
+    else if(guiding_channel_HF == GREEN)
+    {
+      means_HF_guide = means_HF.y;
+      variance_HF_guide = variance_HF.y;
+      high_frequency_guide = high_frequency.y;
+      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].y;
+    }
+    else // BLUE
+    {
+      means_HF_guide = means_HF.z;
+      variance_HF_guide = variance_HF.z;
+      high_frequency_guide = high_frequency.z;
+      for(int k = 0; k < 9; k++) channel_guide_HF[k] = neighbour_pixel_HF[k].z;
+    }
+
+    // Compute the linear regression channel = f(guide)
+    float4 covariance_HF = 0.f;
+    for(int k = 0; k < 9; k++)
+    {
+      covariance_HF += (neighbour_pixel_HF[k] - means_HF)
+                       * (channel_guide_HF[k] - means_HF_guide) / 9.f;
+    }
+
+    const float scale_multiplier = 1.f / radius_sq;
+    const float4 alpha_ch = read_imagef(mask, samplerA, (int2)(x, y));
+
+    const float4 a_HF = fmax(covariance_HF / variance_HF_guide, 0.f);
+    const float4 b_HF = means_HF - a_HF * means_HF_guide;
+
+    // Guide all channels by the norms
+    high_frequency = alpha_ch * scale_multiplier * (a_HF * high_frequency_guide + b_HF)
+                   + (1.f - alpha_ch * scale_multiplier) * high_frequency;
+
+  }
+
+  if(scale & FIRST_SCALE)
+  {
+    // out is not inited yet
+    out = high_frequency;
+  }
+  else
+  {
+    // just accumulate HF
+    out = read_imagef(output_r, samplerA, (int2)(x, y)) + high_frequency;
+  }
+
+  if(scale & LAST_SCALE)
+  {
+    // add the residual and clamp
+    out = fmax(out + read_imagef(LF, samplerA, (int2)(x, y)), (float4)0.f);
+  }
+
+  // Last step of RGB reconstruct : add noise
+  if((scale & LAST_SCALE) && salt && alpha > 0.f)
+  {
+    // Init random number generator
+    unsigned int state[4] = { splitmix32(x + 1), splitmix32((x + 1) * (y + 3)), splitmix32(1337), splitmix32(666) };
+    xoshiro128plus(state);
+    xoshiro128plus(state);
+    xoshiro128plus(state);
+    xoshiro128plus(state);
+
+    // Model noise on the max RGB
+    const float4 sigma = out * noise_level;
+    float4 noise = dt_noise_generator_simd(DT_NOISE_POISSONIAN, out, sigma, state);
+
+    // Ensure the noise only brightens the image, since it's clipped
+    noise = out + fabs(noise - out);
+    out = fmax(alpha * noise + alpha_comp * out, 0.f);
+  }
+
+  if(scale & LAST_SCALE)
+  {
+    // Break the RGB channels into ratios/norm for the next step of reconstruction
+    const float4 out_2 = out * out;
+    const float norm = fmax(sqrt(out_2.x + out_2.y + out_2.z), 1e-6f);
+    out /= norm;
+    out.w = norm;
+  }
+
+  write_imagef(output_w, (int2)(x, y), out);
+}
+
+kernel void
+diffuse_color(read_only image2d_t HF,
+              read_only image2d_t LF,
+              read_only image2d_t mask,
+              read_only image2d_t output_r,
+              write_only image2d_t output_w,
+              const int width,
+              const int height,
+              const int mult,
+              const unsigned int scale,
+              const float first_order_factor)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+
+  if(x >= width || y >= height) return;
+
+  const float4 alpha = read_imagef(mask, samplerA, (int2)(x, y));
+
+  float4 high_frequency = read_imagef(HF, samplerA, (int2)(x, y));
+
+  // We use 4 floats SIMD instructions but we don't want to diffuse the norm, make sure to store and restore it later.
+  // This is not much of an issue when processing image at full-res, but more harmful since
+  // we reconstruct highlights on a downscaled variant
+  const float norm_backup = high_frequency.w;
+
+  float4 out;
+
+  if(alpha.w > 0.f) // reconstruct
+  {
+    // non-local neighbours coordinates
+    const int j_neighbours[3] = {
+      max(x - mult, 0),
+      x,
+      min(x + mult, width - 1) };
+    const int i_neighbours[3] = {
+      max(y - mult, 0),
+      y,
+      min(y + mult, height - 1) };
+
+    // fetch non-local pixels and store them locally and contiguously
+    float4 neighbour_pixel_HF[9];
+    neighbour_pixel_HF[3 * 0 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[0]));
+    neighbour_pixel_HF[3 * 0 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[0]));
+    neighbour_pixel_HF[3 * 0 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[0]));
+
+    neighbour_pixel_HF[3 * 1 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[1]));
+    neighbour_pixel_HF[3 * 1 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[1]));
+    neighbour_pixel_HF[3 * 1 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[1]));
+
+    neighbour_pixel_HF[3 * 2 + 0] = read_imagef(HF, samplerA, (int2)(j_neighbours[0], i_neighbours[2]));
+    neighbour_pixel_HF[3 * 2 + 1] = read_imagef(HF, samplerA, (int2)(j_neighbours[1], i_neighbours[2]));
+    neighbour_pixel_HF[3 * 2 + 2] = read_imagef(HF, samplerA, (int2)(j_neighbours[2], i_neighbours[2]));
+
+    float4 update = 0.f;
+
+    // Compute the laplacian in the direction parallel to the steepest gradient on the norm
+    float anisotropic_kernel_isophote[9] = { 0.25f, 0.5f, 0.25f, 0.5f, -3.f, 0.5f, 0.25f, 0.5f, 0.25f };
+
+    // Convolve the filter to get the laplacian
+    float4 laplacian_HF = 0.f;
+    for(int k = 0; k < 9; k++)
+    {
+      laplacian_HF += neighbour_pixel_HF[k] * anisotropic_kernel_isophote[k];
+    }
+
+    // Diffuse
+    const float4 multipliers_HF = { 1.f / B_SPLINE_TO_LAPLACIAN, 1.f / B_SPLINE_TO_LAPLACIAN, 1.f / B_SPLINE_TO_LAPLACIAN, 0.f };
+    high_frequency += alpha * multipliers_HF * (laplacian_HF - first_order_factor * high_frequency);
+
+    high_frequency.w = norm_backup;
+  }
+
+  if(scale & FIRST_SCALE)
+  {
+    // out is not inited yet
+    out = high_frequency;
+  }
+  else
+  {
+    // just accumulate HF
+    out = read_imagef(output_r, samplerA, (int2)(x, y)) + high_frequency;
+  }
+
+  if(scale & LAST_SCALE)
+  {
+    // add the residual and clamp
+    out = fmax(out + read_imagef(LF, samplerA, (int2)(x, y)), (float4)0.f);
+
+    // renormalize ratios
+    if(alpha.w > 0.f)
+    {
+      const float4 out_sq = sqf(out);
+      const float norm = sqrt(out_sq.x + out_sq.y + out_sq.z);
+      if(norm > 1e-4f) out.xyz /= norm;
+    }
+
+    // Last scale : reconstruct RGB from ratios and norm - norm stays in the 4th channel
+    // we need it to evaluate the gradient
+    out.xyz *= out.w;
+  }
+
+  write_imagef(output_w, (int2)(x, y), out);
+}
 
 float
 lookup_unbounded_twosided(read_only image2d_t lut, const float x, constant float *a)
@@ -1774,28 +2657,6 @@ flip(read_only image2d_t in, write_only image2d_t out, const int width, const in
   write_imagef (out, (int2)(nx, ny), pixel);
 }
 
-
-/* we use this exp approximation to maintain full identity with cpu path */
-float
-fast_expf(const float x)
-{
-  // meant for the range [-100.0f, 0.0f]. largest error ~ -0.06 at 0.0f.
-  // will get _a_lot_ worse for x > 0.0f (9000 at 10.0f)..
-  const int i1 = 0x3f800000u;
-  // e^x, the comment would be 2^x
-  const int i2 = 0x402DF854u;//0x40000000u;
-  // const int k = CLAMPS(i1 + x * (i2 - i1), 0x0u, 0x7fffffffu);
-  // without max clamping (doesn't work for large x, but is faster):
-  const int k0 = i1 + x * (i2 - i1);
-  union {
-      float f;
-      int k;
-  } u;
-  u.k = k0 > 0 ? k0 : 0;
-  return u.f;
-}
-
-
 float
 envelope(const float L)
 {
@@ -1835,7 +2696,7 @@ monochrome_filter(
 
   float4 pixel = read_imagef (in,   sampleri, (int2)(x, y));
   // TODO: this could be a native_expf, or exp2f, need to evaluate comparisons with cpu though:
-  pixel.x = 100.0f*fast_expf(-clamp(((pixel.y - a)*(pixel.y - a) + (pixel.z - b)*(pixel.z - b))/(2.0f * size), 0.0f, 1.0f));
+  pixel.x = 100.0f*dt_fast_expf(-clamp(((pixel.y - a)*(pixel.y - a) + (pixel.z - b)*(pixel.z - b))/(2.0f * size), 0.0f, 1.0f));
   write_imagef (out, (int2)(x, y), pixel);
 }
 
@@ -1858,7 +2719,7 @@ monochrome(
 
   float4 pixel = read_imagef (in,   sampleri, (int2)(x, y));
   float4 basep = read_imagef (base, sampleri, (int2)(x, y));
-  float filter  = fast_expf(-clamp(((pixel.y - a)*(pixel.y - a) + (pixel.z - b)*(pixel.z - b))/(2.0f * size), 0.0f, 1.0f));
+  float filter  = dt_fast_expf(-clamp(((pixel.y - a)*(pixel.y - a) + (pixel.z - b)*(pixel.z - b))/(2.0f * size), 0.0f, 1.0f));
   float tt = envelope(pixel.x);
   float t  = tt + (1.0f-tt)*(1.0f-highlights);
   pixel.x = mix(pixel.x, pixel.x*basep.x/100.0f, t);

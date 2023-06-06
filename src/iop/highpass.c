@@ -36,9 +36,6 @@
 #include "iop/iop_api.h"
 #include <gtk/gtk.h>
 #include <inttypes.h>
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 
 #define MAX_RADIUS 16
 
@@ -75,7 +72,7 @@ const char *name()
   return _("highpass");
 }
 
-const char *description(struct dt_iop_module_t *self)
+const char **description(struct dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("isolate high frequencies in the image"),
                                       _("creative"),
@@ -96,7 +93,7 @@ int default_group()
 
 int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  return iop_cs_Lab;
+  return IOP_CS_LAB;
 }
 
 void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
@@ -129,7 +126,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_highpass_data_t *d = (dt_iop_highpass_data_t *)piece->data;
   dt_iop_highpass_global_data_t *gd = (dt_iop_highpass_global_data_t *)self->global_data;
 
-  cl_int err = -999;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   cl_mem dev_tmp = NULL;
   cl_mem dev_m = NULL;
 
@@ -196,13 +193,11 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   if(dev_m == NULL) goto error;
 
   /* invert image */
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPHT(height);
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
   sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_invert, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_invert, 1, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_invert, 2, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_invert, 3, sizeof(int), (void *)&height);
+  dt_opencl_set_kernel_args(devid, gd->kernel_highpass_invert, 0, CLARG(dev_in), CLARG(dev_tmp),
+    CLARG(width), CLARG(height));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_highpass_invert, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -210,52 +205,36 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   {
     /* horizontal blur */
     sizes[0] = bwidth;
-    sizes[1] = ROUNDUPHT(height);
+    sizes[1] = ROUNDUPDHT(height, devid);
     sizes[2] = 1;
     local[0] = hblocksize;
     local[1] = 1;
     local[2] = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 0, sizeof(cl_mem), (void *)&dev_tmp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 1, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 2, sizeof(cl_mem), (void *)&dev_m);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 3, sizeof(int), (void *)&wdh);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 4, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 5, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 6, sizeof(int), (void *)&hblocksize);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_hblur, 7, (hblocksize + 2 * wdh) * sizeof(float), NULL);
+    dt_opencl_set_kernel_args(devid, gd->kernel_highpass_hblur, 0, CLARG(dev_tmp), CLARG(dev_out),
+      CLARG(dev_m), CLARG(wdh), CLARG(width), CLARG(height), CLARG(hblocksize), CLLOCAL((hblocksize + 2 * wdh) * sizeof(float)));
     err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_highpass_hblur, sizes, local);
     if(err != CL_SUCCESS) goto error;
 
 
     /* vertical blur */
-    sizes[0] = ROUNDUPWD(width);
+    sizes[0] = ROUNDUPDWD(width, devid);
     sizes[1] = bheight;
     sizes[2] = 1;
     local[0] = 1;
     local[1] = vblocksize;
     local[2] = 1;
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 0, sizeof(cl_mem), (void *)&dev_out);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 1, sizeof(cl_mem), (void *)&dev_tmp);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 2, sizeof(cl_mem), (void *)&dev_m);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 3, sizeof(int), (void *)&wdh);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 4, sizeof(int), (void *)&width);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 5, sizeof(int), (void *)&height);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 6, sizeof(int), (void *)&vblocksize);
-    dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_vblur, 7, (vblocksize + 2 * wdh) * sizeof(float), NULL);
+    dt_opencl_set_kernel_args(devid, gd->kernel_highpass_vblur, 0, CLARG(dev_out), CLARG(dev_tmp),
+      CLARG(dev_m), CLARG(wdh), CLARG(width), CLARG(height), CLARG(vblocksize), CLLOCAL((vblocksize + 2 * wdh) * sizeof(float)));
     err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_highpass_vblur, sizes, local);
     if(err != CL_SUCCESS) goto error;
   }
 
   /* mixing tmp and in -> out */
-  sizes[0] = ROUNDUPWD(width);
-  sizes[1] = ROUNDUPHT(height);
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
   sizes[2] = 1;
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 1, sizeof(cl_mem), (void *)&dev_tmp);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 2, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 3, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 4, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_highpass_mix, 5, sizeof(float), (void *)&contrast_scale);
+  dt_opencl_set_kernel_args(devid, gd->kernel_highpass_mix, 0, CLARG(dev_in), CLARG(dev_tmp), CLARG(dev_out),
+    CLARG(width), CLARG(height), CLARG(contrast_scale));
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_highpass_mix, sizes);
   if(err != CL_SUCCESS) goto error;
 
@@ -268,21 +247,49 @@ error:
   dt_opencl_release_mem_object(dev_m);
   dt_opencl_release_mem_object(dev_tmp);
   free(mat);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_highpass] couldn't enqueue kernel! %d\n", err);
+  dt_print(DT_DEBUG_OPENCL, "[opencl_highpass] couldn't enqueue kernel! %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
 
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+static void _blend(const float *const restrict in,
+                   float *const restrict out,
+                   const double contrast_scale,
+                   const size_t npixels)
 {
+  /* Blend the inverted blurred L channel with the original input.  Because we packed the L values */
+  /* and are inserting the result in the same buffer containing the L values, we need to work in */
+  /* reverse order */
+  /* We can only do the final 3/4 in parallel here, because updating the first quarter in one thread */
+  /* would clobber values still needed by other threads. */
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(contrast_scale, npixels, in, out)  \
+  schedule(static)
+#endif
+  for(size_t k = npixels - 1; k >= npixels/4; k--)
+  {
+    dt_aligned_pixel_t hipass = { 0.0f, 0.0f, 0.0f, 0.0f };  // a=b=0 to desaturate, alpha doesn't matter
+   // Mix out and in
+    const float L = (out[k] + in[4*k]) - 100.0f;
+    hipass[0] = CLAMP((L * contrast_scale) + 50.0f, 0.0f, 100.0f);
+    copy_pixel(out + 4*k, hipass);
+  }
+}
+
+void process(struct dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const ivoid,
+             void *const ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
+{
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+                                        ivoid, ovoid, roi_in, roi_out))
+    return;
   dt_iop_highpass_data_t *data = (dt_iop_highpass_data_t *)piece->data;
   const float *const in = (float *)ivoid;
   float *out = (float *)ovoid;
-  const int ch = 4;
-
-  /* the blend code at the end assumes at least 4 channels, and we never get more than four */
-  assert(piece->colors == ch);
 
 /* create inverted image and then blur */
 /* since we use only the L channel, pack the values together instead of every fourth float */
@@ -290,10 +297,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t npixels = (size_t)roi_out->height * roi_out->width;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(npixels) \
-  dt_omp_sharedconst(in) \
-  shared(out) \
-  schedule(static)
+  dt_omp_firstprivate(npixels,in,out)  \
+  schedule(simd:static)
 #endif
   for(size_t k = 0; k < (size_t)npixels; k++)
     out[k] = 100.0f - LCLIP(in[4 * k]); // only L in Lab space
@@ -307,39 +312,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   dt_box_mean(out, roi_out->height, roi_out->width, 1, hr, BOX_ITERATIONS);
 
-  const float contrast_scale = ((data->contrast / 100.0) * 7.5);
-  /* Blend the inverted blurred L channel with the original input.  Because we packed the L values */
-  /* and are inserting the result in the same buffer containing the L values, we need to work in */
-  /* reverse order */
-  /* We can only do the final 3/4 in parallel here, because updating the first quarter in one thread */
-  /* would clobber values still needed by other threads. */
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ch, contrast_scale, npixels) \
-  dt_omp_sharedconst(in) \
-  shared(out, data) \
-  schedule(static)
-#endif
-  for(size_t k = npixels - 1; k > npixels/4; k--)
-  {
-    size_t index = ch * k;
-    // Mix out and in
-    const float L = out[k] * 0.5 + in[index] * 0.5;
-    out[index] = LCLIP(50.0f + ((L - 50.0f) * contrast_scale));
-    out[index + 1] = out[index + 2] = 0.0f; // desaturate a and b in Lab space
-    out[index + 3] = in[index + 3]; // copy the alpha channel in case it is in use
-  }
-  /* process the final quarter of the pixels */
-  for(ssize_t k = npixels/4; k >= 0; k--)
-  {
-    size_t index = ch * k;
-    // Mix out and in
-    const float L = out[k] * 0.5 + in[index] * 0.5;
-    out[index] = LCLIP(50.0f + ((L - 50.0f) * contrast_scale));
-    out[index + 1] = out[index + 2] = 0.0f; // desaturate a and b in Lab space
-    out[index + 3] = in[index + 3]; // copy the alpha channel in case it is in use
-  }
+  // combine the contrast factor from user settings with the averaging
+  // factor to save a multiplication per pixel
+  const float contrast_scale = ((data->contrast / 100.0f) * 7.5f) * 0.5f;
 
+  _blend(in, out, contrast_scale, npixels);    // only does final 3/4 of given pixels, so repeat
+  _blend(in, out, contrast_scale, npixels/4);  // only does final 3/4 of given pixels
+  /* process the remaining sixteenth of the pixels */
+  for(ssize_t k = npixels/16 - 1; k >= 0; k--)
+  {
+    dt_aligned_pixel_t hipass = { 0.0f, 0.0f, 0.0f, 0.0f };  // a=b=0 to desaturate, alpha doesn't matter
+    // Mix out and in
+    const float L = (out[k] + in[4*k]) - 100.0f;
+    hipass[0] = CLAMP((L * contrast_scale) + 50.0f, 0.0f, 100.0f);
+    copy_pixel(out + 4*k, hipass);
+  }
 }
 
 void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
@@ -361,14 +348,6 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
 {
   free(piece->data);
   piece->data = NULL;
-}
-
-void gui_update(struct dt_iop_module_t *self)
-{
-  dt_iop_highpass_gui_data_t *g = (dt_iop_highpass_gui_data_t *)self->gui_data;
-  dt_iop_highpass_params_t *p = (dt_iop_highpass_params_t *)self->params;
-  dt_bauhaus_slider_set(g->sharpness, p->sharpness);
-  dt_bauhaus_slider_set(g->contrast, p->contrast);
 }
 
 void init_global(dt_iop_module_so_t *module)
@@ -400,13 +379,16 @@ void gui_init(struct dt_iop_module_t *self)
   dt_iop_highpass_gui_data_t *g = IOP_GUI_ALLOC(highpass);
 
   g->sharpness = dt_bauhaus_slider_from_params(self, N_("sharpness"));
-  dt_bauhaus_slider_set_format(g->sharpness, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->sharpness, "%");
   gtk_widget_set_tooltip_text(g->sharpness, _("the sharpness of highpass filter"));
 
   g->contrast = dt_bauhaus_slider_from_params(self, "contrast");
-  dt_bauhaus_slider_set_format(g->contrast, "%.0f%%");
+  dt_bauhaus_slider_set_format(g->contrast, "%");
   gtk_widget_set_tooltip_text(g->contrast, _("the contrast of highpass filter"));
 }
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

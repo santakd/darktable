@@ -1,8 +1,9 @@
-cmake_minimum_required(VERSION 3.10.0)
+cmake_minimum_required(VERSION 3.18)
 
 cmake_policy(SET CMP0011 NEW)
 cmake_policy(SET CMP0025 NEW)
 cmake_policy(SET CMP0048 NEW)
+cmake_policy(SET CMP0067 NEW)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/")
@@ -69,9 +70,9 @@ endif()
 # Whether to use relative paths for the build RPATH
 if (APPLE)
     set(CMAKE_MACOSX_RPATH ON)
-    set(CMAKE_INSTALL_LIBDIR_RPATH @loader_path/../${CMAKE_INSTALL_LIBDIR}/darktable)
+    set(RPATH_ORIGIN @loader_path)
 else()
-    set(CMAKE_INSTALL_LIBDIR_RPATH $ORIGIN/../${CMAKE_INSTALL_LIBDIR}/darktable)
+    set(RPATH_ORIGIN $ORIGIN)
 endif()
 
 if (USE_OPENMP)
@@ -109,6 +110,10 @@ else()
   set(SOURCE_PACKAGE 0)
 endif()
 
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64|amd64)|(X86|x86)|(^i.86$)")
+  set(BUILD_SSE2_CODEPATHS OFF)
+endif()
+
 if(BUILD_SSE2_CODEPATHS)
   CHECK_C_COMPILER_FLAG("-msse2" _MSSE2)
   if(NOT _MSSE2)
@@ -124,9 +129,19 @@ MESSAGE(STATUS "Building SSE2-optimized codepaths: ${BUILD_SSE2_CODEPATHS}")
 #
 if(APPLE)
 	message("-- Mac OS X build detected, setting default features")
-
-	# prefer macports and/or user-installed libraries over system ones
-	LIST(APPEND CMAKE_PREFIX_PATH /opt/local /usr/local)
+  find_program(HOMEBREW_EXISTS "brew")
+  if(HOMEBREW_EXISTS)
+    execute_process(COMMAND brew --prefix OUTPUT_VARIABLE HOMEBREW_PREFIX)
+    string(STRIP "${HOMEBREW_PREFIX}" HOMEBREW_PREFIX)
+    message("-- Homebrew detected, setting CMAKE_PREFIX_PATH to ${HOMEBREW_PREFIX}")
+    LIST(APPEND CMAKE_PREFIX_PATH ${HOMEBREW_PREFIX})
+    # Explicitly add llvm and icu4c to prefix path
+    LIST(APPEND CMAKE_PREFIX_PATH ${HOMEBREW_PREFIX}/opt/llvm)
+    LIST(APPEND CMAKE_PREFIX_PATH ${HOMEBREW_PREFIX}/opt/icu4c)
+  else()
+    message("-- Setting CMAKE_PREFIX_PATH to prefer MacPorts and/or user-installed libraries over system ones")
+    LIST(APPEND CMAKE_PREFIX_PATH /opt/local /usr/local)
+  endif()
 	set(CMAKE_FIND_FRAMEWORK "LAST")
 	# except libstdc++ (only one linked via -l flag, not full path)
 	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/usr/lib")
@@ -265,7 +280,7 @@ else(${perl_BIN} STREQUAL "perl_BIN-NOTFOUND")
   message(STATUS "Found perl")
 endif(${perl_BIN} STREQUAL "perl_BIN-NOTFOUND")
 
-# we need intltool-merge for darktable.desktop
+# we need intltool-merge for org.darktable.darktable.desktop
 find_program(intltool_merge_BIN intltool-merge)
 if(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
   message(STATUS "Missing intltool-merge")
@@ -274,10 +289,10 @@ else(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
   message(STATUS "Found intltool-merge")
 endif(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
 
-# we need desktop-file-validate to check darktable.desktop
+# we need desktop-file-validate to check org.darktable.darktable.desktop
 find_program(desktop_file_validate_BIN desktop-file-validate)
 if(${desktop_file_validate_BIN} STREQUAL "desktop_file_validate_BIN-NOTFOUND")
-  message(STATUS "Missing desktop-file-validate, problems in darktable.desktop might go unnoticed")
+  message(STATUS "Missing desktop-file-validate, problems in org.darktable.darktable.desktop might go unnoticed")
   set(VALIDATE_DESKTOP_FILE 0)
 else(${desktop_file_validate_BIN} STREQUAL "desktop_file_validate_BIN-NOTFOUND")
   message(STATUS "Found desktop-file-validate")
@@ -298,17 +313,13 @@ endif(VALIDATE_APPDATA_FILE)
 if(TESTBUILD_OPENCL_PROGRAMS)
   set(TESTBUILD_OPENCL_PROGRAMS OFF)
 
-  macro(find_llvm versions)
-    foreach(version ${versions})
-      find_package(LLVM ${version} CONFIG)
-      if(LLVM_FOUND)
-        break()
-      endif()
-    endforeach()
-  endmacro()
+  find_package(LLVM CONFIG)
 
-  # 3.9 is the first version with which this works.
-  find_llvm("12;11;10;9;8;7;6.0;5.0;4.0;3.9")
+  if(LLVM_FOUND)
+    if(${LLVM_VERSION} VERSION_LESS 7)
+      set(LLVM_FOUND FALSE)
+    endif()
+  endif()
 
   if (LLVM_FOUND)
     message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
@@ -338,7 +349,7 @@ if(TESTBUILD_OPENCL_PROGRAMS)
       message(WARNING "Test-compilation of OpenCL programs can not be done.")
     endif()
   else()
-    message(WARNING "Could not find LLVM 3.9+")
+    message(WARNING "Could not find LLVM 7 or above")
     message(WARNING "Test-compilation of OpenCL programs can not be done.")
   endif()
 endif()
@@ -466,38 +477,6 @@ if(BUILD_TESTING)
   include_directories(${CMOCKA_INCLUDE_DIR} include)
 endif(BUILD_TESTING)
 
-#
-# Test SSE level
-#
-# if(NOT USE_SSE_FLAG)
-# 	set(SSE_C_TESTS "sse4" "sse3" "sse2" "sse")
-# 	message("-- Checking SSE instructions support by current CPU")
-# 	foreach(sse_test ${SSE_C_TESTS})
-# 		if(NOT SSE_FOUND)
-# 			if(WIN32)
-# 				set(SSE_CHECK_COMMAND "FAILURE")
-# 			elseif(APPLE)
-# 				set(SSE_CHECK_COMMAND sysctl -a | grep ${sse_test})
-# 			else()#other os
-# 				set(SSE_CHECK_COMMAND grep ${sse_test} /proc/cpuinfo)
-# 			endif(WIN32)
-# 			execute_process(COMMAND ${SSE_CHECK_COMMAND} RESULT_VARIABLE ret_var OUTPUT_VARIABLE out_var)
-#
-# 			if(ret_var EQUAL 0) # grep returns 0 on success
-# 				set(SSE_FOUND TRUE)
-# 				message("--  ${sse_test} detected and working.")
-# 				set(USE_SSE_SET ${sse_test})
-# 			endif(ret_var EQUAL 0)
-#
-# 		endif(NOT SSE_FOUND)
-# 	endforeach(sse_test)
-# endif(NOT USE_SSE_FLAG)
-#
-# # set the SSE
-# if(USE_SSE_SET)
-# 	set(CMAKE_C_FLAGS ${CMAKE_C_FLAGS} "-m${USE_SSE_SET}")
-# endif(USE_SSE_SET)
-
 # we need some specific functions:
 if(NOT WIN32)
     if(CMAKE_SYSTEM MATCHES "SunOS.*")
@@ -505,7 +484,9 @@ if(NOT WIN32)
     else()
         add_definitions("-D_XOPEN_SOURCE=700")
     endif(CMAKE_SYSTEM MATCHES "SunOS.*")
-endif(NOT WIN32)
+else()
+    add_definitions("-D_USE_MATH_DEFINES")
+endif()
 
 # Set default component name - that way external modules like RawSpeed will install their
 # materials under the default component and not under 'Unspecified'

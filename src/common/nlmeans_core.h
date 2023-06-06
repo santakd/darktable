@@ -1,7 +1,7 @@
 #pragma once
 /*
     This file is part of darktable,
-    Copyright (C) 2020 darktable developers.
+    Copyright (C) 2020-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -44,13 +44,15 @@ void nlmeans_denoise(const float *const inbuf, float *const outbuf,
                      const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
                      const dt_nlmeans_param_t *const params);
 
-void nlmeans_denoise_sse2(const float *const inbuf, float *const outbuf,
-                          const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out,
-                          const dt_nlmeans_param_t *const params);
-
 #ifdef HAVE_OPENCL
 int nlmeans_denoise_cl(const dt_nlmeans_param_t *const params, const int devid,
                        cl_mem dev_in, cl_mem dev_out, const dt_iop_roi_t *const roi_in);
 int nlmeans_denoiseprofile_cl(const dt_nlmeans_param_t *const params, const int devid,
                               cl_mem dev_in, cl_mem dev_out, const dt_iop_roi_t *const roi_in);
 #endif /* HAVE_OPENCL */
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
+// vim: shiftwidth=2 expandtab tabstop=2 cindent
+// kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

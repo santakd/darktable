@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2021 darktable developers.
+    Copyright (C) 2011-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 #include "common/gpx.h"
 #include "common/geo.h"
 #include "common/darktable.h"
+#include "common/math.h"
 #include <glib.h>
 #include <inttypes.h>
 
@@ -74,35 +75,30 @@ static gint _sort_segment(gconstpointer a, gconstpointer b)
 
 dt_gpx_t *dt_gpx_new(const gchar *filename)
 {
-  dt_gpx_t *gpx = NULL;
-  GMarkupParseContext *ctx = NULL;
   GError *err = NULL;
-  GMappedFile *gpxmf = NULL;
-  gchar *gpxmf_content = NULL;
-  gint gpxmf_size = 0;
   gint bom_offset = 0;
-
+  GMarkupParseContext *ctx = NULL;
+  dt_gpx_t *gpx = NULL;
 
   /* map gpx file to parse into memory */
-  gpxmf = g_mapped_file_new(filename, FALSE, &err);
+  GMappedFile *gpxmf = g_mapped_file_new(filename, FALSE, &err);
   if(err) goto error;
 
-  gpxmf_content = g_mapped_file_get_contents(gpxmf);
-  gpxmf_size = g_mapped_file_get_length(gpxmf);
+  gchar *gpxmf_content = g_mapped_file_get_contents(gpxmf);
+  const gint gpxmf_size = g_mapped_file_get_length(gpxmf);
   if(!gpxmf_content || gpxmf_size < 10) goto error;
 
   /* allocate new dt_gpx_t context */
   gpx = g_malloc0(sizeof(dt_gpx_t));
 
   /* skip UTF-8 BOM */
-  if(gpxmf_size > 3 && gpxmf_content[0] == '\xef' && gpxmf_content[1] == '\xbb' && gpxmf_content[2] == '\xbf')
+  if(gpxmf_content[0] == '\xef' && gpxmf_content[1] == '\xbb' && gpxmf_content[2] == '\xbf')
     bom_offset = 3;
 
   /* initialize the parser and start parse gpx xml data */
   ctx = g_markup_parse_context_new(&_gpx_parser, 0, gpx, NULL);
   g_markup_parse_context_parse(ctx, gpxmf_content + bom_offset, gpxmf_size - bom_offset, &err);
   if(err) goto error;
-
 
   /* cleanup and return gpx context */
   g_markup_parse_context_free(ctx);
@@ -116,7 +112,7 @@ dt_gpx_t *dt_gpx_new(const gchar *filename)
 error:
   if(err)
   {
-    fprintf(stderr, "dt_gpx_new: %s\n", err->message);
+    dt_print(DT_DEBUG_ALWAYS, "dt_gpx_new: %s\n", err->message);
     g_error_free(err);
   }
 
@@ -173,13 +169,77 @@ gboolean dt_gpx_get_location(struct dt_gpx_t *gpx, GDateTime *timestamp, dt_imag
       return FALSE;
     }
 
+    dt_gpx_track_point_t *tp_next = (dt_gpx_track_point_t *)item->next->data;
     /* check if timestamp is within current and next trackpoint */
-    const gint cmp_n = g_date_time_compare(timestamp, ((dt_gpx_track_point_t *)item->next->data)->time);
-    if((cmp >= 0) && (item->next && cmp_n <= 0))
+    const gint cmp_n = g_date_time_compare(timestamp, tp_next->time);
+    if(item->next && cmp_n <= 0)
     {
-      geoloc->longitude = tp->longitude;
-      geoloc->latitude = tp->latitude;
-      geoloc->elevation = tp->elevation;
+      GTimeSpan seg_diff = g_date_time_difference(tp_next->time, tp->time);
+      GTimeSpan diff = g_date_time_difference(timestamp, tp->time);
+      if(seg_diff == 0 || diff == 0)
+      {
+        geoloc->longitude = tp->longitude;
+        geoloc->latitude = tp->latitude;
+        geoloc->elevation = tp->elevation;
+      }
+      else
+      {
+        /* get the point by interpolation according to timestamp
+
+        We assume that the maximum difference in longitude is less or equal 180º:
+        since the bigger use case is that of an airplane, never an airplane flies more than 180º in longitude */
+
+        const double lat1 = tp->latitude;
+        const double lon1 = tp->longitude;
+        const double lat2 = tp_next->latitude;
+        const double lon2 = tp_next->longitude;
+
+        double lat, lon;
+
+        const double f = (double)diff / (double)seg_diff; /* the fraction of the distance */
+
+        if(fabs(lat2 - lat1) < DT_MINIMUM_ANGULAR_DELTA_FOR_GEODESIC
+            && fabs(lon2 - lon1) < DT_MINIMUM_ANGULAR_DELTA_FOR_GEODESIC)
+        {
+          /* short distance (< 10 km), no need for geodesic interpolation */
+          lon = lon1 + (lon2 - lon1) * f;
+          lat = lat1 + (lat2 - lat1) * f;
+        }
+        else
+        {
+          /* interpolation on the earth surface
+             formulas from http://www.movable-type.co.uk/scripts/latlong.html
+
+             the formulas are correct even if the two point are across the day line, e.g [(0, -179), (0,179)]
+             TO DO: in this case the line which is drawn is incorrect, but this should be a osm_gps issue
+          */
+
+          /* first, calculate the distance on the earth surface */
+          double d, delta;
+          dt_gpx_geodesic_distance(lat1, lon1,
+                                   lat2, lon2,
+                                   &d, &delta);
+          /* d is the distance on the surface in metres,
+             delta is the angle defined by the two points*/
+
+          /* then, calculate the intermediate point */
+          dt_gpx_geodesic_intermediate_point(lat1, lon1,
+                                             lat2, lon2,
+                                             delta,
+                                             TRUE,
+                                             f,
+                                             &lat, &lon);
+        }
+
+        geoloc->latitude = lat;
+        geoloc->longitude = lon;
+
+        /* make a simple linear interpolation on elevation */
+        if(tp_next->elevation == NAN || tp->elevation == NAN)
+          geoloc->elevation = NAN;
+        else
+          geoloc->elevation = tp->elevation + (tp_next->elevation - tp->elevation) * f;
+      }
       return TRUE;
     }
   }
@@ -212,7 +272,8 @@ void _gpx_parser_start_element(GMarkupParseContext *ctx, const gchar *element_na
   {
     if(gpx->current_track_point)
     {
-      fprintf(stderr, "broken gpx file, new trkpt element before the previous ended.\n");
+      dt_print(DT_DEBUG_ALWAYS,
+               "broken GPX file, new trkpt element before the previous ended.\n");
       g_free(gpx->current_track_point);
     }
 
@@ -234,9 +295,9 @@ void _gpx_parser_start_element(GMarkupParseContext *ctx, const gchar *element_na
       /* go thru the attributes to find and get values of lon / lat*/
       while(*attribute_name)
       {
-        if(strcmp(*attribute_name, "lon") == 0)
+        if(strcmp(*attribute_name, "lon") == 0 && **attribute_value)
           gpx->current_track_point->longitude = g_ascii_strtod(*attribute_value, NULL);
-        else if(strcmp(*attribute_name, "lat") == 0)
+        else if(strcmp(*attribute_name, "lat") == 0 && **attribute_value)
           gpx->current_track_point->latitude = g_ascii_strtod(*attribute_value, NULL);
 
         attribute_name++;
@@ -246,12 +307,14 @@ void _gpx_parser_start_element(GMarkupParseContext *ctx, const gchar *element_na
       /* validate that we actually got lon / lat attribute values */
       if(isnan(gpx->current_track_point->longitude) || isnan(gpx->current_track_point->latitude))
       {
-        fprintf(stderr, "broken gpx file, failed to get lon/lat attribute values for trkpt\n");
+        dt_print(DT_DEBUG_ALWAYS,
+                 "broken GPX file, failed to get lon/lat attribute values for trkpt\n");
         gpx->invalid_track_point = TRUE;
       }
     }
     else
-      fprintf(stderr, "broken gpx file, trkpt element doesn't have lon/lat attributes\n");
+      dt_print(DT_DEBUG_ALWAYS,
+               "broken GPX file, trkpt element doesn't have lon/lat attributes\n");
 
     gpx->current_parser_element = GPX_PARSER_ELEMENT_TRKPT;
   }
@@ -285,7 +348,8 @@ end:
   return;
 
 element_error:
-  fprintf(stderr, "broken gpx file, element '%s' found outside of trkpt.\n", element_name);
+  dt_print(DT_DEBUG_ALWAYS,
+           "broken GPX file, element '%s' found outside of trkpt.\n", element_name);
 }
 
 void _gpx_parser_end_element(GMarkupParseContext *context, const gchar *element_name, gpointer user_data,
@@ -338,7 +402,8 @@ void _gpx_parser_text(GMarkupParseContext *context, const gchar *text, gsize tex
     if(!gpx->current_track_point->time)
     {
       gpx->invalid_track_point = TRUE;
-      fprintf(stderr, "broken gpx file, failed to pars is8601 time '%s' for trackpoint\n", text);
+      dt_print(DT_DEBUG_ALWAYS,
+               "broken GPX file, failed to pars is8601 time '%s' for trackpoint\n", text);
     }
     dt_gpx_track_segment_t *ts = (dt_gpx_track_segment_t *)gpx->trksegs->data;
     if(ts)
@@ -381,6 +446,86 @@ GList *dt_gpx_get_trkpts(struct dt_gpx_t *gpx, const guint segid)
   return pts;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+/* --------------------------------------------------------------------------
+ * Geodesic interpolation functions
+ * ------------------------------------------------------------------------*/
+
+void dt_gpx_geodesic_distance(double lat1, double lon1,
+                              double lat2, double lon2,
+                              double *d, double *delta)
+{
+  const double lat_rad_1 = lat1 * M_PI / 180;
+  const double lat_rad_2 = lat2 * M_PI / 180;
+  const double lon_rad_1 = lon1 * M_PI / 180;
+  const double lon_rad_2 = lon2 * M_PI / 180;
+  const double delta_lat_rad = lat_rad_2 - lat_rad_1;
+  const double delta_lon_rad = lon_rad_2 - lon_rad_1;
+  const double sin_delta_lat_rad = sin(delta_lat_rad / 2);
+  const double sin_delta_lon_rad = sin(delta_lon_rad / 2);
+
+  const double a = sin_delta_lat_rad * sin_delta_lat_rad +
+                   cos(lat_rad_1) * cos(lat_rad_2) *
+                   sin_delta_lon_rad * sin_delta_lon_rad;
+  *delta = 2 * atan2(sqrt(a), sqrt(1 - a)); /* angular distance between the points in radians */
+
+  *d = *delta * EARTH_RADIUS;               /* distance on the surface in metres */
+}
+
+void dt_gpx_geodesic_intermediate_point(const double lat1, const double lon1,
+                                        const double lat2, const double lon2,
+                                        const double delta,
+                                        const gboolean first_time,
+                                        double f,
+                                        double *lat, double *lon)
+{
+  static double lat_rad_1;
+  static double sin_lat_rad_1;
+  static double cos_lat_rad_1;
+  static double lat_rad_2;
+  static double sin_lat_rad_2;
+  static double cos_lat_rad_2;
+  static double lon_rad_1;
+  static double sin_lon_rad_1;
+  static double cos_lon_rad_1;
+  static double lon_rad_2;
+  static double sin_lon_rad_2;
+  static double cos_lon_rad_2;
+  static double sin_delta;
+
+  if(first_time)
+  {
+    lat_rad_1 = lat1 * M_PI / 180;
+    sin_lat_rad_1 = sin(lat_rad_1);
+    cos_lat_rad_1 = cos(lat_rad_1);
+    lat_rad_2 = lat2 * M_PI / 180;
+    sin_lat_rad_2 = sin(lat_rad_2);
+    cos_lat_rad_2 = cos(lat_rad_2);
+    lon_rad_1 = lon1 * M_PI / 180;
+    sin_lon_rad_1 = sin(lon_rad_1);
+    cos_lon_rad_1 = cos(lon_rad_1);
+    lon_rad_2 = lon2 * M_PI / 180;
+    sin_lon_rad_2 = sin(lon_rad_2);
+    cos_lon_rad_2 = cos(lon_rad_2);
+    sin_delta = sin(delta);
+  }
+
+  const double a = sin((1 - f) * delta) / sin_delta;
+  const double b = sin(f * delta) / sin_delta;
+  const double x = a * cos_lat_rad_1 * cos_lon_rad_1 + b * cos_lat_rad_2 * cos_lon_rad_2;
+  const double y = a * cos_lat_rad_1 * sin_lon_rad_1 + b * cos_lat_rad_2 * sin_lon_rad_2;
+  const double z = a * sin_lat_rad_1 + b * sin_lat_rad_2;
+  const double lat_rad = atan2(z, sqrt(x * x + y * y)); /* latitude of intermediate point in radians */
+  const double lon_rad = atan2(y, x);                   /* longitude of intermediate point in radians */
+
+  *lat = lat_rad / M_PI * 180;
+  *lon = lon_rad / M_PI * 180;
+}
+/* -------- end of Geodesic interpolation functions -----------------------*/
+
+
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

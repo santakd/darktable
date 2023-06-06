@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2020 darktable developers.
+    Copyright (C) 2012-2023 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ typedef struct dt_bilateral_t
   int width, height;
   int numslices, sliceheight, slicerows; //height--in input image, rows--in grid
   float sigma_s, sigma_r;
+  float sigma_s_inv, sigma_r_inv;  // reciprocals of sigma_s and sigma_r to avoid divisions
   float *buf __attribute__((aligned(64)));
 } __attribute__((packed)) dt_bilateral_t;
 
@@ -68,6 +69,9 @@ void dt_bilateral_slice_to_output(const dt_bilateral_t *const b, const float *co
 
 void dt_bilateral_free(dt_bilateral_t *b);
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

@@ -204,7 +204,7 @@ static gboolean stacked_job_dispatch (GSource* source, GSourceFunc callback, gpo
 {
   gpointer message;
   message = g_async_queue_try_pop (darktable.lua_state.stacked_job_queue);
-  if (message == NULL)
+  if(message == NULL)
   {
     return TRUE;
   }
@@ -301,7 +301,7 @@ static gboolean alien_job_dispatch (GSource* source, GSourceFunc callback, gpoin
 {
   gpointer message;
   message = g_async_queue_try_pop (darktable.lua_state.alien_job_queue);
-  if (message == NULL)
+  if(message == NULL)
   {
     return TRUE;
   }
@@ -381,7 +381,7 @@ static void alien_job_init()
 
 /*
    STRING JOB
-   This is a source that deals with lua jobs that are gien as lua strings
+   This is a source that deals with lua jobs that are given as lua strings
    */
 
 typedef struct {
@@ -408,7 +408,7 @@ static gboolean string_job_dispatch (GSource* source, GSourceFunc callback, gpoi
 {
   gpointer message;
   message = g_async_queue_try_pop (darktable.lua_state.string_job_queue);
-  if (message == NULL)
+  if(message == NULL)
   {
     return TRUE;
   }
@@ -666,7 +666,7 @@ static int gtk_wrap(lua_State*L)
     g_cond_init(&communication.end_cond);
     communication.L = L;
     g_mutex_lock(&communication.end_mutex);
-    g_main_context_invoke(NULL,dt_lua_gtk_wrap_callback,&communication);
+    g_main_context_invoke_full(NULL,G_PRIORITY_HIGH_IDLE, dt_lua_gtk_wrap_callback,&communication, NULL);
     g_cond_wait(&communication.end_cond,&communication.end_mutex);
     g_mutex_unlock(&communication.end_mutex);
     g_mutex_clear(&communication.end_mutex);
@@ -728,6 +728,9 @@ int dt_lua_init_call(lua_State *L)
   return 0;
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on
+

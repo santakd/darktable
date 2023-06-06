@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2021 darktable developers.
+    Copyright (C) 2012-2022 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include "common/map_locations.h"
 #include "control/conf.h"
 #include "control/control.h"
+#include "gui/accelerators.h"
 #include "libs/lib.h"
 
 // map position module uses the tag dictionary with dt_geo_tag_root as a prefix.
@@ -35,10 +36,9 @@ const char *name(dt_lib_module_t *self)
   return _("locations");
 }
 
-const char **views(dt_lib_module_t *self)
+dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  static const char *v[] = {"map", NULL};
-  return v;
+  return DT_VIEW_MAP;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -53,7 +53,6 @@ typedef struct dt_lib_map_locations_t
   GtkWidget *new_button;
   GtkWidget *show_all_button;
   GtkWidget *hide_button;
-  GtkWidget *window;
   GtkWidget *view;
   GtkCellRenderer *renderer;
   GtkTreeSelection *selection;
@@ -67,7 +66,7 @@ typedef struct dt_loc_op_t
   char *oldtagname;
 } dt_loc_op_t;
 
-int position()
+int position(const dt_lib_module_t *self)
 {
   return 995;
 }
@@ -89,27 +88,6 @@ typedef enum dt_map_position_name_sort_id
 const DTGTKCairoPaintIconFunc location_shapes[] = { dtgtk_cairo_paint_masks_circle,   // MAP_LOCATION_SHAPE_ELLIPSE
                                                     dtgtk_cairo_paint_rect_landscape, // MAP_LOCATION_SHAPE_RECTANGLE
                                                     dtgtk_cairo_paint_polygon};       // MAP_LOCATION_SHAPE_POLYGONS
-
-static gboolean _mouse_scroll(GtkWidget *treeview, GdkEventScroll *event,
-                              dt_lib_module_t *self)
-{
-  dt_lib_map_locations_t *d = (dt_lib_map_locations_t *)self->data;
-  if (dt_modifier_is(event->state, GDK_CONTROL_MASK))
-  {
-    const gint increment = DT_PIXEL_APPLY_DPI(10.0);
-    const gint min_height = DT_PIXEL_APPLY_DPI(100.0);
-    const gint max_height = DT_PIXEL_APPLY_DPI(500.0);
-    gint width, height;
-    gtk_widget_get_size_request (GTK_WIDGET(d->window), &width, &height);
-    height = height + increment * event->delta_y;
-    height = (height < min_height) ? min_height
-                                   : (height > max_height) ? max_height : height;
-    gtk_widget_set_size_request(GTK_WIDGET(d->window), -1, (gint)height);
-    dt_conf_set_int("plugins/map/heightlocationwindow", (gint)height);
-    return TRUE;
-  }
-  return FALSE;
-}
 
 // find a tag on the tree
 static gboolean _find_tag_iter_id(GtkTreeModel *model, GtkTreeIter *iter,
@@ -253,11 +231,11 @@ static void _display_buttons(dt_lib_module_t *self)
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(d->view));
   if(gtk_tree_selection_get_selected(selection, &model, &iter))
   {
-    gtk_button_set_label(GTK_BUTTON(d->new_button), _("new sub-location"));
+    gtk_label_set_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->new_button))), _("new sub-location"));
   }
   else
   {
-    gtk_button_set_label(GTK_BUTTON(d->new_button), _("new location"));
+    gtk_label_set_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->new_button))), _("new location"));
   }
 }
 
@@ -275,7 +253,7 @@ static void _tree_name_show(GtkTreeViewColumn *col, GtkCellRenderer *renderer,
                      DT_MAP_LOCATION_COL_TAG, &name,
                      DT_MAP_LOCATION_COL_COUNT, &count,
                      DT_MAP_LOCATION_COL_PATH, &path, -1);
-  if (count < 1)
+  if(count < 1)
   {
     coltext = g_markup_printf_escaped(locid ? "%s" : "<i>%s</i>", name);
   }
@@ -347,8 +325,7 @@ static void _shape_button_clicked(GtkButton *button, dt_lib_module_t *self)
 
   g_signal_handler_block (d->shape_button, d->shape_button_handler);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->shape_button), FALSE);
-  dtgtk_togglebutton_set_paint((GtkDarktableToggleButton *)d->shape_button,
-                               location_shapes[shape], CPF_STYLE_FLAT, NULL);
+  dtgtk_togglebutton_set_paint((GtkDarktableToggleButton *)d->shape_button, location_shapes[shape], 0, NULL);
   g_signal_handler_unblock (d->shape_button, d->shape_button_handler);
 }
 
@@ -375,7 +352,7 @@ static void _delete_tree_path(GtkTreeModel *model, GtkTreeIter *iter, gboolean r
     gtk_tree_model_get(model, &tobedel, DT_MAP_LOCATION_COL_PATH, &path, -1);
     g_free(path);
     gtk_tree_store_remove(GTK_TREE_STORE(model), &tobedel);
-  } while (!root  && valid);
+  } while(!root  && valid);
 }
 
 static gboolean _update_tag_name_per_name(GtkTreeModel *model, GtkTreePath *path, GtkTreeIter *iter, dt_loc_op_t *to)
@@ -384,9 +361,9 @@ static gboolean _update_tag_name_per_name(GtkTreeModel *model, GtkTreePath *path
   char *newtagname = to->newtagname;
   char *oldtagname = to->oldtagname;
   gtk_tree_model_get(model, iter, DT_MAP_LOCATION_COL_PATH, &tagname, -1);
-  if (g_str_has_prefix(tagname, oldtagname))
+  if(g_str_has_prefix(tagname, oldtagname))
   {
-    if (strlen(tagname) == strlen(oldtagname))
+    if(strlen(tagname) == strlen(oldtagname))
     {
       // rename the tag itself
       char *subtag = g_strrstr(to->newtagname, "|");
@@ -395,7 +372,7 @@ static gboolean _update_tag_name_per_name(GtkTreeModel *model, GtkTreePath *path
                          DT_MAP_LOCATION_COL_PATH, newtagname,
                          DT_MAP_LOCATION_COL_TAG, subtag, -1);
     }
-    else if (strlen(tagname) > strlen(oldtagname) && tagname[strlen(oldtagname)] == '|')
+    else if(strlen(tagname) > strlen(oldtagname) && tagname[strlen(oldtagname)] == '|')
     {
       // rename similar path
       char *newpath = g_strconcat(newtagname, &tagname[strlen(oldtagname)] , NULL);
@@ -473,7 +450,7 @@ static void _view_map_location_changed(gpointer instance, GList *polygons, dt_li
   {
     g_signal_handler_block (d->shape_button, d->shape_button_handler);
     dtgtk_togglebutton_set_paint((GtkDarktableToggleButton *)d->shape_button,
-                                 location_shapes[MAP_LOCATION_SHAPE_ELLIPSE], CPF_STYLE_FLAT, NULL);
+                                 location_shapes[MAP_LOCATION_SHAPE_ELLIPSE], 0, NULL);
     g_signal_handler_unblock (d->shape_button, d->shape_button_handler);
     dt_conf_set_int("plugins/map/locationshape", MAP_LOCATION_SHAPE_ELLIPSE);
   }
@@ -483,7 +460,7 @@ static void _view_map_location_changed(gpointer instance, GList *polygons, dt_li
 static void _signal_location_change(dt_lib_module_t *self)
 {
   dt_control_signal_block_by_func(darktable.signals, G_CALLBACK(_view_map_geotag_changed), self);
-  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_GEOTAG_CHANGED, NULL, 0);
+  DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_GEOTAG_CHANGED, (GList *)NULL, 0);
   dt_control_signal_unblock_by_func(darktable.signals, G_CALLBACK(_view_map_geotag_changed), self);
 }
 
@@ -494,7 +471,6 @@ static void _name_editing_done(GtkCellEditable *editable, dt_lib_module_t *self)
   g_object_get(editable, "editing-canceled", &canceled, NULL);
   const gchar *name = gtk_entry_get_text(GTK_ENTRY(editable));
   const gboolean reset = name[0] ? FALSE : TRUE;
-  dt_control_key_accelerators_on(darktable.control);
   GtkTreeIter iter;
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->view));
   GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(d->view));
@@ -571,7 +547,7 @@ static void _name_editing_done(GtkCellEditable *editable, dt_lib_module_t *self)
         {
           // existing location - rename it
           GList *children = dt_map_location_get_locations_by_path(path, FALSE);
-          for (GList *tag = children; tag; tag = g_list_next(tag))
+          for(GList *tag = children; tag; tag = g_list_next(tag))
           {
             // reset on leave is not possible. should be safe
             const char *new_part = &((dt_map_location_t *)tag->data)->tag[path_len + (reset ? 1 :0)];
@@ -633,7 +609,7 @@ static void _name_start_editing(GtkCellRenderer *renderer, GtkCellEditable *edit
                           char *path, dt_lib_module_t *self)
 {
   dt_lib_map_locations_t *d = (dt_lib_map_locations_t *)self->data;
-  if (GTK_IS_ENTRY(editable))
+  if(GTK_IS_ENTRY(editable))
   {
     // set up the editable with name (without number)
     GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(d->view));
@@ -649,8 +625,6 @@ static void _name_start_editing(GtkCellRenderer *renderer, GtkCellEditable *edit
     gtk_tree_path_free(new_path);
 
     g_signal_connect(G_OBJECT(editable), "editing-done", G_CALLBACK(_name_editing_done), self);
-    // grab all keys for edition
-    dt_control_key_accelerators_off(darktable.control);
   }
 }
 
@@ -766,7 +740,7 @@ static gboolean _set_location_collection(dt_lib_module_t *self)
     char *collection = g_strdup_printf("1:0:%d:%s|%s$",
                                        DT_COLLECTION_PROP_GEOTAGGING,
                                        _("tagged"), name);
-    dt_collection_deserialize(collection);
+    dt_collection_deserialize(collection, FALSE);
     g_free(collection);
     g_free(name);
     return TRUE;
@@ -925,14 +899,9 @@ void gui_init(dt_lib_module_t *self)
 
   self->widget =  gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-  GtkWidget *w = gtk_scrolled_window_new(NULL, NULL);
-  d->window = w;
-  int height = dt_conf_get_int("plugins/map/heightlocationwindow");
-  gtk_widget_set_size_request(w, -1, DT_PIXEL_APPLY_DPI(height ? height : 100));
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(w), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-  gtk_box_pack_start(GTK_BOX(self->widget), w, TRUE, TRUE, 0);
   GtkTreeView *view = GTK_TREE_VIEW(gtk_tree_view_new());
   d->view = GTK_WIDGET(view);
+  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_resize_wrap(d->view, 100, "plugins/map/heightlocationwindow"), TRUE, TRUE, 0);
   gtk_tree_view_set_headers_visible(view, FALSE);
   GtkTreeStore *treestore = gtk_tree_store_new(DT_MAP_LOCATION_NUM_COLS, G_TYPE_UINT,
                                                G_TYPE_STRING, G_TYPE_STRING, G_TYPE_UINT);
@@ -958,21 +927,18 @@ void gui_init(dt_lib_module_t *self)
   gtk_tree_view_set_model(view, GTK_TREE_MODEL(treestore));
   g_object_unref(treestore);
   g_signal_connect(G_OBJECT(view), "button-press-event", G_CALLBACK(_click_on_view), self);
-  g_signal_connect(G_OBJECT(view), "scroll-event", G_CALLBACK(_mouse_scroll), self);
-  gtk_container_add(GTK_CONTAINER(w), GTK_WIDGET(view));
   gtk_widget_set_tooltip_text(GTK_WIDGET(view),
                               _("list of user locations,"
                                 "\nclick to show or hide a location on the map:"
                                 "\n - wheel scroll inside the shape to resize it"
                                 "\n - <shift> or <ctrl> scroll to modify the width or the height"
                                 "\n - click inside the shape and drag it to change its position"
-                                "\n - ctrl-click to move an image from inside the location"
-                                "\nctrl-click to edit a location name"
+                                "\n - ctrl+click to move an image from inside the location"
+                                "\nctrl+click to edit a location name"
                                 "\n - a pipe \'|\' symbol breaks the name into several levels"
                                 "\n - to remove a group of locations clear its name"
                                 "\n - press enter to validate the new name, escape to cancel the edit"
-                                "\nright-click for other actions: delete location and go to collection,"
-                                "\nctrl-wheel scroll to resize the window"));
+                                "\nright-click for other actions: delete location and go to collection"));
 
   // buttons
   GtkBox *hbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
@@ -983,7 +949,7 @@ void gui_init(dt_lib_module_t *self)
     shape = MAP_LOCATION_SHAPE_ELLIPSE;
     dt_conf_set_int("plugins/map/locationshape", shape);
   }
-  d->shape_button = dtgtk_togglebutton_new(location_shapes[shape], CPF_STYLE_FLAT, NULL);
+  d->shape_button = dtgtk_togglebutton_new(location_shapes[shape], 0, NULL);
   gtk_box_pack_start(hbox, d->shape_button, FALSE, TRUE, 0);
   d->shape_button_handler = g_signal_connect(G_OBJECT(d->shape_button), "clicked",
                                              G_CALLBACK(_shape_button_clicked), self);
@@ -991,13 +957,13 @@ void gui_init(dt_lib_module_t *self)
                               _("select the shape of the location\'s limits on the map, circle or rectangle"
                                 "\nor even polygon if available (select first a polygon place in 'find location' module)"));
 
-  d->new_button = dt_ui_button_new(_("new location"),
-                                   _("add a new location on the center of the visible map"), NULL);
+  d->new_button = dt_action_button_new(self, N_("new location"), _new_button_clicked, self,
+                                       _("add a new location on the center of the visible map"), 0, 0);
   gtk_box_pack_start(hbox, d->new_button, TRUE, TRUE, 0);
-  g_signal_connect(G_OBJECT(d->new_button), "clicked", G_CALLBACK(_new_button_clicked), self);
 
   dt_conf_set_bool("plugins/map/showalllocations", FALSE);
   d->show_all_button = gtk_check_button_new_with_label(_("show all"));
+  gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->show_all_button))), PANGO_ELLIPSIZE_END);
   gtk_widget_set_tooltip_text(d->show_all_button,
                               _("show all locations which are on the visible map"));
   gtk_box_pack_end(hbox, d->show_all_button, FALSE, FALSE, 8);
@@ -1027,6 +993,8 @@ void gui_cleanup(dt_lib_module_t *self)
   DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_view_map_location_changed), self);
 }
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

@@ -221,7 +221,7 @@ static void dt_focus_create_clusters(dt_focus_cluster_t *focus, int frows, int f
   }
 }
 
-static void dt_focus_draw_clusters(cairo_t *cr, int width, int height, int imgid, int buffer_width,
+static void dt_focus_draw_clusters(cairo_t *cr, int width, int height, dt_imgid_t imgid, int buffer_width,
                                    int buffer_height, dt_focus_cluster_t *focus, int frows, int fcols,
                                    float full_zoom, float full_x, float full_y)
 {
@@ -261,10 +261,10 @@ static void dt_focus_draw_clusters(cairo_t *cr, int width, int height, int imgid
   // could use dt_image_altered() here, but it ignores flip module
   {
     dt_develop_t dev;
-    dt_dev_init(&dev, 0);
+    dt_dev_init(&dev, FALSE);
     dt_dev_load_image(&dev, imgid);
     dt_dev_pixelpipe_t pipe;
-    const int res = dt_dev_pixelpipe_init_dummy(&pipe, wd, ht);
+    const gboolean res = dt_dev_pixelpipe_init_dummy(&pipe, wd, ht);
     if(res)
     {
       // set mem pointer to 0, won't be used.
@@ -370,6 +370,8 @@ static void dt_focus_draw_clusters(cairo_t *cr, int width, int height, int imgid
 #undef gbuf
 #undef FOCUS_THRS
 
-// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
+// clang-format off
+// modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
+// clang-format on

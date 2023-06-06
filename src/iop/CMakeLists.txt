@@ -44,7 +44,7 @@ macro (add_iop _lib _src)
   else()
       set_target_properties(${_lib}
                             PROPERTIES
-                            INSTALL_RPATH ${CMAKE_INSTALL_LIBDIR_RPATH})
+                            INSTALL_RPATH ${RPATH_ORIGIN}/..)
   endif(WIN32)
 
   install(TARGETS ${_lib} DESTINATION ${CMAKE_INSTALL_LIBDIR}/darktable/plugins COMPONENT DTApplication)
@@ -105,7 +105,7 @@ add_iop(channelmixer "channelmixer.c")
 add_iop(graduatednd "graduatednd.c")
 add_iop(relight "relight.c")
 add_iop(zonesystem "zonesystem.c")
-add_iop(demosaic "demosaic.c" "amaze_demosaic_RT.cc" DEFAULT_VISIBLE)
+add_iop(demosaic "demosaic.c" "demosaicing/amaze.cc" DEFAULT_VISIBLE)
 add_iop(rotatepixels "rotatepixels.c")
 add_iop(scalepixels "scalepixels.c")
 add_iop(atrous "atrous.c")
@@ -149,15 +149,13 @@ add_iop(colorbalancergb "colorbalancergb.c")
 add_iop(cacorrectrgb "cacorrectrgb.c")
 add_iop(diffuse "diffuse.c")
 add_iop(blurs "blurs.c")
-
+add_iop(sigmoid "sigmoid.c")
 
 if(Rsvg2_FOUND)
   add_iop(watermark "watermark.c")
 endif(Rsvg2_FOUND)
 
-if(LensFun_FOUND)
-  add_iop(lens "lens.cc" DEFAULT_VISIBLE)
-endif(LensFun_FOUND)
+add_iop(lens "lens.cc" DEFAULT_VISIBLE)
 
 # fix for Mac when OpenMP is only available in C compiler
 if(APPLE)
