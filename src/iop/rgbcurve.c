@@ -132,7 +132,9 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -485,16 +487,17 @@ static inline int _add_node_from_picker(dt_iop_rgbcurve_params_t *p, const float
   return _add_node(p->curve_nodes[ch], &p->curve_num_nodes[ch], x, y);
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
+                        dt_dev_pixelpipe_t *pipe)
 {
   dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
   if(picker == g->colorpicker_set_values)
   {
     dt_iop_rgbcurve_params_t *p = (dt_iop_rgbcurve_params_t *)self->params;
-    dt_iop_rgbcurve_params_t *d = (dt_iop_rgbcurve_params_t *)self->default_params;
+    const dt_iop_rgbcurve_params_t *const d = (dt_iop_rgbcurve_params_t *)self->default_params;
 
     const int ch = g->channel;
-    const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(piece->pipe);
+    const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_work_profile_info(pipe);
 
     // reset current curve
     p->curve_num_nodes[ch] = d->curve_num_nodes[ch];
@@ -1171,7 +1174,7 @@ finally:
 static gboolean _area_button_press_callback(GtkWidget *widget, GdkEventButton *event, dt_iop_module_t *self)
 {
   dt_iop_rgbcurve_params_t *p = (dt_iop_rgbcurve_params_t *)self->params;
-  dt_iop_rgbcurve_params_t *d = (dt_iop_rgbcurve_params_t *)self->default_params;
+  const dt_iop_rgbcurve_params_t *const d = (dt_iop_rgbcurve_params_t *)self->default_params;
   dt_iop_rgbcurve_gui_data_t *g = (dt_iop_rgbcurve_gui_data_t *)self->gui_data;
 
   if(darktable.develop->darkroom_skip_mouse_events) return TRUE;
@@ -1334,7 +1337,7 @@ void change_image(struct dt_iop_module_t *self)
 void gui_init(struct dt_iop_module_t *self)
 {
   dt_iop_rgbcurve_gui_data_t *g = IOP_GUI_ALLOC(rgbcurve);
-  dt_iop_rgbcurve_params_t *p = (dt_iop_rgbcurve_params_t *)self->default_params;
+  const dt_iop_rgbcurve_params_t *const p = (dt_iop_rgbcurve_params_t *)self->default_params;
 
   for(int ch = 0; ch < DT_IOP_RGBCURVE_MAX_CHANNELS; ch++)
   {
@@ -1455,7 +1458,7 @@ void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pi
 {
   // create part of the pixelpipe
   dt_iop_rgbcurve_data_t *d = (dt_iop_rgbcurve_data_t *)malloc(sizeof(dt_iop_rgbcurve_data_t));
-  dt_iop_rgbcurve_params_t *default_params = (dt_iop_rgbcurve_params_t *)self->default_params;
+  const dt_iop_rgbcurve_params_t *const default_params = (dt_iop_rgbcurve_params_t *)self->default_params;
   piece->data = (void *)d;
   memcpy(&d->params, default_params, sizeof(dt_iop_rgbcurve_params_t));
 

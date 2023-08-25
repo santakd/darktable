@@ -107,7 +107,7 @@ typedef enum dt_highlights_mask_t
 typedef struct dt_iop_highlights_params_t
 {
   // params of v1
-  dt_iop_highlights_mode_t mode; // $DEFAULT: DT_IOP_HIGHLIGHTS_CLIP $DESCRIPTION: "method"
+  dt_iop_highlights_mode_t mode; // $DEFAULT: DT_IOP_HIGHLIGHTS_OPPOSED $DESCRIPTION: "method"
   float blendL; // unused $DEFAULT: 1.0
   float blendC; // unused $DEFAULT: 0.0
   float strength; // $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.0 $DESCRIPTION: "strength"
@@ -192,7 +192,9 @@ int flags()
   return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_ONE_INSTANCE;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
 }
@@ -200,19 +202,44 @@ int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_p
 int legacy_params(dt_iop_module_t *self,
                   const void *const old_params,
                   const int old_version,
-                  void *new_params,
-                  const int new_version)
+                  void **new_params,
+                  int32_t *new_params_size,
+                  int *new_version)
 {
-  if(old_version == 1 && new_version == 4)
+  typedef struct dt_iop_highlights_params_v4_t
   {
-    /*
-      params of v2 :
-        float clip
-      + params of v3
-      + params of v4
-    */
-    memcpy(new_params, old_params, sizeof(dt_iop_highlights_params_t) - 5 * sizeof(float) - 2 * sizeof(int) - sizeof(dt_atrous_wavelets_scales_t));
-    dt_iop_highlights_params_t *n = (dt_iop_highlights_params_t *)new_params;
+    // params of v1
+    dt_iop_highlights_mode_t mode;
+    float blendL;
+    float blendC;
+    float strength;
+    // params of v2
+    float clip;
+    // params of v3
+    float noise_level;
+    int iterations;
+    dt_atrous_wavelets_scales_t scales;
+    float candidating;
+    float combine;
+    dt_recovery_mode_t recovery;
+    // params of v4
+    float solid_color;
+  } dt_iop_highlights_params_v4_t;
+
+  if(old_version == 1)
+  {
+    typedef struct dt_iop_highlights_params_v1_t
+    {
+      dt_iop_highlights_mode_t mode;
+      float blendL, blendC, blendh;
+      float strength;
+    } dt_iop_highlights_params_v1_t;
+
+    const dt_iop_highlights_params_v1_t *o = (dt_iop_highlights_params_v1_t *)old_params;
+    dt_iop_highlights_params_v4_t *n =
+      (dt_iop_highlights_params_v4_t *)malloc(sizeof(dt_iop_highlights_params_v4_t));
+    memcpy(n, o, sizeof(dt_iop_highlights_params_v1_t));
+
     n->clip = 1.0f;
     n->noise_level = 0.0f;
     n->candidating = 0.4f;
@@ -222,22 +249,27 @@ int legacy_params(dt_iop_module_t *self,
     n->scales = 5;
     n->solid_color = 0.f;
     n->strength = 0.0f;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_highlights_params_v4_t);
+    *new_version = 4;
     return 0;
   }
-  if(old_version == 2 && new_version == 4)
+  if(old_version == 2)
   {
-    /*
-      params of v3 :
-        float noise_level;
-        int iterations;
-        dt_atrous_wavelets_scales_t scales;
-        float candidating;
-        float combine;
-        int recovery;
-      + params of v4
-    */
-    memcpy(new_params, old_params, sizeof(dt_iop_highlights_params_t) - 4 * sizeof(float) - 2 * sizeof(int) - sizeof(dt_atrous_wavelets_scales_t));
-    dt_iop_highlights_params_t *n = (dt_iop_highlights_params_t *)new_params;
+    typedef struct dt_iop_highlights_params_v2_t
+    {
+      dt_iop_highlights_mode_t mode;
+      float blendL, blendC, blendh;
+      float strength;
+      float clip;
+    } dt_iop_highlights_params_v2_t;
+
+    const dt_iop_highlights_params_v2_t *o = (dt_iop_highlights_params_v2_t *)old_params;
+    dt_iop_highlights_params_v4_t *n =
+      (dt_iop_highlights_params_v4_t *)malloc(sizeof(dt_iop_highlights_params_v4_t));
+    memcpy(n, o, sizeof(dt_iop_highlights_params_v2_t));
+
     n->noise_level = 0.0f;
     n->candidating = 0.4f;
     n->combine = 2.f;
@@ -246,18 +278,38 @@ int legacy_params(dt_iop_module_t *self,
     n->scales = 5;
     n->solid_color = 0.f;
     n->strength = 0.0f;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_highlights_params_v4_t);
+    *new_version = 4;
     return 0;
   }
-  if(old_version == 3 && new_version == 4)
+  if(old_version == 3)
   {
-    /*
-      params of v4 :
-        float solid_color;
-    */
-    memcpy(new_params, old_params, sizeof(dt_iop_highlights_params_t) - sizeof(float));
-    dt_iop_highlights_params_t *n = (dt_iop_highlights_params_t *)new_params;
+    typedef struct dt_iop_highlights_params_v3_t
+    {
+      dt_iop_highlights_mode_t mode;
+      float blendL, blendC, blendh;
+      float strength;
+      float noise_level;
+      int iterations;
+      dt_atrous_wavelets_scales_t scales;
+      float candidating;
+      float combine;
+      dt_recovery_mode_t recovery;
+    } dt_iop_highlights_params_v3_t;
+
+    const dt_iop_highlights_params_v3_t *o = (dt_iop_highlights_params_v3_t *)old_params;
+    dt_iop_highlights_params_v4_t *n =
+      (dt_iop_highlights_params_v4_t *)malloc(sizeof(dt_iop_highlights_params_v4_t));
+    memcpy(n, o, sizeof(dt_iop_highlights_params_v3_t));
+
     n->solid_color = 0.f;
     n->strength = 0.0f;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_highlights_params_v4_t);
+    *new_version = 4;
     return 0;
   }
 
@@ -265,7 +317,8 @@ int legacy_params(dt_iop_module_t *self,
 }
 
 static dt_aligned_pixel_t img_oppchroma;
-static uint64_t img_opphash = 0;
+static gboolean img_oppclipped = TRUE;
+static uint64_t img_opphash = ULLONG_MAX;
 
 #include "hlreconstruct/segmentation.c"
 #include "hlreconstruct/segbased.c"
@@ -273,6 +326,17 @@ static uint64_t img_opphash = 0;
 #include "hlreconstruct/laplacian.c"
 #include "hlreconstruct/inpaint.c"
 #include "hlreconstruct/lch.c"
+
+void distort_mask(
+        struct dt_iop_module_t *self,
+        struct dt_dev_pixelpipe_iop_t *piece,
+        const float *const in,
+        float *const out,
+        const dt_iop_roi_t *const roi_in,
+        const dt_iop_roi_t *const roi_out)
+{
+  dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out);
+}
 
 /* inpaint opposed and segmentation based algorithms want the whole image for proper calculation
    of chrominance correction and best candidates so we change both rois.
@@ -542,7 +606,9 @@ int process_cl(struct dt_iop_module_t *self,
   error:
   dt_opencl_release_mem_object(dev_clips);
   dt_opencl_release_mem_object(dev_xtrans);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_highlights] [%s] had error %s\n", dt_dev_pixelpipe_type_to_str(piece->pipe->type), cl_errstr(err));
+  dt_print_pipe(DT_DEBUG_OPENCL | DT_DEBUG_PIPE,
+    "opencl_highlights error", piece->pipe, self, roi_in, roi_out,
+    "error: %s\n", cl_errstr(err));
   return FALSE;
 }
 #endif
@@ -558,7 +624,7 @@ static void process_clip(dt_dev_pixelpipe_iop_t *piece,
   float *const out = (float *const)ovoid;
 
   const int ch = (piece->pipe->dsc.filters) ? piece->colors : 1;
-  const size_t msize = (size_t)roi_out->width * roi_out->height * ch; 
+  const size_t msize = (size_t)roi_out->width * roi_out->height * ch;
 #ifdef _OPENMP
 #pragma omp parallel for SIMD() default(none) \
     dt_omp_firstprivate(clip, in, out, msize) \
@@ -749,12 +815,15 @@ void process(struct dt_iop_module_t *self,
       }
       break;
     }
+
     case DT_IOP_HIGHLIGHTS_LCH:
+    {
       if(filters == 9u)
         process_lch_xtrans(self, piece, ivoid, ovoid, roi_in, roi_out, clip);
       else
         process_lch_bayer(self, piece, ivoid, ovoid, roi_in, roi_out, clip);
       break;
+    }
 
     case DT_IOP_HIGHLIGHTS_SEGMENTS:
     {
@@ -783,10 +852,8 @@ void process(struct dt_iop_module_t *self,
     }
 
     default:
-    case DT_IOP_HIGHLIGHTS_OPPOSED:
     {
-      float *tmp = _process_opposed(self, piece, ivoid, ovoid, roi_in, roi_out, FALSE, high_quality);
-      dt_free_align(tmp);
+      _process_opposed(self, piece, ivoid, ovoid, roi_in, roi_out, FALSE, high_quality);
       break;
     }
   }
@@ -972,15 +1039,6 @@ void gui_update(struct dt_iop_module_t *self)
   gui_changed(self, NULL, NULL);
 }
 
-void gui_reset(struct dt_iop_module_t *self)
-{
-  dt_iop_highlights_params_t *p = (dt_iop_highlights_params_t *)self->params;
-  dt_iop_highlights_params_t *d = (dt_iop_highlights_params_t *)self->default_params;
-
-  d->mode = DT_IOP_HIGHLIGHTS_OPPOSED;
-  p->mode = DT_IOP_HIGHLIGHTS_OPPOSED;
-}
-
 void reload_defaults(dt_iop_module_t *self)
 {
   // we might be called from presets update infrastructure => there is no image
@@ -990,11 +1048,6 @@ void reload_defaults(dt_iop_module_t *self)
   // enable this per default if raw or sraw if not true monochrome
   self->default_enabled = dt_image_is_rawprepare_supported(&self->dev->image_storage) && !monochrome;
   self->hide_enable_button = !(self->default_enabled);
-
-  dt_iop_highlights_params_t *d = (dt_iop_highlights_params_t *)self->default_params;
-
-  if(!dt_image_altered(self->dev->image_storage.id))
-    d->mode = DT_IOP_HIGHLIGHTS_OPPOSED;
 
   if(self->widget)
     gtk_stack_set_visible_child_name(GTK_STACK(self->widget), self->default_enabled ? "default" : "notapplicable");

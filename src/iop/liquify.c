@@ -308,7 +308,7 @@ int default_group()
 
 int flags()
 {
-  return IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_GUIDES_WIDGET;
+  return IOP_FLAGS_SUPPORTS_BLENDING;
 }
 
 int operation_tags()
@@ -316,9 +316,15 @@ int operation_tags()
    return IOP_TAG_DISTORT;
 }
 
-int default_colorspace(dt_iop_module_t *self,
-                       dt_dev_pixelpipe_t *pipe,
-                       dt_dev_pixelpipe_iop_t *piece)
+int operation_tags_filter()
+{
+  // switch off cropping, we want to see the full image.
+  return IOP_TAG_DECORATION | IOP_TAG_CROPPING;
+}
+
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -968,8 +974,7 @@ static void apply_round_stamp(const dt_liquify_warp_t *const restrict warp,
   // circle in quadrants and doing only the inside we have to calculate
   // hypotf only for PI / 16 = 0.196 of the stamp area.
   // We don't do octants to avoid false sharing of cache lines between threads.
-  // doesn't work for OSX see issue #7349
-  #if defined(_OPENMP) && !defined(__APPLE__)
+  #ifdef _OPENMP
   #pragma omp parallel for schedule(static) default(none) \
     dt_omp_firstprivate(iradius, strength, abs_strength, table_size, global_width) \
     dt_omp_sharedconst(center, warp, lookup_table, LOOKUP_OVERSAMPLE, global_map_extent)
@@ -977,7 +982,6 @@ static void apply_round_stamp(const dt_liquify_warp_t *const restrict warp,
   for(size_t y = 0; y <= iradius; y++)
   {
     const float complex y_i = y * I;
-    const float complex minus_y_i = -y * I;
     const float y2 = y*y;
     for(size_t x = 0; x <= iradius; x++)
     {
@@ -1011,13 +1015,13 @@ static void apply_round_stamp(const dt_liquify_warp_t *const restrict warp,
         // DT_LIQUIFY_WARP_TYPE_RADIAL_GROW or _SHRINK
         // abs_strength is negative for _SHRINK
         const float abs_lookup = abs_strength * lookup_table[idist] / iradius;
-        *q1 += abs_lookup * ( x + minus_y_i);
+        *q1 -= abs_lookup * (x - y_i);
         if(x!=0)
-          *q2 += abs_lookup * (-x + minus_y_i);
+          *q2 += abs_lookup * (x + y_i);
         if(x!=0&&y!=0)
-          *q3 += abs_lookup * (-x + y_i);
+          *q3 += abs_lookup * (x - y_i);
         if(y!=0)
-          *q4 += abs_lookup * ( x + y_i);
+          *q4 -= abs_lookup * (x + y_i);
       }
     }
   }
@@ -1417,7 +1421,7 @@ void distort_mask(struct dt_iop_module_t *self,
                   const dt_iop_roi_t *const roi_out)
 {
   // 1. copy the whole image (we'll change only a small part of it)
-  dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out, 1);
+  dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out);
 
   // 2. build the distortion map
   cairo_rectangle_int_t map_extent;
@@ -1450,7 +1454,7 @@ void process(struct dt_iop_module_t *module,
                                         in, out, roi_in, roi_out))
     return;
   // 1. copy the whole image (we'll change only a small part of it)
-  dt_iop_copy_image_roi(out, in, piece->colors, roi_in, roi_out, 1);
+  dt_iop_copy_image_roi(out, in, piece->colors, roi_in, roi_out);
 
   // 2. build the distortion map
   cairo_rectangle_int_t map_extent;
@@ -2797,14 +2801,15 @@ static gboolean btn_make_radio_callback(GtkToggleButton *btn,
                                         GdkEventButton *event,
                                         dt_iop_module_t *module);
 
-void gui_focus(struct dt_iop_module_t *module,
+void gui_focus(struct dt_iop_module_t *self,
                const gboolean in)
 {
   if(!in)
   {
     dt_collection_hint_message(darktable.collection);
-    btn_make_radio_callback(NULL, NULL, module);
+    btn_make_radio_callback(NULL, NULL, self);
   }
+  self->dev->cropping.requester = (in && !darktable.develop->image_loading) ? self : NULL;
 }
 
 static void sync_pipe(struct dt_iop_module_t *module,
@@ -3664,9 +3669,9 @@ static gboolean btn_make_radio_callback(GtkToggleButton *btn,
   return TRUE;
 }
 
-void gui_update(dt_iop_module_t *module)
+void gui_update(dt_iop_module_t *self)
 {
-  update_warp_count(module);
+  update_warp_count(self);
 }
 
 void gui_init(dt_iop_module_t *self)

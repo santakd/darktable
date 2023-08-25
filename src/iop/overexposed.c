@@ -81,19 +81,12 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_HIDDEN | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
-
-
-int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
-                  void *new_params, const int new_version)
-{
-  // we do no longer have module params in here and just ignore any legacy entries
-  return 0;
-}
-
 
 // void init_key_accels(dt_iop_module_so_t *self)
 // {
@@ -126,7 +119,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *restrict img_tmp = NULL;
   if(!dt_iop_alloc_image_buffers(self, roi_in, roi_out, ch, &img_tmp, 0))
   {
-    dt_iop_copy_image_roi(ovoid, ivoid, ch, roi_in, roi_out, TRUE);
+    dt_iop_copy_image_roi(ovoid, ivoid, ch, roi_in, roi_out);
     dt_control_log(_("module overexposed failed in buffer allocation"));
     return;
   }
@@ -152,7 +145,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   else
   {
     dt_print(DT_DEBUG_ALWAYS, "[overexposed process] can't create transform profile\n");
-    dt_iop_copy_image_roi(ovoid, ivoid, ch, roi_in, roi_out, TRUE);
+    dt_iop_copy_image_roi(ovoid, ivoid, ch, roi_in, roi_out);
     dt_control_log(_("module overexposed failed in color conversion"));
     goto process_finish;
   }
@@ -468,4 +461,3 @@ void init(dt_iop_module_t *module)
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-

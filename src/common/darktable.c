@@ -131,7 +131,7 @@ static int usage(const char *argv0)
   printf("  --configdir <user config directory>\n");
   printf("  -d {act_on,cache,camctl,camsupport,control,dev,imageio,\n");
   printf("      input,ioporder,lighttable,lua,masks,memory,nan,opencl,params,\n");
-  printf("      perf,print,pwstorage,signal,sql,tiling,undo,verbose,pipe,\n");
+  printf("      perf,print,pwstorage,signal,sql,tiling,undo,verbose,pipe,expose\n");
   printf("      all,common (-d dev,imageio,masks,opencl,params,pipe)}\n");
   printf("  --d-signal <signal> \n");
   printf("  --d-signal-act <all,raise,connect,disconnect");
@@ -148,6 +148,7 @@ static int usage(const char *argv0)
   printf("  --dump-pfm <modulea,moduleb>\n");
   printf("  --dump-pipe <modulea,moduleb>\n");
   printf("  --bench-module <modulea,moduleb>\n");
+  printf("  --dumpdir <directory to hold dumped files>\n");
   printf("  --library <library file>\n");
   printf("  --localedir <locale directory>\n");
 #ifdef USE_LUA
@@ -435,7 +436,7 @@ void dt_dump_pfm_file(
   snprintf(path, sizeof(path), "%s/%s", darktable.tmp_directory, pipe);
   if(!dt_util_test_writable_dir(path))
   {
-    if(g_mkdir(path, 0750))
+    if(g_mkdir_with_parents(path, 0750))
     {
       dt_print(DT_DEBUG_ALWAYS, "%20s can't create directory '%s'\n", head, path);
       return;
@@ -512,6 +513,20 @@ void dt_dump_pipe_pfm(
   dt_dump_pfm_file(pipe, data, width, height, bpp, mod, "[dt_dump_pipe_pfm]", input, !input, TRUE);
 }
 
+static int32_t _detect_opencl_job_run(dt_job_t *job)
+{
+  darktable.opencl = (dt_opencl_t *)calloc(1, sizeof(dt_opencl_t));
+  dt_opencl_init(darktable.opencl, GPOINTER_TO_INT(dt_control_job_get_params(job)), TRUE);
+  return 0;
+}
+
+static dt_job_t *_detect_opencl_job_create(gboolean exclude_opencl)
+{
+  dt_job_t *job = dt_control_job_create(&_detect_opencl_job_run, "detect opencl devices");
+  if(!job) return NULL;
+  dt_control_job_set_params(job, GINT_TO_POINTER(exclude_opencl), NULL);
+  return job;
+}
 
 int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data, lua_State *L)
 {
@@ -668,6 +683,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
                "  gPhoto2 support disabled\n"
 #endif
 
+#ifdef HAVE_GMIC
+               "  G'MIC support enabled (compressed LUTs will be supported)\n"
+#else
+               "  G'MIC support disabled (compressed LUTs will not be supported)\n"
+#endif
+
 #ifdef HAVE_GRAPHICSMAGICK
                "  GraphicsMagick support enabled\n"
 #else
@@ -780,7 +801,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
         argv[k-1] = NULL;
         argv[k] = NULL;
       }
-      else if(!strcmp(argv[k], "--localedir") && argc > k + 1)
+      else if(!strcmp(argv[k], "--dumpdir") && argc > k + 1)
+      {
+        darktable.tmp_directory = g_strdup(argv[++k]);
+        argv[k-1] = NULL;
+        argv[k] = NULL;
+      }
+     else if(!strcmp(argv[k], "--localedir") && argc > k + 1)
       {
         localedir_from_command = argv[++k];
         argv[k-1] = NULL;
@@ -842,6 +869,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
           darktable.unmuted |= DT_DEBUG_VERBOSE;
         else if(!strcmp(argv[k + 1], "pipe"))
           darktable.unmuted |= DT_DEBUG_PIPE;
+        else if(!strcmp(argv[k + 1], "expose"))
+          darktable.unmuted |= DT_DEBUG_EXPOSE;
         else
           return usage(argv[0]);
         k++;
@@ -1036,7 +1065,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
   if(darktable.dump_pfm_module || darktable.dump_pfm_pipe)
   {
-    darktable.tmp_directory = g_dir_make_tmp("darktable_XXXXXX", NULL);
+    if(darktable.tmp_directory == NULL)
+      darktable.tmp_directory = g_dir_make_tmp("darktable_XXXXXX", NULL);
     dt_print(DT_DEBUG_ALWAYS, "[init] darktable dump directory is '%s'\n",
     (darktable.tmp_directory) ? darktable.tmp_directory : "NOT AVAILABLE");
   }
@@ -1338,10 +1368,11 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 #endif
 
   darktable.opencl = (dt_opencl_t *)calloc(1, sizeof(dt_opencl_t));
-  dt_opencl_init(darktable.opencl, exclude_opencl, print_statistics);
-#ifdef HAVE_OPENCL
-  dt_opencl_update_settings();
-#endif
+  if(init_gui)
+    dt_control_add_job(darktable.control, DT_JOB_QUEUE_SYSTEM_BG,
+                       _detect_opencl_job_create(exclude_opencl));
+  else
+    dt_opencl_init(darktable.opencl, exclude_opencl, print_statistics);
 
   darktable.points = (dt_points_t *)calloc(1, sizeof(dt_points_t));
   dt_points_init(darktable.points, dt_get_num_threads());

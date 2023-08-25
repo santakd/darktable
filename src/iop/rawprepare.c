@@ -115,9 +115,9 @@ int default_group()
   return IOP_GROUP_BASIC | IOP_GROUP_TECHNICAL;
 }
 
-int default_colorspace(dt_iop_module_t *self,
-                       dt_dev_pixelpipe_t *pipe,
-                       dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RAW;
 }
@@ -125,11 +125,11 @@ int default_colorspace(dt_iop_module_t *self,
 int legacy_params(dt_iop_module_t *self,
                   const void *const old_params,
                   const int old_version,
-                  void *new_params,
-                  const int new_version)
+                  void **new_params,
+                  int32_t *new_params_size,
+                  int *new_version)
 {
-  typedef struct dt_iop_rawprepare_params_t dt_iop_rawprepare_params_v2_t;
-  typedef struct dt_iop_rawprepare_params_v1_t
+  typedef struct dt_iop_rawprepare_params_v2_t
   {
     int32_t left;
     int32_t top;
@@ -137,14 +137,30 @@ int legacy_params(dt_iop_module_t *self,
     int32_t bottom;
     uint16_t raw_black_level_separate[4];
     uint16_t raw_white_point;
-  } dt_iop_rawprepare_params_v1_t;
+    dt_iop_rawprepare_flat_field_t flat_field;
+  } dt_iop_rawprepare_params_v2_t;
 
-  if(old_version == 1 && new_version == 2)
+  if(old_version == 1)
   {
-    dt_iop_rawprepare_params_v1_t *o = (dt_iop_rawprepare_params_v1_t *)old_params;
-    dt_iop_rawprepare_params_v2_t *n = (dt_iop_rawprepare_params_v2_t *)new_params;
+    typedef struct dt_iop_rawprepare_params_v1_t
+    {
+      int32_t left;
+      int32_t top;
+      int32_t right;
+      int32_t bottom;
+      uint16_t raw_black_level_separate[4];
+      uint16_t raw_white_point;
+    } dt_iop_rawprepare_params_v1_t;
+
+    const dt_iop_rawprepare_params_v1_t *o = (dt_iop_rawprepare_params_v1_t *)old_params;
+    dt_iop_rawprepare_params_v2_t *n =
+      (dt_iop_rawprepare_params_v2_t *)malloc(sizeof(dt_iop_rawprepare_params_v2_t));
     memcpy(n, o, sizeof *o);
     n->flat_field = FLAT_FIELD_OFF;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_rawprepare_params_v2_t);
+    *new_version = 2;
     return 0;
   }
 
@@ -258,7 +274,7 @@ void distort_mask(
         const dt_iop_roi_t *const roi_in,
         const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out, TRUE);
+  dt_iop_copy_image_roi(out, in, 1, roi_in, roi_out);
 }
 
 // we're not scaling here (bayer input), so just crop borders
@@ -479,7 +495,7 @@ void process(
   }
 
   if(!dt_image_is_raw(&piece->pipe->image) && piece->pipe->want_detail_mask)
-    dt_dev_write_rawdetail_mask(piece, (float *const)ovoid, roi_in, FALSE);
+    dt_dev_write_scharr_mask(piece, (float *const)ovoid, roi_in, FALSE);
 
   for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = 1.0f;
 }
@@ -592,7 +608,7 @@ int process_cl(
 
   if(!dt_image_is_raw(&piece->pipe->image) && piece->pipe->want_detail_mask)
   {
-    err = dt_dev_write_rawdetail_mask_cl(piece, dev_out, roi_in, FALSE);
+    err = dt_dev_write_scharr_mask_cl(piece, dev_out, roi_in, FALSE);
     if(err != CL_SUCCESS) goto error;
   }
   return TRUE;

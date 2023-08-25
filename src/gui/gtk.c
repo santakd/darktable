@@ -68,7 +68,6 @@
 
 #define DT_UI_PANEL_MODULE_SPACING 0
 #define DT_UI_PANEL_BOTTOM_DEFAULT_SIZE 120
-#define DT_RESIZE_HANDLE_SIZE DT_PIXEL_APPLY_DPI(5)
 
 typedef enum dt_gui_view_switch_t
 {
@@ -234,6 +233,8 @@ static gchar *_panels_get_view_path(char *suffix)
 {
   if(!darktable.view_manager) return NULL;
   const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
+  if(!cv) return NULL;
+
   // in lighttable, we store panels states per layout
   char lay[32] = "";
   if(g_strcmp0(cv->module_name, "lighttable") == 0)
@@ -846,10 +847,6 @@ void dt_gui_store_last_preset(const char *name)
   darktable.gui->last_preset = g_strdup(name);
 }
 
-static void _gui_noop_action_callback(dt_action_t *action)
-{
-}
-
 static void _gui_switch_view_key_accel_callback(dt_action_t *action)
 {
   dt_ctl_switch_mode_to(action->id);
@@ -1179,9 +1176,6 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   g_signal_connect(G_OBJECT(widget), "configure-event", G_CALLBACK(_window_configure), NULL);
   g_signal_connect(G_OBJECT(widget), "event", G_CALLBACK(dt_shortcut_dispatcher), NULL);
   g_signal_override_class_handler("query-tooltip", gtk_widget_get_type(), G_CALLBACK(dt_shortcut_tooltip_callback));
-
-  //an action that does nothing - used for overriding/removing default shortcuts
-  dt_action_register(&darktable.control->actions_global, N_("no-op"), _gui_noop_action_callback, 0, 0);
 
   ac = dt_action_section(&darktable.control->actions_global, N_("switch views"));
   dt_action_register(ac, N_("tethering"), _gui_switch_view_key_accel_callback, GDK_KEY_t, 0);
@@ -3160,6 +3154,11 @@ static const dt_action_def_t _action_def_focus_tabs
       DT_ACTION_ELEMENTS_NUM(tabs),
       NULL, TRUE };
 
+static void _get_height_if_visible(GtkWidget *w, gint *height)
+{
+  if(gtk_widget_get_visible(w)) *height = gtk_widget_get_allocated_height(w);
+}
+
 static gint _get_container_row_heigth(GtkWidget *w)
 {
   gint height = DT_PIXEL_APPLY_DPI(10);
@@ -3188,13 +3187,7 @@ static gint _get_container_row_heigth(GtkWidget *w)
     g_object_unref(layout);
   }
   else
-  {
-    GtkWidget *child = dt_gui_container_first_child(GTK_CONTAINER(w));
-    if(child)
-    {
-      height = gtk_widget_get_allocated_height(child);
-    }
-  }
+    gtk_container_foreach(GTK_CONTAINER(w), (GtkCallback)_get_height_if_visible, &height);
 
   return height;
 }
@@ -3226,14 +3219,17 @@ static gboolean _resize_wrap_draw(GtkWidget *w, void *cr, const char *config_str
   height += increment - 1;
   height -= height % increment;
 
-  GtkBorder padding;
-  gtk_style_context_get_padding(gtk_widget_get_style_context(sw),
-                                gtk_widget_get_state_flags(sw),
+  GtkBorder padding, margin;
+  gtk_style_context_get_padding(gtk_widget_get_style_context(w),
+                                gtk_widget_get_state_flags(w),
                                 &padding);
+  gtk_style_context_get_margin(gtk_widget_get_style_context(sw),
+                               gtk_widget_get_state_flags(sw),
+                               &margin);
 
   gint old_height = 0;
   gtk_widget_get_size_request(sw, NULL, &old_height);
-  const gint new_height = height + padding.top + padding.bottom + (GTK_IS_TEXT_VIEW(w) ? 2 : 0);
+  const gint new_height = height + padding.top + padding.bottom + margin.top + margin.bottom;
   if(new_height != old_height)
   {
     gtk_widget_set_size_request(sw, -1, new_height);

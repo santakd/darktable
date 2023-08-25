@@ -96,7 +96,9 @@ int default_group()
   return IOP_GROUP_EFFECT | IOP_GROUP_EFFECTS;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -143,7 +145,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
                                  4 | DT_IMGSZ_INPUT, &temp,
                                  0, NULL))
   {
-    dt_iop_copy_image_roi(ovoid, ivoid, piece->colors, roi_in, roi_out, 0);
+    dt_iop_copy_image_roi(ovoid, ivoid, piece->colors, roi_in, roi_out);
     return;
   }
   dt_iop_censorize_data_t *data = (dt_iop_censorize_data_t *)piece->data;

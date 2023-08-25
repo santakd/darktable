@@ -64,6 +64,7 @@ static float _opencl_benchmark_cpu(const size_t width,
 
 static gboolean _opencl_load_program(const int dev,
                                      const int prog,
+                                     const char *programname,
                                      const char *filename,
                                      const char *binname,
                                      const char *cachedir,
@@ -735,6 +736,25 @@ static gboolean _opencl_device_init(dt_opencl_t *cl,
     goto end;
   }
 
+  if(strlen(deviceversion) < 9)
+  {
+     dt_print_nts(DT_DEBUG_OPENCL,
+                 "   *** no proper device version ***\n");
+    res = TRUE;
+    goto end;
+  }
+  else
+  {
+    if((strncmp(deviceversion+7, "1.0", 3) == 0)
+      || (strncmp(deviceversion+7, "1.1", 3) == 0))
+    {
+      dt_print_nts(DT_DEBUG_OPENCL,
+                 "   *** insufficient device version ***\n");
+      res = TRUE;
+      goto end;
+    }
+  }
+
   if(!device_available)
   {
     dt_print_nts(DT_DEBUG_OPENCL,
@@ -1055,7 +1075,7 @@ static gboolean _opencl_device_init(dt_opencl_t *cl,
                "[dt_opencl_device_init] testing program `%s' ..\n", programname);
       int loaded_cached;
       char md5sum[33];
-      if(_opencl_load_program(dev, prog, filename, binname, cachedir,
+      if(_opencl_load_program(dev, prog, programname, filename, binname, cachedir,
                               md5sum, includemd5, &loaded_cached)
          && _opencl_build_program(dev, prog, binname, cachedir, md5sum, loaded_cached))
       {
@@ -1202,12 +1222,23 @@ void dt_opencl_init(
 
   all_platforms = malloc(sizeof(cl_platform_id) * DT_OPENCL_MAX_PLATFORMS);
   all_num_devices = malloc(sizeof(cl_uint) * DT_OPENCL_MAX_PLATFORMS);
-  cl_uint num_platforms = 0;
 
-  cl_int err = (cl->dlocl->symbols->dt_clGetPlatformIDs)
+  cl_uint num_platforms = 0;
+  cl_int err = (cl->dlocl->symbols->dt_clGetPlatformIDs)(0, NULL, &num_platforms);
+  if((err != CL_SUCCESS) || (num_platforms == 0))
+  {
+    logerror = "no platform detected - Fix the OpenCL installation or add a driver";
+    dt_print_nts(DT_DEBUG_OPENCL,
+                 "[opencl_init] no platform (%i) detected: %s\n", num_platforms, cl_errstr(err));
+    goto finally;
+  }
+
+  num_platforms = 0;
+  err = (cl->dlocl->symbols->dt_clGetPlatformIDs)
     (DT_OPENCL_MAX_PLATFORMS, all_platforms, &num_platforms);
   if(err != CL_SUCCESS)
   {
+    logerror = "couldn't get platforms - Fix the OpenCL installation or add a driver";
     dt_print_nts(DT_DEBUG_OPENCL,
                  "[opencl_init] could not get platforms: %s\n", cl_errstr(err));
     goto finally;
@@ -1215,7 +1246,7 @@ void dt_opencl_init(
 
   if(num_platforms == 0)
   {
-    logerror = "no opencl platform available";
+    logerror = "couldn't get platforms - Fix the OpenCL installation or add a driver";
     dt_print_nts(DT_DEBUG_OPENCL, "[opencl_init] no opencl platform available\n");
     goto finally;
   }
@@ -1513,7 +1544,7 @@ finally:
     free(locale);
   }
 
-  return;
+  dt_opencl_update_settings();
 }
 
 void dt_opencl_cleanup(dt_opencl_t *cl)
@@ -1813,14 +1844,6 @@ gboolean dt_opencl_finish_sync_pipe(const int devid, const int pipetype)
     return dt_opencl_finish(devid);
   else
     return TRUE;
-}
-
-gboolean dt_opencl_enqueue_barrier(const int devid)
-{
-  dt_opencl_t *cl = darktable.opencl;
-  if(!_cldev_running(devid)) return TRUE;
-  return ((cl->dlocl->symbols->dt_clEnqueueBarrier)(cl->dev[devid].cmd_queue))
-    ? TRUE : FALSE;
 }
 
 static int _take_from_list(int *list, int value)
@@ -2275,6 +2298,7 @@ void dt_opencl_md5sum(const char **files, char **md5sums)
 static gboolean _opencl_load_program(
         const int dev,
         const int prog,
+        const char *programname,
         const char *filename,
         const char *binname,
         const char *cachedir,
@@ -2441,6 +2465,8 @@ static gboolean _opencl_load_program(
              "[opencl_load_program] could not load cached binary program,"
              " trying to compile source\n");
 
+    dt_control_log(_("building OpenCL program %s for %s"),
+                  programname, cl->dev[dev].fullname);
     cl->dev[dev].program[prog] = (cl->dlocl->symbols->dt_clCreateProgramWithSource)(
         cl->dev[dev].context, 1, (const char **)&file, &filesize, &err);
     free(file);
@@ -2638,51 +2664,56 @@ static gboolean _opencl_build_program(const int dev,
 int dt_opencl_create_kernel(const int prog, const char *name)
 {
   dt_opencl_t *cl = darktable.opencl;
-  if(!cl->inited) return -1;
-  if(prog < 0 || prog >= DT_OPENCL_MAX_PROGRAMS) return -1;
-  dt_pthread_mutex_lock(&cl->lock);
-  int k = 0;
-  for(int dev = 0; dev < cl->num_devs; dev++)
+
+  static int k = 0;
+  cl->name_saved[k] = name;
+  cl->program_saved[k] = prog;
+
+  if(k >= DT_OPENCL_MAX_KERNELS)
   {
-    cl_int err;
-    for(; k < DT_OPENCL_MAX_KERNELS; k++)
-      if(!cl->dev[dev].kernel_used[k])
-      {
-        cl->dev[dev].kernel_used[k] = 1;
-        cl->dev[dev].kernel[k] =
-          (cl->dlocl->symbols->dt_clCreateKernel)
-            (cl->dev[dev].program[prog], name, &err);
-        if(err != CL_SUCCESS)
-        {
-          dt_print(DT_DEBUG_OPENCL,
-                   "[opencl_create_kernel] could not create kernel `%s'! (%s)\n",
-                   name, cl_errstr(err));
-          cl->dev[dev].kernel_used[k] = 0;
-          goto error;
-        }
-        else
-          break;
-      }
-    if(k < DT_OPENCL_MAX_KERNELS)
-    {
-      dt_print(DT_DEBUG_OPENCL | DT_DEBUG_VERBOSE,
-               "[opencl_create_kernel] successfully loaded kernel `%s' (%d)"
-               " for device %d\n",
-               name, k, dev);
-    }
-    else
+    dt_print(DT_DEBUG_OPENCL,
+              "[opencl_create_kernel] too many kernels! can't create kernel `%s'\n",
+              name);
+    return -1;
+  }
+  return k++;
+}
+
+
+static gboolean _check_kernel(const int dev, const int kernel)
+{
+  dt_opencl_t *cl = darktable.opencl;
+
+  if(!cl->inited || dev < 0) return FALSE;
+  if(kernel < 0 || kernel >= DT_OPENCL_MAX_KERNELS) return FALSE;
+  
+  if(cl->dev[dev].kernel_used[kernel]) return TRUE;
+
+  const int prog = cl->program_saved[kernel];
+  if(prog < 0 || prog >= DT_OPENCL_MAX_PROGRAMS) return FALSE;
+  dt_pthread_mutex_lock(&cl->lock);
+
+  cl_int err;
+  if(!cl->dev[dev].kernel_used[kernel]
+     && cl->name_saved[kernel])
+  {
+    cl->dev[dev].kernel_used[kernel] = 1;
+    cl->dev[dev].kernel[kernel] =
+      (cl->dlocl->symbols->dt_clCreateKernel)
+        (cl->dev[dev].program[prog], cl->name_saved[kernel], &err);
+    if(err != CL_SUCCESS)
     {
       dt_print(DT_DEBUG_OPENCL,
-               "[opencl_create_kernel] too many kernels! can't create kernel `%s'\n",
-               name);
-      goto error;
+                "[opencl_create_kernel] could not create kernel `%s'! (%s)\n",
+                cl->name_saved[kernel], cl_errstr(err));
+      cl->dev[dev].kernel_used[kernel] = 0;
+      cl->name_saved[kernel] = NULL; // don't try again
+      dt_pthread_mutex_unlock(&cl->lock);
+      return FALSE;
     }
   }
   dt_pthread_mutex_unlock(&cl->lock);
-  return k;
-error:
-  dt_pthread_mutex_unlock(&cl->lock);
-  return -1;
+  return TRUE;
 }
 
 void dt_opencl_free_kernel(const int kernel)
@@ -2741,10 +2772,9 @@ int dt_opencl_get_kernel_work_group_size(
         const int kernel,
         size_t *kernelworkgroupsize)
 {
-  dt_opencl_t *cl = darktable.opencl;
-  if(!cl->inited || dev < 0) return -1;
-  if(kernel < 0 || kernel >= DT_OPENCL_MAX_KERNELS) return -1;
+  if(!_check_kernel(dev, kernel)) return -1;
 
+  dt_opencl_t *cl = darktable.opencl;
   return (cl->dlocl->symbols->dt_clGetKernelWorkGroupInfo)(cl->dev[dev].kernel[kernel],
                                                            cl->dev[dev].devid,
                                                            CL_KERNEL_WORK_GROUP_SIZE,
@@ -2759,9 +2789,9 @@ int dt_opencl_set_kernel_arg(
         const size_t size,
         const void *arg)
 {
+  if(!_check_kernel(dev, kernel)) return -1;
+  
   dt_opencl_t *cl = darktable.opencl;
-  if(!cl->inited || dev < 0) return -1;
-  if(kernel < 0 || kernel >= DT_OPENCL_MAX_KERNELS) return -1;
   return (cl->dlocl->symbols->dt_clSetKernelArg)
     (cl->dev[dev].kernel[kernel], num, size, arg);
 }
@@ -3231,11 +3261,11 @@ void *dt_opencl_copy_host_to_device_rowpitch(const int devid,
   else
     return NULL;
 
-  // TODO: if fmt = uint16_t, blow up to 4xuint16_t and copy manually!
-  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage2D)
-    (darktable.opencl->dev[devid].context,
-     CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &fmt, width, height,
-     rowpitch, host, &err);
+  const cl_image_desc desc = (cl_image_desc)
+        {CL_MEM_OBJECT_IMAGE2D, width, height, 0, 0, rowpitch, 0, 0, 0, NULL};
+
+  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage)
+    (darktable.opencl->dev[devid].context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &fmt, &desc, host, &err);
   if(err != CL_SUCCESS)
     dt_print(DT_DEBUG_OPENCL,
              "[opencl copy_host_to_device]"
@@ -3331,9 +3361,11 @@ void *dt_opencl_alloc_device(const int devid,
   else
     return NULL;
 
-  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage2D)
-    (darktable.opencl->dev[devid].context, CL_MEM_READ_WRITE, &fmt,
-     width, height, 0, NULL, &err);
+  const cl_image_desc desc = (cl_image_desc)
+        {CL_MEM_OBJECT_IMAGE2D, width, height, 0, 0, 0, 0, 0, 0, NULL};
+
+  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage)
+    (darktable.opencl->dev[devid].context, CL_MEM_READ_WRITE, &fmt, &desc, NULL, &err);
 
   if(err != CL_SUCCESS)
     dt_print(DT_DEBUG_OPENCL,
@@ -3370,11 +3402,14 @@ void *dt_opencl_alloc_device_use_host_pointer(const int devid,
   else
     return NULL;
 
-  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage2D)
+  const cl_image_desc desc = (cl_image_desc)
+        {CL_MEM_OBJECT_IMAGE2D, width, height, 0, 0, rowpitch, 0, 0, 0, NULL};
+
+  cl_mem dev = (darktable.opencl->dlocl->symbols->dt_clCreateImage)
     (darktable.opencl->dev[devid].context,
      CL_MEM_READ_WRITE | ((host == NULL) ? CL_MEM_ALLOC_HOST_PTR : CL_MEM_USE_HOST_PTR),
-     &fmt, width, height,
-     rowpitch, host, &err);
+     &fmt, &desc, host, &err);
+
   if(err != CL_SUCCESS)
     dt_print(DT_DEBUG_OPENCL,
              "[opencl alloc_device_use_host_pointer]"

@@ -93,10 +93,31 @@ typedef struct dt_iop_basicadj_global_data_t
   int kernel_basicadj;
 } dt_iop_basicadj_global_data_t;
 
-int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version, void *new_params,
-                  const int new_version)
+int legacy_params(dt_iop_module_t *self,
+                  const void *const old_params,
+                  const int old_version,
+                  void **new_params,
+                  int32_t *new_params_size,
+                  int *new_version)
 {
-  if(old_version == 1 && new_version == 2)
+  typedef struct dt_iop_basicadj_params_v2_t
+  {
+    float black_point;
+
+    float exposure;
+    float hlcompr;
+
+    float hlcomprthresh;
+    float contrast;
+    dt_iop_rgb_norms_t preserve_colors;
+    float middle_grey;
+    float brightness;
+    float saturation;
+    float vibrance;
+    float clip;
+  } dt_iop_basicadj_params_v2_t;
+
+  if(old_version == 1)
   {
     typedef struct dt_iop_basicadj_params_v1_t
     {
@@ -113,7 +134,8 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     } dt_iop_basicadj_params_v1_t;
 
     const dt_iop_basicadj_params_v1_t *old = old_params;
-    dt_iop_basicadj_params_t *new = new_params;
+    dt_iop_basicadj_params_v2_t *new =
+      (dt_iop_basicadj_params_v2_t *)malloc(sizeof(dt_iop_basicadj_params_v2_t));
 
     new->black_point = old->black_point;
     new->exposure = old->exposure;
@@ -126,6 +148,10 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     new->saturation = old->saturation;
     new->clip = old->clip;
     new->vibrance = 0;
+
+    *new_params = new;
+    *new_params_size = sizeof(dt_iop_basicadj_params_v2_t);
+    *new_version = 2;
     return 0;
   }
   return 1;
@@ -160,7 +186,9 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_SUPPORTS_BLENDING | IOP_FLAGS_DEPRECATED;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_RGB;
 }
@@ -458,13 +486,14 @@ void cleanup_global(dt_iop_module_so_t *module)
   module->data = NULL;
 }
 
-void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker, dt_dev_pixelpipe_iop_t *piece)
+void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
+                        dt_dev_pixelpipe_t *pipe)
 {
   if(darktable.gui->reset) return;
   dt_iop_basicadj_params_t *p = (dt_iop_basicadj_params_t *)self->params;
   dt_iop_basicadj_gui_data_t *g = (dt_iop_basicadj_gui_data_t *)self->gui_data;
 
-  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_current_profile_info(self, piece->pipe);
+  const dt_iop_order_iccprofile_info_t *const work_profile = dt_ioppr_get_pipe_current_profile_info(self, pipe);
   p->middle_grey = (work_profile) ? (dt_ioppr_get_rgb_matrix_luminance(self->picked_color,
                                                                        work_profile->matrix_in,
                                                                        work_profile->lut_in,
@@ -1554,4 +1583,3 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-

@@ -51,7 +51,7 @@ jobs:
         os:
           - { label: ubuntu-latest, code: latest }
         compiler:
-          - { compiler: GNU12,  CC: gcc-12,   CXX: g++-12,     packages: gcc-12 g++-12 }
+          - { compiler: GNU13,  CC: gcc-13,   CXX: g++-13,     packages: gcc-13 g++-13 }
           - { compiler: LLVM15, CC: clang-15, CXX: clang++-15, packages: clang-15 libomp-15-dev llvm-15-dev libc++-15-dev libc++abi1-15 lld-15 clang-tools-15 mlir-15-tools libmlir-15-dev}
         btype:
           - Release
@@ -74,6 +74,11 @@ jobs:
     steps:
       - name: Install compiler ${{ matrix.compiler.compiler }}
         run: |
+          # The libunwind-14* packages are already installed in the CI image, they are part
+          # of the Clang 14 compiler-specific packages. Due to the shortcomings of inter-package
+          # dependencies, their presence prevents the installation of similar packages for Clang 15.
+          # So we have to remove them first.
+          sudo apt remove -y libunwind-14 libunwind-14-dev
           # Remove azure mirror because it is unreliable and sometimes unpredictably leads to failed CI
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test
@@ -206,10 +211,11 @@ jobs:
             cc:p
             cmake:p
             cmocka:p
+            libxslt:p
             ninja:p
             nsis:p
             python-jsonschema:p
-            dbus-glib:p
+            curl:p
             drmingw:p
             exiv2:p
             gcc-libs:p
@@ -218,21 +224,22 @@ jobs:
             graphicsmagick:p
             gtk3:p
             icu:p
+            imath:p
             iso-codes:p
             lcms2:p
             lensfun:p
             libavif:p
-            libexif:p
             libgphoto2:p
             libheif:p
             libjpeg-turbo:p
             libjxl:p
+            libpng:p
             libraw:p
+            librsvg:p
             libsecret:p
             libtiff:p
             libwebp:p
             libxml2:p
-            libxslt:p
             lua:p
             omp:p
             openexr:p

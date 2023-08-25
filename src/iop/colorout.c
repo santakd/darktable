@@ -103,19 +103,23 @@ int flags()
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_ONE_INSTANCE;
 }
 
-int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
+                                            dt_dev_pixelpipe_t *pipe,
+                                            dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
 
-int input_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                     dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t input_colorspace(dt_iop_module_t *self,
+                                          dt_dev_pixelpipe_t *pipe,
+                                          dt_dev_pixelpipe_iop_t *piece)
 {
   return IOP_CS_LAB;
 }
 
-int output_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
-                      dt_dev_pixelpipe_iop_t *piece)
+dt_iop_colorspace_type_t output_colorspace(dt_iop_module_t *self,
+                                           dt_dev_pixelpipe_t *pipe,
+                                           dt_dev_pixelpipe_iop_t *piece)
 {
   int cst = IOP_CS_RGB;
   if(piece)
@@ -131,9 +135,20 @@ int output_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe,
   return cst;
 }
 
-int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
-                  void *new_params, const int new_version)
+int legacy_params(dt_iop_module_t *self,
+                  const void *const old_params,
+                  const int old_version,
+                  void **new_params,
+                  int32_t *new_params_size,
+                  int *new_version)
 {
+  typedef struct dt_iop_colorout_params_v5_t
+  {
+    dt_colorspaces_color_profile_type_t type; // $DEFAULT: DT_COLORSPACE_SRGB
+    char filename[DT_IOP_COLOR_ICC_LEN];
+    dt_iop_color_intent_t intent; // $DEFAULT: DT_INTENT_PERCEPTUAL
+  } dt_iop_colorout_params_v5_t;
+
 #define DT_IOP_COLOR_ICC_LEN_V4 100
   /*  if(old_version == 1 && new_version == 2)
   {
@@ -143,7 +158,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     n->seq = 0;
     return 0;
     }*/
-  if((old_version == 2 || old_version == 3) && new_version == 5)
+  if(old_version == 2 || old_version == 3)
   {
     typedef struct dt_iop_colorout_params_v3_t
     {
@@ -157,13 +172,15 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     } dt_iop_colorout_params_v3_t;
 
 
-    dt_iop_colorout_params_v3_t *o = (dt_iop_colorout_params_v3_t *)old_params;
-    dt_iop_colorout_params_t *n = (dt_iop_colorout_params_t *)new_params;
-    memset(n, 0, sizeof(dt_iop_colorout_params_t));
+    const dt_iop_colorout_params_v3_t *o = (dt_iop_colorout_params_v3_t *)old_params;
+    dt_iop_colorout_params_v5_t *n =
+      (dt_iop_colorout_params_v5_t *)malloc(sizeof(dt_iop_colorout_params_v5_t));
+    memset(n, 0, sizeof(dt_iop_colorout_params_v5_t));
 
     if(!strcmp(o->iccprofile, "sRGB"))
       n->type = DT_COLORSPACE_SRGB;
-    else if(!strcmp(o->iccprofile, "linear_rec709_rgb") || !strcmp(o->iccprofile, "linear_rgb"))
+    else if(!strcmp(o->iccprofile, "linear_rec709_rgb")
+            || !strcmp(o->iccprofile, "linear_rgb"))
       n->type = DT_COLORSPACE_LIN_REC709;
     else if(!strcmp(o->iccprofile, "linear_rec2020_rgb"))
       n->type = DT_COLORSPACE_LIN_REC2020;
@@ -179,9 +196,12 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 
     n->intent = o->intent;
 
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_colorout_params_v5_t);
+    *new_version = 5;
     return 0;
   }
-  if(old_version == 4 && new_version == 5)
+  if(old_version == 4)
   {
     typedef struct dt_iop_colorout_params_v4_t
     {
@@ -191,14 +211,18 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     } dt_iop_colorout_params_v4_t;
 
 
-    dt_iop_colorout_params_v4_t *o = (dt_iop_colorout_params_v4_t *)old_params;
-    dt_iop_colorout_params_t *n = (dt_iop_colorout_params_t *)new_params;
-    memset(n, 0, sizeof(dt_iop_colorout_params_t));
+    const dt_iop_colorout_params_v4_t *o = (dt_iop_colorout_params_v4_t *)old_params;
+    dt_iop_colorout_params_v5_t *n =
+      (dt_iop_colorout_params_v5_t *)malloc(sizeof(dt_iop_colorout_params_v5_t));
+    memset(n, 0, sizeof(dt_iop_colorout_params_v5_t));
 
     n->type = o->type;
     g_strlcpy(n->filename, o->filename, sizeof(n->filename));
     n->intent = o->intent;
 
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_colorout_params_v5_t);
+    *new_version = 5;
     return 0;
   }
 
@@ -503,7 +527,7 @@ static void _transform_lcms(const dt_iop_colorout_data_t *const d,
   // figure out the number of pixels each thread needs to process
   // round up to a multiple of 4 pixels so that each chunk starts aligned(64)
   const size_t nthreads = dt_get_num_threads();
-  const size_t chunksize = 4 * (((npixels / nthreads) + 3) / 4);
+  const size_t chunksize = 4 * ((((npixels + nthreads - 1) / nthreads) + 3) / 4);
 #pragma omp parallel for default(none)                                  \
     dt_omp_firstprivate(in, out, npixels, chunksize, nthreads, d, gamutcheck) \
     schedule(static)
