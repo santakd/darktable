@@ -170,8 +170,7 @@ dt_view_type_flags_t views(dt_lib_module_t *self)
 
 uint32_t container(dt_lib_module_t *self)
 {
-  const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(cv->view((dt_view_t *)cv) == DT_VIEW_DARKROOM)
+  if(dt_view_get_current() == DT_VIEW_DARKROOM)
     return DT_UI_CONTAINER_PANEL_LEFT_CENTER;
   else
     return DT_UI_CONTAINER_PANEL_RIGHT_CENTER;
@@ -287,8 +286,7 @@ static void _export_button_clicked(GtkWidget *widget, dt_lib_export_t *d)
   /* write current history changes so nothing gets lost, do that only
      in the darkroom as there is nothing to be saved when in the
      lighttable (and it would write over current history stack) */
-  const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  if(cv->view(cv) == DT_VIEW_DARKROOM) dt_dev_write_history(darktable.develop);
+  if(dt_view_get_current() == DT_VIEW_DARKROOM) dt_dev_write_history(darktable.develop);
 
   char style[128] = { 0 };
 
@@ -305,12 +303,12 @@ static void _export_button_clicked(GtkWidget *widget, dt_lib_export_t *d)
 
   if(format_index == -1)
   {
-    dt_control_log("invalid format for export selected");
+    dt_control_log(_("invalid format for export selected"));
     return;
   }
   if(storage_index == -1)
   {
-    dt_control_log("invalid storage for export selected");
+    dt_control_log(_("invalid storage for export selected"));
     return;
   }
 

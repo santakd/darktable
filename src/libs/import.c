@@ -656,6 +656,7 @@ static guint _import_set_file_list(const gchar *folder, const int folder_lgth,
                               G_FILE_ATTRIBUTE_STANDARD_NAME ","
                               G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME ","
                               G_FILE_ATTRIBUTE_TIME_MODIFIED ","
+                              G_FILE_ATTRIBUTE_STANDARD_IS_HIDDEN ","
                               G_FILE_ATTRIBUTE_STANDARD_TYPE,
                               G_FILE_QUERY_INFO_NONE, NULL, &error);
 
@@ -682,7 +683,8 @@ static guint _import_set_file_list(const gchar *folder, const int folder_lgth,
       if (is_hidden)
         continue;
 
-      const time_t datetime = g_file_info_get_attribute_uint64(info, G_FILE_ATTRIBUTE_TIME_MODIFIED);
+      const time_t datetime =
+        g_file_info_get_attribute_uint64(info, G_FILE_ATTRIBUTE_TIME_MODIFIED);
       GDateTime *dt_datetime = g_date_time_new_from_unix_local(datetime);
       gchar *dt_txt = g_date_time_format(dt_datetime, "%x %X");
       const GFileType filetype = g_file_info_get_file_type(info);
@@ -797,7 +799,7 @@ static gboolean _update_files_list(gpointer user_data)
   else
 #endif
   {
-    char *folder = dt_conf_get_string("ui_last/import_last_directory");
+    char *folder = dt_conf_get_path("ui_last/import_last_directory");
     d->from.nb = !folder[0] ? 0 : _import_set_file_list(folder, strlen(folder), 0, self);
     g_free(folder);
     gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(model),
@@ -1368,7 +1370,7 @@ static void _update_folders_list(dt_lib_module_t* self)
   gtk_tree_view_set_model(d->from.folderview, NULL);
   gtk_tree_store_clear(GTK_TREE_STORE(model));
   const char *last_place = dt_conf_get_string_const("ui_last/import_last_place");
-  const char *folder = dt_conf_get_string_const("ui_last/import_last_directory");
+  char *folder = dt_conf_get_path("ui_last/import_last_directory");
   gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(model),
                                        GTK_TREE_SORTABLE_UNSORTED_SORT_COLUMN_ID,
                                        GTK_SORT_ASCENDING);
@@ -1383,6 +1385,8 @@ static void _update_folders_list(dt_lib_module_t* self)
     _expand_folder(folder, TRUE, self);
   else
     _expand_folder(last_place, FALSE, self);
+
+  g_free(folder);
 }
 
 static void _escape_place_name_comma(char *name)
@@ -1697,11 +1701,12 @@ static void _import_from_dialog_new(dt_lib_module_t* self)
   dt_lib_import_t *d = (dt_lib_import_t *)self->data;
   GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
 
-  d->from.dialog = gtk_dialog_new_with_buttons
-    ( _(_import_text[d->import_case]), NULL, GTK_DIALOG_MODAL,
-      _("cancel"), GTK_RESPONSE_CANCEL,
-      _(_import_text[d->import_case]), GTK_RESPONSE_ACCEPT,
-      NULL);
+  d->from.dialog = gtk_dialog_new_with_buttons(_(_import_text[d->import_case]), NULL,
+                                               GTK_DIALOG_MODAL,
+                                               _("_cancel"), GTK_RESPONSE_CANCEL,
+                                               _(_import_text[d->import_case]), GTK_RESPONSE_ACCEPT,
+                                               NULL);
+  gtk_dialog_set_default_response(GTK_DIALOG(d->from.dialog), GTK_RESPONSE_ACCEPT);
   dt_gui_dialog_add_help(GTK_DIALOG(d->from.dialog), "import_dialog");
 
 #ifdef GDK_WINDOWING_QUARTZ
@@ -1806,6 +1811,9 @@ static void _import_from_dialog_new(dt_lib_module_t* self)
   {
     gtk_widget_show_all(d->from.dialog);
   }
+
+  // make sure no buttons focused, so default button is marked
+  gtk_window_set_focus(GTK_WINDOW(d->from.dialog), NULL);
 }
 
 static void _import_set_collection(const char *dirname)
@@ -1881,8 +1889,10 @@ static void _import_from_dialog_run(dt_lib_module_t* self)
     GtkTreeModel *model = GTK_TREE_MODEL(d->from.store);
     GtkTreeSelection *selection = gtk_tree_view_get_selection(d->from.treeview);
     GList *paths = gtk_tree_selection_get_selected_rows(selection, &model);
-    char *folder = (d->import_case == DT_IMPORT_CAMERA) ? g_strdup("") :
-                   dt_conf_get_string("ui_last/import_last_directory");
+    char *folder = (d->import_case == DT_IMPORT_CAMERA)
+      ? g_strdup("")
+      : dt_conf_get_path("ui_last/import_last_directory");
+
     for(GList *path = paths; path; path = g_list_next(path))
     {
       GtkTreeIter iter;
@@ -1925,7 +1935,7 @@ static void _import_from_dialog_run(dt_lib_module_t* self)
           folder = dt_util_dstrcat(folder, "%%");
         _import_set_collection(folder);
         const dt_imgid_t imgid = dt_conf_get_int("ui_last/import_last_image");
-        if(unique && imgid > 0)
+        if(unique && dt_is_valid_imgid(imgid))
         {
           dt_control_set_mouse_over_id(imgid);
           dt_ctl_switch_mode_to("darkroom");
@@ -1973,7 +1983,7 @@ static void _lib_import_from_callback(GtkWidget *widget, dt_lib_module_t* self)
                "\nfurther information can be found in the darktable manual."
                "\n\ninspect darktable preferences -> import."
                "\ncheck and possibly correct the 'base directory naming pattern'"),
-            _("show this information again"), _("understood & done"));
+            _("_show this information again"), _("_understood & done"));
       if(understood)
         dt_conf_set_bool("setup_import_directory", TRUE);
       else

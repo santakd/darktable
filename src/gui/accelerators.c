@@ -992,7 +992,7 @@ gboolean dt_shortcut_tooltip_callback(GtkWidget *widget,
   int show_element = 0;
   dt_shortcut_t lua_shortcut = { .speed = 1.0 };
 
-  gchar *original_markup = gtk_widget_get_tooltip_markup(widget);
+  gchar *original_markup = dt_bauhaus_widget_get_tooltip_markup(widget, darktable.control->element);
   gchar *preset_name = g_object_get_data(G_OBJECT(widget), "dt-preset-name");
   const gchar *widget_name = gtk_widget_get_name(widget);
 
@@ -1136,8 +1136,7 @@ gboolean dt_shortcut_tooltip_callback(GtkWidget *widget,
       description = g_markup_escape_text(_(element_name), -1);
   }
 
-  const dt_view_t *cv = dt_view_manager_get_current_view(darktable.view_manager);
-  const dt_view_type_flags_t current_view = cv ? cv->view(cv) : DT_VIEW_NONE;
+  const dt_view_type_flags_t current_view = dt_view_get_current();
   int num_shortcuts = 0;
   for(GSequenceIter *iter = g_sequence_get_begin_iter(darktable.control->shortcuts);
       !g_sequence_iter_is_end(iter);
@@ -1397,13 +1396,9 @@ static gboolean _insert_shortcut(dt_shortcut_t *shortcut,
 
   dt_shortcut_t *s = calloc(sizeof(dt_shortcut_t), 1);
   *s = *shortcut;
-  dt_view_type_flags_t real_views = s->views = _find_views(s->action);
+  const dt_view_type_flags_t real_views = s->views = _find_views(s->action);
 
-  const dt_view_t *vw = NULL;
-  if(darktable.view_manager)
-    vw = dt_view_manager_get_current_view(darktable.view_manager);
-
-  dt_view_type_flags_t view = vw && vw->view ? vw->view(vw) : DT_VIEW_LIGHTTABLE;
+  const dt_view_type_flags_t view = dt_view_get_current();
 
   guint replaced_direction = 0;
 
@@ -1989,8 +1984,7 @@ static gboolean _view_key_pressed(GtkWidget *widget, GdkEventKey *event, gpointe
 
 static void _add_shortcuts_to_tree()
 {
-  const dt_view_t *vw = dt_view_manager_get_current_view(darktable.view_manager);
-  dt_view_type_flags_t view = vw && vw->view ? vw->view(vw) : DT_VIEW_LIGHTTABLE;
+  const dt_view_type_flags_t view = dt_view_get_current();
 
   for(dt_shortcut_category_t i = 0; i < DT_SHORTCUT_CATEGORY_LAST; i++)
     gtk_tree_store_insert_with_values(_shortcuts_store, NULL, NULL, -1, 0, GINT_TO_POINTER(i), -1);
@@ -2705,6 +2699,9 @@ static void _import_clicked(GtkButton *button, gpointer user_data)
 
 static void _notice_clicked(GtkWidget *button, gpointer user_data)
 {
+  static int times = 0;
+  if(++times < 3) return;
+
   gtk_widget_hide(button);
   dt_conf_set_bool("accel/hide_notice", TRUE);
 }
@@ -2920,12 +2917,12 @@ GtkWidget *dt_shortcuts_prefs(GtkWidget *widget)
     button = gtk_button_new_with_label(
       _("the recommended way to assign shortcuts to visual elements is the <b>visual shortcut mapping</b> mode.\n"
         "this is switched on by toggling the <i>\"keyboard\"</i> button next to preferences in the top panel. "
-        "in this mode, clicking on a widget or area will open this dialog with the appropriate selection for advanced configuration.\n"
+        "in this mode, clicking on a widget or area will open this dialog with the appropriate selection for advanced configuration.\n\n"
         "multiple shortcuts can be assigned to the same action. "
         "this is especially useful if it has multiple <i>elements</i>, like the module buttons or the colorpickers attached to sliders. "
         "however, with <i>fallbacks</i> enabled one can use the same simple shortcuts and "
-        "change their <i>element</i> or <i>effect</i> by adding mouse clicks."));
-    gtk_widget_set_tooltip_text(button, _("click to dismiss this notice permanently"));
+        "change their <i>element</i> or <i>effect</i> by adding mouse clicks.\n\n"
+        "<i>click <b> three times </b> to dismiss this notice permanently</i>"));
     gtk_widget_set_hexpand(button, TRUE);
     GtkLabel *label = GTK_LABEL(gtk_bin_get_child(GTK_BIN(button)));
     gtk_label_set_use_markup(label, TRUE);
@@ -4170,7 +4167,7 @@ static void _delay_for_double_triple(guint time, guint is_key)
   else if(break_stuck && !_sc.button)
   {
     _ungrab_grab_widget();
-    dt_control_log("short key press resets stuck keys");
+    dt_control_log(_("short key press resets stuck keys"));
     return;
   }
   else if((is_key ? _sc.press : _sc.click) & DT_SHORTCUT_TRIPLE)

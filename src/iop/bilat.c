@@ -207,6 +207,7 @@ int process_cl(struct dt_iop_module_t *self,
 {
   dt_iop_bilat_data_t *d = (dt_iop_bilat_data_t *)piece->data;
 
+  cl_int err = DT_OPENCL_PROCESS_CL;
   if(d->mode == s_mode_bilateral)
   {
     // the total scale is composed of scale before input to the pipeline (iscale),
@@ -214,7 +215,6 @@ int process_cl(struct dt_iop_module_t *self,
     const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
     const float sigma_r = d->sigma_r; // does not depend on scale
     const float sigma_s = d->sigma_s / scale;
-    cl_int err = -666;
 
     dt_bilateral_cl_t *b
       = dt_bilateral_init_cl(piece->pipe->devid, roi_in->width, roi_in->height,
@@ -225,14 +225,9 @@ int process_cl(struct dt_iop_module_t *self,
     err = dt_bilateral_blur_cl(b);
     if(err != CL_SUCCESS) goto error;
     err = dt_bilateral_slice_cl(b, dev_in, dev_out, d->detail);
-    if(err != CL_SUCCESS) goto error;
-    dt_bilateral_free_cl(b);
-    return TRUE;
 error:
     dt_bilateral_free_cl(b);
-    dt_print(DT_DEBUG_OPENCL,
-             "[opencl_bilateral] couldn't enqueue kernel! %s\n", cl_errstr(err));
-    return FALSE;
+    return err;
   }
   else // mode == s_mode_local_laplacian
   {
@@ -240,12 +235,10 @@ error:
       dt_local_laplacian_init_cl(piece->pipe->devid, roi_in->width, roi_in->height,
         d->midtone, d->sigma_s, d->sigma_r, d->detail);
     if(!b) goto error_ll;
-    if(dt_local_laplacian_cl(b, dev_in, dev_out) != CL_SUCCESS) goto error_ll;
-    dt_local_laplacian_free_cl(b);
-    return TRUE;
+    err = dt_local_laplacian_cl(b, dev_in, dev_out);
 error_ll:
-    dt_local_laplacian_free_cl(b);
-    return FALSE;
+    if(b) dt_local_laplacian_free_cl(b);
+    return err;
   }
 }
 #endif

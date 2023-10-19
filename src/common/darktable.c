@@ -41,7 +41,6 @@
 #endif
 #include "bauhaus/bauhaus.h"
 #include "common/action.h"
-#include "common/cpuid.h"
 #include "common/file_location.h"
 #include "common/film.h"
 #include "common/grealpath.h"
@@ -122,52 +121,173 @@ static int usage(const char *argv0)
   char *logfile = g_build_filename(g_get_user_cache_dir(), "darktable", "darktable-log.txt", NULL);
 #endif
   // clang-format off
-  printf("usage: %s [options] [IMG_1234.{RAW,..}|image_folder/]\n", argv0);
-  printf("\n");
-  printf("options:\n");
-  printf("\n");
-  printf("  --cachedir <user cache directory>\n");
-  printf("  --conf <key>=<value>\n");
-  printf("  --configdir <user config directory>\n");
-  printf("  -d {act_on,cache,camctl,camsupport,control,dev,imageio,\n");
-  printf("      input,ioporder,lighttable,lua,masks,memory,nan,opencl,params,\n");
-  printf("      perf,print,pwstorage,signal,sql,tiling,undo,verbose,pipe,expose\n");
-  printf("      all,common (-d dev,imageio,masks,opencl,params,pipe)}\n");
-  printf("  --d-signal <signal> \n");
-  printf("  --d-signal-act <all,raise,connect,disconnect");
-  // clang-format on
-#ifdef DT_HAVE_SIGNAL_TRACE
-  printf(",print-trace");
-#endif
-  printf(">\n");
-  printf("  --datadir <data directory>\n");
-#ifdef HAVE_OPENCL
-  printf("  --disable-opencl\n");
-#endif
-  printf("  --disable-pipecache\n");
-  printf("  --dump-pfm <modulea,moduleb>\n");
-  printf("  --dump-pipe <modulea,moduleb>\n");
-  printf("  --bench-module <modulea,moduleb>\n");
-  printf("  --dumpdir <directory to hold dumped files>\n");
-  printf("  --library <library file>\n");
-  printf("  --localedir <locale directory>\n");
+
+// Rewriting this following GNU Standards for Command Line Interfaces and other best practices
+// ref. https://www.gnu.org/prep/standards/standards.html#Command_002dLine-Interfaces
+// ref. https://clig.dev/#introduction
+//
+// Trying to keep the length of the text within 80 columns
+// Using 2-4 spaces for the indentation of the inline help
+
+  printf("darktable %s\n"
+         "Copyright (C) 2012-%s Johannes Hanika and other contributors.\n\n"
+         "<https://www.darktable.org>\n"
+         "darktable is an open source photography workflow application and\n"
+         "non-destructive raw developer for photographers.\n"
+         "GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>\n"
+         "This is free software: you are free to change and redistribute it.\n"
+         "There is NO WARRANTY, to the extent permitted by law.\n\n",
+         darktable_package_version,
+         darktable_last_commit_year);
+
+  printf("Usage:\n"
+         "  darktable [OPTIONS] [IMAGE_FILE | IMAGE_FOLDER]\n"
+         "\n"
+         "Options:\n"
+         "\n"
+         "--cachedir DIR\n"
+         "    darktable keeps a cache of image thumbnails for fast image preview\n"
+         "    and precompiled OpenCL binaries for fast startup. By default the\n"
+         "    cache is located in $HOME/.cache/darktable/. Multiple thumbnail\n"
+         "    caches may exist in parallel, one for each library file.\n"
+         "\n"
+         "--conf KEY=VALUE\n"
+         "    Temporarily overwrite individual settings on the command line with\n"
+         "    this option - these settings will not be stored in darktablerc\n"
+         "    on exit.\n"
+         "\n"
+         "--configdir DIR\n"
+         "    Where darktable stores user-specific configuration.\n"
+         "    The default location is $HOME/.config/darktable/\n"
+         "\n"
+         "--datadir DIR\n"
+         "    Define the directory where darktable finds its runtime data.\n"
+         "    The default location depends on your installation.\n"
+         "    Typical locations are /opt/darktable/share/darktable/ \n"
+         "    and /usr/share/darktable/\n"
+         "\n"
+         "--library FILE\n"
+         "    Specifies an alternate location for darktable's image information database,\n"
+         "    which is stored in an SQLite file by default (library.db) in the directory\n"
+         "    specified by --configdir or $HOME/.config/darktable/. You can use this\n"
+         "    option for experimentation without affecting your original library.db.\n"
+         "    If the specified database file doesn't exist, darktable will create it.\n"
+         "\n"
+         "    When darktable starts, it locks the library to the current user by writing\n"
+         "    the process identifier (PID) to a lock file named FILE.lock next to the\n"
+         "    specified library. If a lock file already exists, darktable will exit.\n"
+         "\n"
+         "    :memory: -> Use this option as FILE to keep the database in system memory,\n"
+         "    discarding changes on darktable termination.\n"
+         "\n"
+         "--localedir DIR\n"
+         "    Define where darktable can find its language-specific text\n"
+         "    strings. The default location depends on your installation.\n"
+         "    Typical locations are /opt/darktable/share/locale/\n"
+         "    and /usr/share/locale/\n"
+         "\n"
 #ifdef USE_LUA
-  printf("  --luacmd <lua command>\n");
+         "--luacmd COMMAND\n"
+         "    A string containing lua commands to execute after lua\n"
+         "    initialization. These commands will be run after your “luarc”\n"
+         "    file. If lua is not compiled-in, this option will be accepted\n"
+         "    but won't do anything.\n"
+         "\n"
 #endif
-  printf("  --moduledir <module directory>\n");
-  printf("  --noiseprofiles <noiseprofiles json file>\n");
-  printf("  --threads <num> | -t <num> openmp threads>\n");
-  printf("  --tmpdir <tmp directory>\n");
-  printf("  --version\n");
-  printf("  --help -h");
+         "--moduledir DIR\n"
+         "    darktable has a modular structure and organizes its modules as\n"
+         "    shared libraries for loading at runtime.\n"
+         "    This option tells darktable where to look for its shared libraries.\n"
+         "    The default location depends on your installation.\n"
+         "    Typical locations are /opt/darktable/lib64/darktable/\n"
+         "    and /usr/lib64/darktable/\n"
+         "\n"
+         "--noiseprofiles FILE\n"
+         "    Provide a json file that contains camera-specific noise profiles.\n"
+         "    The default location depends on your installation.\n"
+         "    Typical locations are /opt/darktable/share/darktable/noiseprofile.json\n"
+         "    and /usr/share/darktable/noiseprofile.json\n"
+         "\n"
+         "-t, --threads NUM\n"
+         "    Limit number of openmp threads to use in openmp parallel sections\n"
+         "\n"
+         "--tmpdir DIR\n"
+         "    Define where darktable should store its temporary files.\n"
+         "    If this option is not supplied darktable uses the system default.\n"
+         "\n"
+         "-v, --version\n"
+         "    Print darktable version number\n"
+         "\n"
+         "-h, --help\n"
+         "    Show this help (-h works with no other options)\n"
+         "\n"
+         "Debugging:\n\n"
+         "--bench-module MODULE_A,MODULE_B\n"
+         "\n"
+#ifdef HAVE_OPENCL
+         "--disable-opencl\n"
+         "    Prevent darktable from initializing the OpenCL subsystem.\n"
+         "\n"
+#endif
+         "--disable-pipecache\n"
+         "    Disable the pixelpipe cache. This option allows only\n"
+         "    two cachelines per pipe, and should be used for debugging\n"
+         "    purposes only.\n"
+         "\n"
+         "--dump-pfm MODULE_A,MODULE_B\n"
+         "\n"
+         "--dump-pipe MODULE_A,MODULE_B\n"
+         "\n"
+         "--dumpdir DIR\n"
+         "\n"
+         "-d SIGNAL\n"
+         "    Enable debug output to the terminal. Valid signals are:\n\n"
+         "    act_on, cache, camctl, camsupport, control, demosaic, dev,\n"
+         "    fswatch, imageio, input, ioporder, lighttable, lua, masks, memory,\n"
+         "    nan, opencl, params, perf, print, pwstorage, signal, sql, tiling,\n"
+         "    undo, verbose\n"
+         "\n"
+         "    all     -> to debug all signals\n"
+         "    common  -> to debug dev, imageio, masks, opencl, params, pipe\n"
+         "    verbose -> when combined with debug options like '-d opencl'\n"
+         "               provides more detailed output. To activate verbosity,\n"
+         "               use the additional option '-d verbose'\n"
+         "               even when using '-d all'.\n"
+         "\n"
+         "    There are several subsystems of darktable and each of them can be\n"
+         "    debugged separately. You can use this option multiple times if you\n"
+         "    want to debug more than one subsystem.\n"
+         "\n"
+         "    E.g. darktable -d opencl -d camctl -d perf\n"
+         "\n"
+         "--d-signal SIGNAL\n"
+         "    if -d signal or -d all is specified, specify the signal to debug\n"
+         "    using this option. Specify ALL to debug all signals or specify\n"
+         "    signal using it's full name. Can be used multiple times.\n"
+         "\n"
+         "--d-signal-act SIGNAL_ACT\n"
+         "\n"
+         "    Valid SIGNAL_ACT are:\n"
+         "    all, raise, connect, disconnect"
+#ifdef DT_HAVE_SIGNAL_TRACE
+         ", print-trace\n"
+#endif
+         "\n"
+         "    If -d signal or -d all is specified, specify the signal action\n"
+         "    to debug using this option.\n");
 #ifdef _WIN32
   printf(", /?\n");
   printf("\n");
-  printf("  note: debug log and output will be written to this file:\n");
-  printf("        %s\n", logfile);
+  printf("Debug log and output will be written to this file:\n");
+  printf("    %s\n", logfile);
 #else
   printf("\n");
 #endif
+
+  printf("See %s for more detailed documentation.\n"
+         "See %s to report bugs.\n",
+         PACKAGE_DOCS,
+         PACKAGE_BUGREPORT);
 
 #ifdef _WIN32
   g_free(logfile);
@@ -176,6 +296,7 @@ static int usage(const char *argv0)
   return 1;
 }
 
+// clang-format on
 gboolean dt_is_dev_version()
 {
   // a dev version as an odd number after the first dot
@@ -310,37 +431,14 @@ int dt_load_from_string(const gchar *input,
 
 static void dt_codepaths_init()
 {
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-  __builtin_cpu_init();
-#endif
+  // we no longer do explicit runtime selection of code paths, so initialize to "none"
+  // (there are still functions where the compiler creates runtime selection due to "target_clones"
+  // directives, but those are not affected by this code)
 
   memset(&(darktable.codepath), 0, sizeof(darktable.codepath));
 
-  // first, enable whatever codepath this CPU supports
-  {
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-    darktable.codepath.SSE2 = (__builtin_cpu_supports("sse")
-                               && __builtin_cpu_supports("sse2"));
-#else
-    dt_cpu_flags_t flags = dt_detect_cpu_features();
-    darktable.codepath.SSE2 = ((flags & (CPU_FLAG_SSE)) && (flags & (CPU_FLAG_SSE2)));
-#endif
-  }
-
-  // second, apply overrides from conf
-  // NOTE: all intrinsics sets can only be overridden to OFF
-  if(!dt_conf_get_bool("codepaths/sse2")) darktable.codepath.SSE2 = 0;
-
-  // last: do we have any intrinsics sets enabled?
-  darktable.codepath._no_intrinsics = !(darktable.codepath.SSE2);
-
-#if defined(__SSE__)
-  if(darktable.codepath._no_intrinsics)
-  {
-    dt_print(DT_DEBUG_ALWAYS,
-             "[dt_codepaths_init] SSE2-optimized codepath is disabled or unavailable.\n");
-  }
-#endif
+  // do we have any intrinsics sets enabled? (nope)
+  darktable.codepath._no_intrinsics = 1;
 }
 
 static inline size_t _get_total_memory()
@@ -528,6 +626,144 @@ static dt_job_t *_detect_opencl_job_create(gboolean exclude_opencl)
   return job;
 }
 
+static int32_t _backthumbs_job_run(dt_job_t *job)
+{
+  dt_update_thumbs_thread(dt_control_job_get_params(job));
+  return 0;
+}
+
+static dt_job_t *_backthumbs_job_create(void)
+{
+  dt_job_t *job = dt_control_job_create(&_backthumbs_job_run, "generate mipmaps");
+  if(!job) return NULL;
+  dt_control_job_set_params(job, NULL, NULL);
+  return job;
+}
+
+static char *_get_version_string(void)
+{
+#ifdef USE_LUA
+        const char *lua_api_version = strcmp(LUA_API_VERSION_SUFFIX, "") ?
+                                      STR(LUA_API_VERSION_MAJOR) "."
+                                      STR(LUA_API_VERSION_MINOR) "."
+                                      STR(LUA_API_VERSION_PATCH) "-"
+                                      LUA_API_VERSION_SUFFIX :
+                                      STR(LUA_API_VERSION_MAJOR) "."
+                                      STR(LUA_API_VERSION_MINOR) "."
+                                      STR(LUA_API_VERSION_PATCH) "\n";
+#endif
+char *version = g_strdup_printf("darktable %s\nCopyright (C) 2012-%s Johannes Hanika and other contributors.\n\n"
+               "Compile options:\n"
+               "  Bit depth              -> %zu bit\n"
+               "%s%s%s\n"
+               "See %s for detailed documentation.\n"
+               "See %s to report bugs.\n",
+               darktable_package_version,
+               darktable_last_commit_year,
+               CHAR_BIT * sizeof(void *),
+
+#ifdef _DEBUG
+               "  Debug                  -> ENABLED\n"
+#else
+               "  Debug                  -> DISABLED\n"
+#endif
+
+#if defined(__SSE2__) && defined(__SSE__)
+               "  SSE2 optimizations     -> ENABLED\n"
+#else
+               "  SSE2 optimizations     -> DISABLED\n"
+#endif
+
+#ifdef _OPENMP
+               "  OpenMP                 -> ENABLED\n"
+#else
+               "  OpenMP                 -> DISABLED\n"
+#endif
+
+#ifdef HAVE_OPENCL
+               "  OpenCL                 -> ENABLED\n"
+#else
+               "  OpenCL                 -> DISABLED\n"
+#endif
+
+#ifdef USE_LUA
+               "  Lua                    -> ENABLED  - API version ", lua_api_version,
+#else
+               "  Lua                    -> DISABLED - API version ", "NOT AVAILABLE",
+#endif
+
+#ifdef USE_COLORDGTK
+               "  Colord                 -> ENABLED\n"
+#else
+               "  Colord                 -> DISABLED\n"
+#endif
+
+#ifdef HAVE_GPHOTO2
+               "  gPhoto2                -> ENABLED\n"
+#else
+               "  gPhoto2                -> DISABLED\n"
+#endif
+
+#ifdef HAVE_GMIC
+               "  GMIC                   -> ENABLED  - Compressed LUTs supported\n"
+#else
+               "  GMIC                   -> DISABLED - Compressed LUTs NOT supported\n"
+#endif
+
+#ifdef HAVE_GRAPHICSMAGICK
+               "  GraphicsMagick         -> ENABLED\n"
+#else
+               "  GraphicsMagick         -> DISABLED\n"
+#endif
+
+#ifdef HAVE_IMAGEMAGICK
+               "  ImageMagick            -> ENABLED\n"
+#else
+               "  ImageMagick            -> DISABLED\n"
+#endif
+
+#ifdef HAVE_LIBAVIF
+               "  libavif                -> ENABLED\n"
+#else
+               "  libavif                -> DISABLED\n"
+#endif
+
+#ifdef HAVE_LIBHEIF
+               "  libheif                -> ENABLED\n"
+#else
+               "  libheif                -> DISABLED\n"
+#endif
+
+#ifdef HAVE_LIBJXL
+               "  libjxl                 -> ENABLED\n"
+#else
+               "  libjxl                 -> DISABLED\n"
+#endif
+
+#ifdef HAVE_OPENJPEG
+               "  OpenJPEG               -> ENABLED\n"
+#else
+               "  OpenJPEG               -> DISABLED\n"
+#endif
+
+#ifdef HAVE_OPENEXR
+               "  OpenEXR                -> ENABLED\n"
+#else
+               "  OpenEXR                -> DISABLED\n"
+#endif
+
+#ifdef HAVE_WEBP
+               "  WebP                   -> ENABLED\n",
+#else
+               "  WebP                   -> DISABLED\n",
+#endif
+
+               PACKAGE_DOCS,
+               PACKAGE_BUGREPORT);
+
+  return version;
+}
+
 int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load_data, lua_State *L)
 {
   double start_wtime = dt_get_wtime();
@@ -543,15 +779,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
 
   dt_set_signal_handlers();
 
-  gboolean sse2_supported = FALSE;
-#ifdef HAVE_BUILTIN_CPU_SUPPORTS
-  // NOTE: _may_i_use_cpu_feature() looks better, but only available in ICC
-  __builtin_cpu_init();
-  sse2_supported = __builtin_cpu_supports("sse2");
-#else
-  sse2_supported = dt_detect_cpu_features() & CPU_FLAG_SSE2;
-#endif
-
 #ifdef M_MMAP_THRESHOLD
   mallopt(M_MMAP_THRESHOLD, 128 * 1024); /* use mmap() for large allocations */
 #endif
@@ -563,10 +790,6 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   memset(&darktable, 0, sizeof(darktable_t));
 
   darktable.start_wtime = start_wtime;
-  if(!sse2_supported)
-    dt_print
-      (DT_DEBUG_ALWAYS,
-       "[dt_init] SSE2 is unavailable, some functions will be noticeably slower.\n");
 
   darktable.progname = argv[0];
 
@@ -629,122 +852,12 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
       {
         return usage(argv[0]);
       }
-      else if(!strcmp(argv[k], "--version"))
+
+      else if(!strcmp(argv[k], "--version") || !strcmp(argv[k], "-v"))
       {
-#ifdef USE_LUA
-        const char *lua_api_version = strcmp(LUA_API_VERSION_SUFFIX, "") ?
-                                      STR(LUA_API_VERSION_MAJOR) "."
-                                      STR(LUA_API_VERSION_MINOR) "."
-                                      STR(LUA_API_VERSION_PATCH) "-"
-                                      LUA_API_VERSION_SUFFIX :
-                                      STR(LUA_API_VERSION_MAJOR) "."
-                                      STR(LUA_API_VERSION_MINOR) "."
-                                      STR(LUA_API_VERSION_PATCH);
-#endif
-        printf("this is %s\ncopyright (c) 2009-%s johannes hanika\n" PACKAGE_BUGREPORT "\n\ncompile options:\n"
-               "  bit depth is %zu bit\n"
-#ifdef _DEBUG
-               "  debug build\n"
-#else
-               "  normal build\n"
-#endif
-#if defined(__SSE2__) && defined(__SSE__)
-               "  SSE2 optimized codepath enabled\n"
-#else
-               "  SSE2 optimized codepath disabled\n"
-#endif
-#ifdef _OPENMP
-               "  OpenMP support enabled\n"
-#else
-               "  OpenMP support disabled\n"
-#endif
-
-#ifdef HAVE_OPENCL
-               "  OpenCL support enabled\n"
-#else
-               "  OpenCL support disabled\n"
-#endif
-
-#ifdef USE_LUA
-               "  Lua support enabled, API version %s\n"
-#else
-               "  Lua support disabled\n"
-#endif
-
-#ifdef USE_COLORDGTK
-               "  Colord support enabled\n"
-#else
-               "  Colord support disabled\n"
-#endif
-
-#ifdef HAVE_GPHOTO2
-               "  gPhoto2 support enabled\n"
-#else
-               "  gPhoto2 support disabled\n"
-#endif
-
-#ifdef HAVE_GMIC
-               "  G'MIC support enabled (compressed LUTs will be supported)\n"
-#else
-               "  G'MIC support disabled (compressed LUTs will not be supported)\n"
-#endif
-
-#ifdef HAVE_GRAPHICSMAGICK
-               "  GraphicsMagick support enabled\n"
-#else
-               "  GraphicsMagick support disabled\n"
-#endif
-
-#ifdef HAVE_IMAGEMAGICK
-               "  ImageMagick support enabled\n"
-#else
-               "  ImageMagick support disabled\n"
-#endif
-
-#ifdef HAVE_LIBAVIF
-               "  libavif support enabled\n"
-#else
-               "  libavif support disabled\n"
-#endif
-
-#ifdef HAVE_LIBHEIF
-               "  libheif support enabled\n"
-#else
-               "  libheif support disabled\n"
-#endif
-
-#ifdef HAVE_LIBJXL
-               "  libjxl support enabled\n"
-#else
-               "  libjxl support disabled\n"
-#endif
-
-#ifdef HAVE_OPENJPEG
-               "  OpenJPEG support enabled\n"
-#else
-               "  OpenJPEG support disabled\n"
-#endif
-
-#ifdef HAVE_OPENEXR
-               "  OpenEXR support enabled\n"
-#else
-               "  OpenEXR support disabled\n"
-#endif
-
-#ifdef HAVE_WEBP
-               "  WebP support enabled\n"
-#else
-               "  WebP support disabled\n"
-#endif
-               ,
-               darktable_package_string,
-               darktable_last_commit_year,
-               CHAR_BIT * sizeof(void *)
-#if USE_LUA
-                   ,
-               lua_api_version
-#endif
-               );
+        char *theversion = _get_version_string();
+        printf("%s", theversion);
+        g_free(theversion);
         return 1;
       }
       else if(!strcmp(argv[k], "--dump-pfm") && argc > k + 1)
@@ -1063,6 +1176,13 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     }
   }
 
+  if(darktable.unmuted)
+  {
+    char *theversion = _get_version_string();
+    dt_print_nts(DT_DEBUG_ALWAYS, "%s\n", theversion);
+    g_free(theversion);
+  }
+
   if(darktable.dump_pfm_module || darktable.dump_pfm_pipe)
   {
     if(darktable.tmp_directory == NULL)
@@ -1250,6 +1370,8 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
     return 1;
   }
 
+  dt_upgrade_maker_model(darktable.db);
+
   // init darktable tags table
   dt_set_darktable_tags();
 
@@ -1273,7 +1395,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   {
     if(dbfilename_from_command && !strcmp(dbfilename_from_command, ":memory:"))
       dt_gui_presets_init(); // init preset db schema.
-    darktable.control->running = 0;
+    darktable.control->running = FALSE;
     dt_pthread_mutex_init(&darktable.control->run_mutex, NULL);
     dt_pthread_mutex_init(&darktable.control->log_mutex, NULL);
   }
@@ -1539,7 +1661,7 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
       not_again = dt_gui_show_standalone_yes_no_dialog
         (_("configuration information"),
          config_info,
-         _("show this information again"), _("understood"));
+         _("_show this information again"), _("_understood"));
 
     if(not_again || (last_configure_version == 0))
       dt_conf_set_int("performance_configuration_version_completed",
@@ -1547,12 +1669,31 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   }
   free(config_info);
 
-  // last but not least construct the popup that asks the user about
-  // images whose xmp files are newer than the db entry
-  if(init_gui && changed_xmp_files)
+  if(init_gui)
   {
-    dt_control_crawler_show_image_list(changed_xmp_files);
+    // don't write thumbs if using memory database or on a non-sufficient system
+    if(!(dbfilename_from_command && !strcmp(dbfilename_from_command, ":memory:"))
+        && (dt_get_num_procs() >= 4)
+        && (darktable.dtresources.total_memory / 1024lu / 1024lu >= 8000))
+      dt_control_add_job(darktable.control, DT_JOB_QUEUE_SYSTEM_BG,
+                       _backthumbs_job_create());
+
+    // last but not least construct the popup that asks the user about
+    // images whose xmp files are newer than the db entry
+    if(changed_xmp_files)
+      dt_control_crawler_show_image_list(changed_xmp_files);
   }
+
+#if defined(WIN32)
+  dt_capabilities_add("windows");
+  dt_capabilities_add("nonapple");
+#elif defined(__APPLE__)
+  dt_capabilities_add("apple");
+#else
+  dt_capabilities_add("linux");
+  dt_capabilities_add("nonapple");
+#endif
+
 
   dt_print(DT_DEBUG_CONTROL,
            "[dt_init] startup took %f seconds\n", dt_get_wtime() - start_wtime);
@@ -1560,13 +1701,14 @@ int dt_init(int argc, char *argv[], const gboolean init_gui, const gboolean load
   return 0;
 }
 
+
 void dt_get_sysresource_level()
 {
   static int oldlevel = -999;
-  static int oldtunecl = -999;
+  static int oldtunehead = -999;
 
   dt_sys_resources_t *res = &darktable.dtresources;
-  const int tunecl = dt_opencl_get_tuning_mode();
+  const gboolean tunehead = dt_conf_get_bool("opencl_tune_headroom");
   int level = 1;
   const char *config = dt_conf_get_string_const("resourcelevel");
   /** These levels must correspond with preferences in xml.in
@@ -1587,10 +1729,10 @@ void dt_get_sysresource_level()
     else if(!strcmp(config, "mini"))         level = -2;
     else if(!strcmp(config, "notebook"))     level = -3;
   }
-  const gboolean mod = ((level != oldlevel) || (oldtunecl != tunecl));
+  const gboolean mod = ((level != oldlevel) || (oldtunehead != tunehead));
   res->level = oldlevel = level;
-  oldtunecl = tunecl;
-  res->tunemode = tunecl;
+  oldtunehead = tunehead;
+  res->tunehead = tunehead;
   if(mod && (darktable.unmuted & (DT_DEBUG_MEMORY | DT_DEBUG_OPENCL | DT_DEBUG_DEV)))
   {
     const int oldgrp = res->group;
@@ -1610,14 +1752,7 @@ void dt_get_sysresource_level()
     dt_print(DT_DEBUG_ALWAYS,
              "  singlebuff:      %luMB\n",
              dt_get_singlebuffer_mem() / 1024lu / 1024lu);
-#ifdef HAVE_OPENCL
-    dt_print(DT_DEBUG_ALWAYS,
-             "  OpenCL tune mem: %s\n",
-             ((tunecl & DT_OPENCL_TUNE_MEMSIZE) && (level >= 0)) ? "WANTED" : "OFF");
-    dt_print(DT_DEBUG_ALWAYS,
-             "  OpenCL pinned:   %s\n",
-             ((tunecl & DT_OPENCL_TUNE_PINNED) && (level >= 0)) ? "WANTED" : "OFF");
-#endif
+
     res->group = oldgrp;
   }
 }
@@ -1625,7 +1760,7 @@ void dt_get_sysresource_level()
 void dt_cleanup()
 {
   const int init_gui = (darktable.gui != NULL);
-
+  darktable.backthumbs.running = FALSE;
   // last chance to ask user for any input...
 
   const gboolean perform_maintenance = dt_database_maybe_maintenance(darktable.db);
@@ -1905,9 +2040,9 @@ void dt_show_times_f(const dt_times_t *start,
 
 int dt_worker_threads()
 {
-  const size_t threads = dt_get_num_threads();
-  const size_t mem = _get_total_memory();
-  const int wthreads = (mem >= (8lu << 20) && threads >= 4) ? 4 : MIN(2, threads);
+  const int threads = dt_get_num_threads();
+  const int gbytes = (int)(_get_total_memory() / (1lu << 20));
+  const int wthreads = (gbytes >= 8 && threads >= 4) ? 6 : 3;
   dt_print(DT_DEBUG_DEV, "[dt_worker_threads] using %i worker threads\n", wthreads);
   return wthreads;
 }
@@ -2019,9 +2154,9 @@ void dt_configure_runtime_performance(const int old, char *info)
     g_strlcat(info, INFO_HEADER, DT_PERF_INFOSIZE);
     g_strlcat(info, _("some global config parameters relevant for OpenCL performance are not used any longer."), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n", DT_PERF_INFOSIZE);
-    g_strlcat(info, _("instead you will find 'per device' data in 'cl_device_v4_canonical-name'. content is:"), DT_PERF_INFOSIZE);
+    g_strlcat(info, _("instead you will find 'per device' data in 'cldevice_v5_canonical-name'. content is:"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n  ", DT_PERF_INFOSIZE);
-    g_strlcat(info, _(" 'avoid_atomics' 'micro_nap' 'pinned_memory' 'roundupwd' 'roundupht' 'eventhandles' 'async' 'disable' 'magic'"), DT_PERF_INFOSIZE);
+    g_strlcat(info, _(" 'avoid_atomics' 'micro_nap' 'pinned_memory' 'roundupwd' 'roundupht' 'eventhandles' 'async' 'disable' 'magic' 'advantage' 'unified'"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n", DT_PERF_INFOSIZE);
     g_strlcat(info, _("you may tune as before except 'magic'"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n\n", DT_PERF_INFOSIZE);
@@ -2033,14 +2168,14 @@ void dt_configure_runtime_performance(const int old, char *info)
     g_strlcat(info, "\n\n", DT_PERF_INFOSIZE);
   }
 
-  if(old < 14)
+  else if(old < 14)
   {
     g_strlcat(info, INFO_HEADER, DT_PERF_INFOSIZE);
     g_strlcat(info, _("OpenCL global config parameters 'per device' data has been recreated with an updated name."), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n", DT_PERF_INFOSIZE);
-    g_strlcat(info, _("you will find 'per device' data in 'cl_device_v5_canonical-name'. content is:"), DT_PERF_INFOSIZE);
+    g_strlcat(info, _("you will find 'per device' data in 'cldevice_v5_canonical-name'. content is:"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n  ", DT_PERF_INFOSIZE);
-    g_strlcat(info, _(" 'avoid_atomics' 'micro_nap' 'pinned_memory' 'roundupwd' 'roundupht' 'eventhandles' 'async' 'disable' 'magic'"), DT_PERF_INFOSIZE);
+    g_strlcat(info, _(" 'avoid_atomics' 'micro_nap' 'pinned_memory' 'roundupwd' 'roundupht' 'eventhandles' 'async' 'disable' 'magic' 'advantage' 'unified'"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n", DT_PERF_INFOSIZE);
     g_strlcat(info, _("you may tune as before except 'magic'"), DT_PERF_INFOSIZE);
     g_strlcat(info, "\n", DT_PERF_INFOSIZE);
@@ -2048,6 +2183,16 @@ void dt_configure_runtime_performance(const int old, char *info)
     g_strlcat(info, "\n\n", DT_PERF_INFOSIZE);
   }
 
+  else if(old < 15)
+  {
+    g_strlcat(info, INFO_HEADER, DT_PERF_INFOSIZE);
+    g_strlcat(info, _("OpenCL 'per device' config data have been automatically extended by 'unified-fraction'."), DT_PERF_INFOSIZE);
+    g_strlcat(info, "\n", DT_PERF_INFOSIZE);
+    g_strlcat(info, _("you will find 'per device' data in 'cldevice_v5_canonical-name'. content is:"), DT_PERF_INFOSIZE);
+    g_strlcat(info, "\n  ", DT_PERF_INFOSIZE);
+    g_strlcat(info, _(" 'avoid_atomics' 'micro_nap' 'pinned_memory' 'roundupwd' 'roundupht' 'eventhandles' 'async' 'disable' 'magic' 'advantage' 'unified'"), DT_PERF_INFOSIZE);
+    g_strlcat(info, "\n\n", DT_PERF_INFOSIZE);
+  }
   #undef INFO_HEADER
 }
 

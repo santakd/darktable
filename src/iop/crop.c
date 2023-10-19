@@ -93,7 +93,6 @@ typedef struct dt_iop_crop_gui_data_t
   GList *aspect_list;
   GtkWidget *aspect_presets;
 
-  float button_down_x, button_down_y;
   float button_down_zoom_x, button_down_zoom_y;
 
   /* current clip box */
@@ -393,15 +392,8 @@ int process_cl(struct dt_iop_module_t *self,
 {
   size_t origin[] = { 0, 0, 0 };
   size_t region[] = { roi_out->width, roi_out->height, 1 };
-  cl_int err = dt_opencl_enqueue_copy_image(piece->pipe->devid, dev_in, dev_out,
+  return dt_opencl_enqueue_copy_image(piece->pipe->devid, dev_in, dev_out,
                                             origin, origin, region);
-  if(err != CL_SUCCESS) goto error;
-
-  return TRUE;
-
-error:
-  dt_print(DT_DEBUG_OPENCL, "[opencl_crop] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
 }
 #endif
 
@@ -508,7 +500,7 @@ static float _aspect_ratio_get(dt_iop_module_t *self, GtkWidget *combo)
   if(text && !g_strcmp0(text, _("original image")))
   {
     int proc_iwd = 0, proc_iht = 0;
-    dt_dev_get_processed_size(darktable.develop, &proc_iwd, &proc_iht);
+    dt_dev_get_processed_size(&darktable.develop->full, &proc_iwd, &proc_iht);
 
     if(!(proc_iwd > 0 && proc_iht > 0)) return 0.0f;
 
@@ -638,7 +630,7 @@ static void _aspect_apply(dt_iop_module_t *self, _grab_region_t grab)
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
 
   int iwd, iht;
-  dt_dev_get_processed_size(darktable.develop, &iwd, &iht);
+  dt_dev_get_processed_size(&darktable.develop->full, &iwd, &iht);
 
   // enforce aspect ratio.
   float aspect = _aspect_ratio_get(self, g->aspect_presets);
@@ -1331,12 +1323,13 @@ static _grab_region_t _gui_get_grab(float pzx,
 }
 
 // draw guides and handles over the image
-void gui_post_expose(struct dt_iop_module_t *self,
+void gui_post_expose(dt_iop_module_t *self,
                      cairo_t *cr,
-                     int32_t width,
-                     int32_t height,
-                     int32_t pointerx,
-                     int32_t pointery)
+                     const int32_t width,
+                     const int32_t height,
+                     const float pzx,
+                     const float pzy,
+                     const float zoom_scale)
 {
   dt_develop_t *dev = self->dev;
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
@@ -1345,6 +1338,7 @@ void gui_post_expose(struct dt_iop_module_t *self,
   const gboolean external = dev->cropping.exposer
                         &&  dev->cropping.requester
                         && (dev->cropping.exposer != dev->cropping.requester);
+  const gboolean dimmed = dt_iop_color_picker_is_visible(dev) || external;
 
   // we don't do anything if the image is not ready within crop module
   // and we don't have visualizing enforced by other modules
@@ -1354,27 +1348,13 @@ void gui_post_expose(struct dt_iop_module_t *self,
 
   const float wd = dev->preview_pipe->backbuf_width;
   const float ht = dev->preview_pipe->backbuf_height;
-  const float zoom_y = dt_control_get_dev_zoom_y();
-  const float zoom_x = dt_control_get_dev_zoom_x();
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1 << closeup, 1);
-
-  cairo_translate(cr, width / 2.0, height / 2.0);
-  cairo_scale(cr, zoom_scale, zoom_scale);
-  cairo_translate(cr, -.5f * wd - zoom_x * wd, -.5f * ht - zoom_y * ht);
 
   // draw cropping window
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(dev, pointerx, pointery, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
+  const double fillc = dimmed ? 0.9 : 0.2;
+  const double dashes = (dimmed ? 0.3 : 0.5) * DT_PIXEL_APPLY_DPI(5.0) / zoom_scale;
+  const double effect = dimmed ? 0.6 : 1.0;
 
-  const double fillc = external ? 0.9 : 0.2;
-  const double dashes = (external ? 0.3 : 0.5) * DT_PIXEL_APPLY_DPI(5.0) / zoom_scale;
-  const double effect = external ? 0.6 : 1.0;
-
-  if(_set_max_clip(self) && !external)
+  if(_set_max_clip(self) && !dimmed)
   {
     cairo_set_source_rgba(cr, fillc, fillc, fillc, 1.0 - fillc);
     cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
@@ -1393,7 +1373,7 @@ void gui_post_expose(struct dt_iop_module_t *self,
     cairo_stroke(cr);
   }
 
-  if(external) return;
+  if(dimmed) return;
 
   // draw cropping window dimensions if first mouse button is pressed
   if(darktable.control->button_down && darktable.control->button_down_which == 1)
@@ -1412,7 +1392,7 @@ void gui_post_expose(struct dt_iop_module_t *self,
     pango_layout_set_font_description(layout, desc);
 
     int procw, proch;
-    dt_dev_get_processed_size(dev, &procw, &proch);
+    dt_dev_get_processed_size(&dev->full, &procw, &proch);
     snprintf(dimensions, sizeof(dimensions),
              "%i x %i", (int)(procw * g->clip_w), (int)(proch * g->clip_h));
 
@@ -1495,11 +1475,12 @@ void gui_post_expose(struct dt_iop_module_t *self,
   cairo_stroke(cr);
 }
 
-int mouse_moved(struct dt_iop_module_t *self,
-                double x,
-                double y,
-                double pressure,
-                int which)
+int mouse_moved(dt_iop_module_t *self,
+                const float pzx,
+                const float pzy,
+                const double pressure,
+                const int which,
+                const float zoom_scale)
 {
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
 
@@ -1508,13 +1489,6 @@ int mouse_moved(struct dt_iop_module_t *self,
 
   const float wd = self->dev->preview_pipe->backbuf_width;
   const float ht = self->dev->preview_pipe->backbuf_height;
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(self->dev, zoom, 1 << closeup, 1);
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(self->dev, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
 
   const _grab_region_t grab =
     _gui_get_grab(pzx, pzy, g, DT_PIXEL_APPLY_DPI(30.0) / zoom_scale, wd, ht);
@@ -1525,8 +1499,8 @@ int mouse_moved(struct dt_iop_module_t *self,
   {
     // draw a light gray frame, to show it's not stored yet:
     // first mouse button, adjust cropping frame, but what do we do?
-    const float bzx = g->button_down_zoom_x + .5f;
-    const float bzy = g->button_down_zoom_y + .5f;
+    const float bzx = g->button_down_zoom_x;
+    const float bzy = g->button_down_zoom_y;
 
     if(g->cropping == GRAB_ALL)
     {
@@ -1690,11 +1664,12 @@ int mouse_moved(struct dt_iop_module_t *self,
   return 0;
 }
 
-int button_released(struct dt_iop_module_t *self,
-                    double x,
-                    double y,
-                    int which,
-                    uint32_t state)
+int button_released(dt_iop_module_t *self,
+                    const float x,
+                    const float y,
+                    const int which,
+                    const uint32_t state,
+                    const float zoom_scale)
 {
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
   dt_iop_crop_params_t *p = (dt_iop_crop_params_t *)self->params;
@@ -1713,13 +1688,14 @@ int button_released(struct dt_iop_module_t *self,
   return 1;
 }
 
-int button_pressed(struct dt_iop_module_t *self,
-                   double x,
-                   double y,
-                   double pressure,
-                   int which,
-                   int type,
-                   uint32_t state)
+int button_pressed(dt_iop_module_t *self,
+                   const float bzx,
+                   const float bzy,
+                   const double pressure,
+                   const int which,
+                   const int type,
+                   const uint32_t state,
+                   const float zoom_scale)
 {
   dt_iop_crop_gui_data_t *g = (dt_iop_crop_gui_data_t *)self->gui_data;
   // we don't do anything if the image is not ready
@@ -1734,22 +1710,13 @@ int button_pressed(struct dt_iop_module_t *self,
   {
     const float wd = self->dev->preview_pipe->backbuf_width;
     const float ht = self->dev->preview_pipe->backbuf_height;
-    const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-    const int closeup = dt_control_get_dev_closeup();
-    const float zoom_scale = dt_dev_get_zoom_scale(self->dev, zoom, 1 << closeup, 1);
-
-    float pzx, pzy;
-    dt_dev_get_pointer_zoom_pos(self->dev, x, y, &pzx, &pzy);
 
     // switch module on already, other code depends in this:
     if(!self->enabled)
       dt_dev_add_history_item(darktable.develop, self, TRUE);
 
-    g->button_down_x = x;
-    g->button_down_y = y;
-
-    g->button_down_zoom_x = pzx;
-    g->button_down_zoom_y = pzy;
+    g->button_down_zoom_x = bzx;
+    g->button_down_zoom_y = bzy;
 
     /* update prev clip box with current */
     g->prev_clip_x = g->clip_x;
@@ -1762,9 +1729,6 @@ int button_pressed(struct dt_iop_module_t *self,
     if(dt_modifiers_include(state, GDK_CONTROL_MASK)) g->ctrl_hold = TRUE;
 
     /* store grabbed area */
-
-    const float bzx = pzx + .5f;
-    const float bzy = pzy + .5f;
 
     g->cropping = _gui_get_grab(bzx, bzy, g, DT_PIXEL_APPLY_DPI(30.0) / zoom_scale, wd, ht);
 

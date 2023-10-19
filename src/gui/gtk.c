@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #include "common/darktable.h"
 #ifdef HAVE_GPHOTO2
 #include "common/camera_control.h"
@@ -44,6 +45,8 @@
 #include "control/signal.h"
 #include "gui/presets.h"
 #include "views/view.h"
+#include "gui/about.h"
+#include "gui/preferences.h"
 
 #include <gdk/gdkkeysyms.h>
 #ifdef GDK_WINDOWING_WAYLAND
@@ -151,9 +154,9 @@ static void _init_main_table(GtkWidget *container);
 static void _fullscreen_key_accel_callback(dt_action_t *action)
 {
   GtkWidget *widget = darktable.develop &&
-                      darktable.develop->second_window.second_wnd &&
-                      gtk_window_is_active(GTK_WINDOW(darktable.develop->second_window.second_wnd))
-                    ? darktable.develop->second_window.second_wnd
+                      darktable.develop->second_wnd &&
+                      gtk_window_is_active(GTK_WINDOW(darktable.develop->second_wnd))
+                    ? darktable.develop->second_wnd
                     : dt_ui_main_window(darktable.gui->ui);
 
   if(gdk_window_get_state(gtk_widget_get_window(widget)) & GDK_WINDOW_STATE_FULLSCREEN)
@@ -478,6 +481,7 @@ gboolean dt_gui_get_scroll_deltas(const GdkEventScroll *event, gdouble *delta_x,
 #endif
         handled = TRUE;
       }
+      break;
     default:
       break;
     }
@@ -716,8 +720,8 @@ static gboolean _scrollbar_changed(GtkWidget *widget, gpointer user_data)
   GtkAdjustment *adjustment_x = gtk_range_get_adjustment(GTK_RANGE(darktable.gui->scrollbars.hscrollbar));
   GtkAdjustment *adjustment_y = gtk_range_get_adjustment(GTK_RANGE(darktable.gui->scrollbars.vscrollbar));
 
-  const gdouble value_x = gtk_adjustment_get_value (adjustment_x);
-  const gdouble value_y = gtk_adjustment_get_value (adjustment_y);
+  const gdouble value_x = gtk_adjustment_get_value(adjustment_x);
+  const gdouble value_y = gtk_adjustment_get_value(adjustment_y);
 
   dt_view_manager_scrollbar_changed(darktable.view_manager, value_x, value_y);
 
@@ -833,7 +837,9 @@ void dt_gui_gtk_quit()
 
 gboolean dt_gui_quit_callback(GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
-  if(dt_view_lighttable_preview_state(darktable.view_manager))
+  // if we are in lighttable preview mode, then just exit preview instead of closing dt
+  if(dt_view_get_current() == DT_VIEW_LIGHTTABLE
+      && dt_view_lighttable_preview_state(darktable.view_manager))
     dt_view_lighttable_set_preview_state(darktable.view_manager, FALSE, FALSE, FALSE);
   else
     dt_control_quit();
@@ -956,7 +962,7 @@ static gboolean _button_pressed(GtkWidget *w, GdkEventButton *event, gpointer us
 
   if(device && gdk_device_get_source(device) == GDK_SOURCE_PEN)
   {
-    gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure);
+    gdk_event_get_axis((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure);
   }
   dt_control_button_pressed(event->x, event->y, pressure, event->button, event->type, event->state & 0xf);
   gtk_widget_grab_focus(w);
@@ -978,7 +984,7 @@ static gboolean _mouse_moved(GtkWidget *w, GdkEventMotion *event, dt_gui_gtk_t *
 
   if(device && gdk_device_get_source(device) == GDK_SOURCE_PEN)
   {
-    gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure);
+    gdk_event_get_axis((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure);
     gui->have_pen_pressure = pressure != 1.0;
   }
   dt_control_mouse_moved(event->x, event->y, pressure, event->state & 0xf);
@@ -1024,6 +1030,53 @@ static const char* _get_axis_name(int pos)
   return AXIS_NAMES[pos];
 }
 
+void dt_open_url(const char* url)
+{
+  GError *error = NULL;
+  GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
+
+// TODO: call the web browser directly so that file:// style base for local installs works
+  const gboolean uri_success = gtk_show_uri_on_window(GTK_WINDOW(win),
+                                                      url,
+                                                      gtk_get_current_event_time(),
+                                                      &error);
+
+  if(uri_success)
+  {
+    dt_control_log(_("URL opened in web browser"));
+  }
+  else
+  {
+    dt_control_log(_("error while opening URL in web browser"));
+    if(error != NULL) // uri_success being FALSE should guarantee that
+    {
+      dt_print(DT_DEBUG_ALWAYS, "unable to read file: %s\n", error->message);
+      g_error_free(error);
+    }
+  }
+}
+
+#ifdef MAC_INTEGRATION
+static void _osx_ctl_switch_mode_to(GtkWidget *mi, gpointer mode)
+{
+  dt_ctl_switch_mode_to((const char*) mode);
+}
+
+static void _osx_add_view_menu_item(GtkWidget* menu, const char* label, gpointer mode)
+{
+  GtkWidget *mi = gtk_menu_item_new_with_label(label);
+  gtk_menu_shell_append(GTK_MENU_SHELL (menu), mi);
+  gtk_widget_show(mi);
+  g_signal_connect(G_OBJECT(mi), "activate",
+                   G_CALLBACK(_osx_ctl_switch_mode_to), mode);
+}
+
+static void _open_url(GtkWidget *widget, gpointer url)
+{
+  dt_open_url((const char *) url);
+}
+#endif
+
 int dt_gui_gtk_init(dt_gui_gtk_t *gui)
 {
   /* lets zero mem */
@@ -1060,8 +1113,73 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
       OSXApp, GTK_MENU_SHELL(gtk_menu_bar_new())); // needed for default entries to show up
 #else
   GtkosxApplication *OSXApp = g_object_new(GTKOSX_TYPE_APPLICATION, NULL);
-  gtkosx_application_set_menu_bar(
-      OSXApp, GTK_MENU_SHELL(gtk_menu_bar_new())); // needed for default entries to show up
+
+  // View menu
+  GtkWidget *view_root_menu = gtk_menu_item_new_with_label(C_("menu", "Views"));
+  gtk_widget_show(view_root_menu);
+
+  GtkWidget *view_menu = gtk_menu_new();
+  _osx_add_view_menu_item(view_menu, C_("menu", "lighttable"), "lighttable");
+  _osx_add_view_menu_item(view_menu, C_("menu", "darkroom"), "darkroom");
+
+  GtkWidget *sep = gtk_separator_menu_item_new();
+  gtk_menu_shell_append(GTK_MENU_SHELL (view_menu), sep);
+  gtk_widget_show(sep);
+
+  _osx_add_view_menu_item(view_menu, C_("menu", "slideshow"), "slideshow");
+#ifdef HAVE_MAP
+  _osx_add_view_menu_item(view_menu, C_("menu", "map"), "map");
+#endif
+  _osx_add_view_menu_item(view_menu, C_("menu", "print"), "print");
+#ifdef HAVE_GPHOTO2
+  _osx_add_view_menu_item(view_menu, C_("menu", "tethering"), "tethering");
+#endif
+
+  gtk_menu_item_set_submenu(GTK_MENU_ITEM (view_root_menu), view_menu);
+
+  // Help menu
+  GtkWidget *help_root_menu = gtk_menu_item_new_with_label(C_("menu", "Help"));
+  gtk_widget_show(help_root_menu);
+
+  GtkWidget *help_menu = gtk_menu_new();
+  GtkWidget *help_manual = gtk_menu_item_new_with_label(C_("menu", "darktable Manual"));
+  gtk_menu_shell_append(GTK_MENU_SHELL (help_menu), help_manual);
+  gtk_widget_show(help_manual);
+  dt_gui_add_help_link(help_manual, "document_root");
+  g_signal_connect(G_OBJECT(help_manual), "activate",
+                   G_CALLBACK(dt_gui_show_help), help_manual);
+
+  GtkWidget *help_home = gtk_menu_item_new_with_label(C_("menu", "darktable Homepage"));
+  gtk_menu_shell_append(GTK_MENU_SHELL (help_menu), help_home);
+  gtk_widget_show(help_home);
+  g_signal_connect(G_OBJECT(help_home), "activate",
+                   G_CALLBACK(_open_url), "https://www.darktable.org");
+
+  gtk_menu_item_set_submenu(GTK_MENU_ITEM (help_root_menu), help_menu);
+
+  // build the menu bar
+  GtkWidget *menu_bar = gtk_menu_bar_new();
+  gtk_widget_show(menu_bar);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), view_root_menu);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), help_root_menu);
+
+  gtkosx_application_set_menu_bar(OSXApp, GTK_MENU_SHELL(menu_bar));
+
+  // Now the application menu (first item)
+  // GTK automatically translates the item with index 0 so no need to localize.
+  // Furthermore, the application name (darktable) is automatically appended.
+  GtkWidget *mi_about = gtk_menu_item_new_with_label("About");
+  g_signal_connect(G_OBJECT(mi_about), "activate",
+                   G_CALLBACK(darktable_show_about_dialog), NULL);
+  gtkosx_application_insert_app_menu_item(OSXApp, mi_about, 0);
+
+  GtkWidget *mi_prefs = gtk_menu_item_new_with_label(C_("menu", "Preferences"));
+  g_signal_connect(G_OBJECT(mi_prefs), "activate",
+                   G_CALLBACK(dt_gui_preferences_show), NULL);
+  gtkosx_application_insert_app_menu_item(OSXApp, mi_prefs, 1);
+
+  gtkosx_application_set_help_menu(OSXApp, GTK_MENU_ITEM(help_root_menu));
+
 #endif
   g_signal_connect(G_OBJECT(OSXApp), "NSApplicationBlockTermination", G_CALLBACK(_osx_quit_callback), NULL);
   g_signal_connect(G_OBJECT(OSXApp), "NSApplicationOpenFile", G_CALLBACK(_osx_openfile_callback), NULL);
@@ -1888,7 +2006,10 @@ void dt_ui_panel_set_size(dt_ui_t *ui, const dt_ui_panel_t p, int s)
 
   if(p == DT_UI_PANEL_LEFT || p == DT_UI_PANEL_RIGHT || p == DT_UI_PANEL_BOTTOM)
   {
-    gtk_widget_set_size_request(ui->panels[p], s, -1);
+    if(p == DT_UI_PANEL_BOTTOM)
+      gtk_widget_set_size_request(ui->panels[p], -1, s);
+    else
+      gtk_widget_set_size_request(ui->panels[p], s, -1);
     key = _panels_get_panel_path(p, "_size");
     dt_conf_set_int(key, s);
     g_free(key);
@@ -2034,29 +2155,23 @@ static gboolean _panel_handle_motion_callback(GtkWidget *w, GdkEventMotion *e, g
   {
     gint sx = gtk_widget_get_allocated_width(widget), sy = gtk_widget_get_allocated_height(widget);
 
-    // conf entry to store the new size
-    gchar *key = NULL;
     if(strcmp(gtk_widget_get_name(w), "panel-handle-right") == 0)
     {
       sx += darktable.gui->widgets.panel_handle_x - e->x;
-      key = _panels_get_panel_path(DT_UI_PANEL_RIGHT, "_size");
+      dt_ui_panel_set_size(darktable.gui->ui, DT_UI_PANEL_RIGHT, sx);
     }
     else if(strcmp(gtk_widget_get_name(w), "panel-handle-left") == 0)
     {
       sx -= darktable.gui->widgets.panel_handle_x - e->x;
-      key = _panels_get_panel_path(DT_UI_PANEL_LEFT, "_size");
+      dt_ui_panel_set_size(darktable.gui->ui, DT_UI_PANEL_LEFT, sx);
     }
     else if(strcmp(gtk_widget_get_name(w), "panel-handle-bottom") == 0)
     {
       sx = CLAMP((sy + darktable.gui->widgets.panel_handle_y - e->y), dt_conf_get_int("min_panel_height"),
                  dt_conf_get_int("max_panel_height"));
-      key = _panels_get_panel_path(DT_UI_PANEL_BOTTOM, "_size");
+      dt_ui_panel_set_size(darktable.gui->ui, DT_UI_PANEL_BOTTOM, sx);
       gtk_widget_set_size_request(widget, -1, sx);
     }
-
-    // we store and apply the new value
-    dt_conf_set_int(key, sx);
-    g_free(key);
 
     gtk_widget_queue_resize(widget);
     return TRUE;
@@ -2408,7 +2523,7 @@ gboolean dt_gui_show_standalone_yes_no_dialog(const char *title, const char *mar
 
   if(no_text)
   {
-    button = gtk_button_new_with_label(no_text);
+    button = gtk_button_new_with_mnemonic(no_text);
     result.button_no = button;
     g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_yes_no_button_handler), &result);
     gtk_box_pack_start(GTK_BOX(hbox), button, TRUE, TRUE, 0);
@@ -2416,7 +2531,7 @@ gboolean dt_gui_show_standalone_yes_no_dialog(const char *title, const char *mar
 
   if(yes_text)
   {
-    button = gtk_button_new_with_label(yes_text);
+    button = gtk_button_new_with_mnemonic(yes_text);
     result.button_yes = button;
     g_signal_connect(G_OBJECT(button), "clicked", G_CALLBACK(_yes_no_button_handler), &result);
     gtk_box_pack_start(GTK_BOX(hbox), button, TRUE, TRUE, 0);
@@ -2603,7 +2718,6 @@ void dt_gui_show_help(GtkWidget *widget)
   gchar *help_url = dt_gui_get_help_url(widget);
   if(help_url && *help_url)
   {
-    GtkWidget *win = dt_ui_main_window(darktable.gui->ui);
     dt_print(DT_DEBUG_CONTROL, "[context help] opening `%s'\n", help_url);
     char *base_url = _get_base_url();
 
@@ -2652,7 +2766,6 @@ void dt_gui_show_help(GtkWidget *widget)
     if(base_url)
     {
       char *lang = "en";
-      GError *error = NULL;
 
       // array of languages the usermanual supports.
       // NULL MUST remain the last element of the array
@@ -2702,23 +2815,10 @@ void dt_gui_show_help(GtkWidget *widget)
 
       char *url = g_build_path("/", base_url, supported_languages[lang_index], help_url, NULL);
 
-      // TODO: call the web browser directly so that file:// style base for local installs works
-      const gboolean uri_success = gtk_show_uri_on_window(GTK_WINDOW(win), url, gtk_get_current_event_time(), &error);
+      dt_open_url(url);
+
       g_free(base_url);
       g_free(url);
-      if(uri_success)
-      {
-        dt_control_log(_("help url opened in web browser"));
-      }
-      else
-      {
-        dt_control_log(_("error while opening help url in web browser"));
-        if(error != NULL) // uri_success being FALSE should guarantee that
-        {
-          fprintf (stderr, "unable to read file: %s\n", error->message);
-          g_error_free (error);
-        }
-      }
     }
   }
   else
@@ -3252,7 +3352,7 @@ static gboolean _resize_wrap_scroll(GtkScrolledWindow *sw, GdkEventScroll *event
 
   int delta_y = 0;
 
-  dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y);
+  dt_gui_get_scroll_unit_delta(event, &delta_y);
 
   if(dt_modifier_is(event->state, GDK_SHIFT_MASK | GDK_MOD1_MASK))
   {
@@ -3284,7 +3384,7 @@ static gboolean _scroll_wrap_aspect(GtkWidget *w, GdkEventScroll *event, const c
   if(dt_modifier_is(event->state, GDK_SHIFT_MASK | GDK_MOD1_MASK))
   {
     int delta_y;
-    if(dt_gui_get_scroll_unit_deltas(event, NULL, &delta_y))
+    if(dt_gui_get_scroll_unit_delta(event, &delta_y))
     {
       //adjust aspect
       const int aspect = dt_conf_get_int(config_str);
@@ -3541,14 +3641,16 @@ static void _collapse_button_changed(GtkDarktableToggleButton *widget, gpointer 
   dt_conf_set_bool(cs->confname, active);
 }
 
-static void _collapse_expander_click(GtkWidget *widget, GdkEventButton *e, gpointer user_data)
+static gboolean _collapse_expander_click(GtkWidget *widget, GdkEventButton *e, gpointer user_data)
 {
-  if(e->type == GDK_2BUTTON_PRESS || e->type == GDK_3BUTTON_PRESS) return;
+  if(e->button != 1) return FALSE;
 
   dt_gui_collapsible_section_t *cs = (dt_gui_collapsible_section_t *)user_data;
 
   const gboolean active = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(cs->toggle));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cs->toggle), !active);
+
+  return TRUE;
 }
 
 void dt_gui_update_collapsible_section(dt_gui_collapsible_section_t *cs)
@@ -3605,7 +3707,7 @@ void dt_gui_new_collapsible_section(dt_gui_collapsible_section_t *cs,
   g_signal_connect(G_OBJECT(cs->toggle), "toggled",
                    G_CALLBACK(_collapse_button_changed), cs);
 
-  g_signal_connect(G_OBJECT(header_evb), "button-release-event",
+  g_signal_connect(G_OBJECT(header_evb), "button-press-event",
                    G_CALLBACK(_collapse_expander_click), cs);
 }
 

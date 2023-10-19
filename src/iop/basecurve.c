@@ -126,6 +126,7 @@ int legacy_params(dt_iop_module_t *self,
     n->exposure_bias = 1.0;
     n->preserve_colors = DT_RGB_NORM_NONE;
 
+    *new_params = n;
     *new_params_size = sizeof(dt_iop_basecurve_params_v6_t);
     *new_version = 6;
     return 0;
@@ -150,6 +151,10 @@ int legacy_params(dt_iop_module_t *self,
     n->exposure_stops = 1;
     n->exposure_bias = 1.0;
     n->preserve_colors = DT_RGB_NORM_NONE;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_basecurve_params_v6_t);
+    *new_version = 6;
     return 0;
   }
   if(old_version == 3)
@@ -174,6 +179,7 @@ int legacy_params(dt_iop_module_t *self,
     n->exposure_bias = 1.0;
     n->preserve_colors = DT_RGB_NORM_NONE;
 
+    *new_params = n;
     *new_params_size = sizeof(dt_iop_basecurve_params_v6_t);
     *new_version = 6;
     return 0;
@@ -200,6 +206,7 @@ int legacy_params(dt_iop_module_t *self,
     n->exposure_bias = 1.0;
     n->preserve_colors = DT_RGB_NORM_NONE;
 
+    *new_params = n;
     *new_params_size = sizeof(dt_iop_basecurve_params_v6_t);
     *new_version = 6;
     return 0;
@@ -224,6 +231,7 @@ int legacy_params(dt_iop_module_t *self,
     memcpy(n, o, sizeof(dt_iop_basecurve_params_v5_t));
     n->preserve_colors = DT_RGB_NORM_NONE;
 
+    *new_params = n;
     *new_params_size = sizeof(dt_iop_basecurve_params_v6_t);
     *new_version = 6;
     return 0;
@@ -899,25 +907,8 @@ int process_cl_fusion(struct dt_iop_module_t *self,
   }
 
   // copy output buffer
-  {
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_finalize, width, height,
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_finalize, width, height,
       CLARG(dev_in), CLARG(dev_comb[0]), CLARG(dev_out), CLARG(width), CLARG(height));
-    if(err != CL_SUCCESS) goto error;
-  }
-
-  for(int k = 0; k < num_levels_max; k++)
-  {
-    dt_opencl_release_mem_object(dev_col[k]);
-    dt_opencl_release_mem_object(dev_comb[k]);
-  }
-  dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
-  dt_opencl_release_mem_object(dev_m);
-  dt_opencl_release_mem_object(dev_coeffs);
-  dt_opencl_release_mem_object(dev_tmp1);
-  dt_opencl_release_mem_object(dev_tmp2);
-  free(dev_comb);
-  free(dev_col);
-  return TRUE;
 
 error:
   for(int k = 0; k < num_levels_max; k++)
@@ -932,8 +923,7 @@ error:
   dt_opencl_release_mem_object(dev_tmp2);
   free(dev_comb);
   free(dev_col);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_basecurve_fusion] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
+  return err;
 }
 
 static
@@ -985,7 +975,6 @@ int process_cl_lut(struct dt_iop_module_t *self,
     dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_legacy_lut, 0, CLARG(dev_in), CLARG(dev_out),
       CLARG(width), CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_legacy_lut, sizes);
-    if(err != CL_SUCCESS) goto error;
   }
   else
   {
@@ -994,20 +983,13 @@ int process_cl_lut(struct dt_iop_module_t *self,
       CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
       CLARG(dev_profile_lut), CLARG(use_work_profile));
     err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_lut, sizes);
-    if(err != CL_SUCCESS) goto error;
   }
-
-  dt_opencl_release_mem_object(dev_m);
-  dt_opencl_release_mem_object(dev_coeffs);
-  dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
-  return TRUE;
 
 error:
   dt_opencl_release_mem_object(dev_m);
   dt_opencl_release_mem_object(dev_coeffs);
   dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
-  dt_print(DT_DEBUG_OPENCL, "[opencl_basecurve_lut] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
+  return err;
 }
 
 int process_cl(struct dt_iop_module_t *self,

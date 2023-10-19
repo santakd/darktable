@@ -235,17 +235,17 @@ static void _rgblevels_show_hide_controls(dt_iop_rgblevels_params_t *p, dt_iop_r
     gtk_widget_set_visible(g->cmb_preserve_colors, FALSE);
 }
 
-int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressure, int which)
+int mouse_moved(dt_iop_module_t *self,
+                const float pzx,
+                const float pzy,
+                const double pressure,
+                const int which,
+                const float zoom_scale)
 {
   int handled = 0;
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
   if(g && g->draw_selected_region && g->button_down && self->enabled)
   {
-    float pzx, pzy;
-    dt_dev_get_pointer_zoom_pos(darktable.develop, x, y, &pzx, &pzy);
-    pzx += 0.5f;
-    pzy += 0.5f;
-
     g->posx_to = pzx * darktable.develop->preview_pipe->backbuf_width;
     g->posy_to = pzy * darktable.develop->preview_pipe->backbuf_height;
 
@@ -257,7 +257,12 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
   return handled;
 }
 
-int button_released(struct dt_iop_module_t *self, double x, double y, int which, uint32_t state)
+int button_released(dt_iop_module_t *self,
+                    const float x,
+                    const float y,
+                    const int which,
+                    const uint32_t state,
+                    const float zoom_scale)
 {
   int handled = 0;
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
@@ -289,8 +294,14 @@ int button_released(struct dt_iop_module_t *self, double x, double y, int which,
   return handled;
 }
 
-int button_pressed(struct dt_iop_module_t *self, double x, double y, double pressure, int which, int type,
-                   uint32_t state)
+int button_pressed(dt_iop_module_t *self,
+                   const float pzx,
+                   const float pzy,
+                   const double pressure,
+                   const int which,
+                   const int type,
+                   const uint32_t state,
+                   const float zoom_scale)
 {
   int handled = 0;
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
@@ -304,11 +315,6 @@ int button_pressed(struct dt_iop_module_t *self, double x, double y, double pres
     }
     else if(which == 1)
     {
-      float pzx, pzy;
-      dt_dev_get_pointer_zoom_pos(darktable.develop, x, y, &pzx, &pzy);
-      pzx += 0.5f;
-      pzy += 0.5f;
-
       g->posx_from = g->posx_to = pzx * darktable.develop->preview_pipe->backbuf_width;
       g->posy_from = g->posy_to = pzy * darktable.develop->preview_pipe->backbuf_height;
 
@@ -321,39 +327,26 @@ int button_pressed(struct dt_iop_module_t *self, double x, double y, double pres
   return handled;
 }
 
-void gui_post_expose(struct dt_iop_module_t *self,
+void gui_post_expose(dt_iop_module_t *self,
                      cairo_t *cr,
                      const int32_t width,
                      const int32_t height,
-                     const int32_t pointerx,
-                     const int32_t pointery)
+                     const float pointerx,
+                     const float pointery,
+                     const float zoom_scale)
 {
   dt_iop_rgblevels_gui_data_t *g = (dt_iop_rgblevels_gui_data_t *)self->gui_data;
   if(g == NULL || !self->enabled) return;
   if(!g->draw_selected_region || !g->button_down) return;
   if(g->posx_from == g->posx_to && g->posy_from == g->posy_to) return;
 
-  dt_develop_t *dev = darktable.develop;
-  const float wd = dev->preview_pipe->backbuf_width;
-  const float ht = dev->preview_pipe->backbuf_height;
-  const float zoom_y = dt_control_get_dev_zoom_y();
-  const float zoom_x = dt_control_get_dev_zoom_x();
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1 << closeup, 1);
-
   const float posx_from = fmin(g->posx_from, g->posx_to);
   const float posx_to = fmax(g->posx_from, g->posx_to);
   const float posy_from = fmin(g->posy_from, g->posy_to);
   const float posy_to = fmax(g->posy_from, g->posy_to);
 
-  cairo_save(cr);
   cairo_set_line_width(cr, 1.0 / zoom_scale);
   cairo_set_source_rgb(cr, .2, .2, .2);
-
-  cairo_translate(cr, width / 2.0, height / 2.0f);
-  cairo_scale(cr, zoom_scale, zoom_scale);
-  cairo_translate(cr, -.5f * wd - zoom_x * wd, -.5f * ht - zoom_y * ht);
 
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 
@@ -364,8 +357,6 @@ void gui_post_expose(struct dt_iop_module_t *self,
   cairo_rectangle(cr, posx_from + 1.0 / zoom_scale, posy_from, (posx_to - posx_from) - 3. / zoom_scale,
                   (posy_to - posy_from) - 2. / zoom_scale);
   cairo_stroke(cr);
-
-  cairo_restore(cr);
 }
 
 static gboolean _area_leave_notify_callback(GtkWidget *widget,
@@ -1525,21 +1516,18 @@ int process_cl(dt_iop_module_t *self,
   dev_lutr = dt_opencl_copy_host_to_device(devid, d->lut[0], 256, 256, sizeof(float));
   if(dev_lutr == NULL)
   {
-    dt_print(DT_DEBUG_ALWAYS, "[rgblevels process_cl] error allocating memory 1\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
   dev_lutg = dt_opencl_copy_host_to_device(devid, d->lut[1], 256, 256, sizeof(float));
   if(dev_lutg == NULL)
   {
-    dt_print(DT_DEBUG_ALWAYS, "[rgblevels process_cl] error allocating memory 2\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
   dev_lutb = dt_opencl_copy_host_to_device(devid, d->lut[2], 256, 256, sizeof(float));
   if(dev_lutb == NULL)
   {
-    dt_print(DT_DEBUG_ALWAYS, "[rgblevels process_cl] error allocating memory 3\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1548,7 +1536,6 @@ int process_cl(dt_iop_module_t *self,
     (devid, sizeof(float) * 3 * 3, (float *)d->params.levels);
   if(dev_levels == NULL)
   {
-    dt_print(DT_DEBUG_ALWAYS, "[rgblevels process_cl] error allocating memory 4\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1557,7 +1544,6 @@ int process_cl(dt_iop_module_t *self,
     (devid, sizeof(float) * 3, (float *)d->inv_gamma);
   if(dev_inv_gamma == NULL)
   {
-    dt_print(DT_DEBUG_ALWAYS, "[rgblevels process_cl] error allocating memory 5\n");
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
@@ -1574,29 +1560,18 @@ int process_cl(dt_iop_module_t *self,
      CLARG(dev_lutr), CLARG(dev_lutg), CLARG(dev_lutb),
      CLARG(dev_levels), CLARG(dev_inv_gamma), CLARG(dev_profile_info),
      CLARG(dev_profile_lut), CLARG(use_work_profile));
-  if(err != CL_SUCCESS)
-  {
-    dt_print(DT_DEBUG_ALWAYS,
-             "[rgblevels process_cl] error %i enqueue kernel\n", err);
-    goto cleanup;
-  }
 
 cleanup:
-  if(dev_lutr) dt_opencl_release_mem_object(dev_lutr);
-  if(dev_lutg) dt_opencl_release_mem_object(dev_lutg);
-  if(dev_lutb) dt_opencl_release_mem_object(dev_lutb);
-  if(dev_levels) dt_opencl_release_mem_object(dev_levels);
-  if(dev_inv_gamma) dt_opencl_release_mem_object(dev_inv_gamma);
+  dt_opencl_release_mem_object(dev_lutr);
+  dt_opencl_release_mem_object(dev_lutg);
+  dt_opencl_release_mem_object(dev_lutb);
+  dt_opencl_release_mem_object(dev_levels);
+  dt_opencl_release_mem_object(dev_inv_gamma);
   dt_ioppr_free_iccprofile_params_cl(&profile_info_cl,
                                      &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
 
-  if(src_buffer) dt_free_align(src_buffer);
-
-  if(err != CL_SUCCESS) dt_print(DT_DEBUG_OPENCL,
-                                 "[opencl_rgblevels] couldn't enqueue kernel! %s\n",
-                                 cl_errstr(err));
-
-  return (err == CL_SUCCESS) ? TRUE : FALSE;
+  dt_free_align(src_buffer);
+  return err;
 }
 #endif
 

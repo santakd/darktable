@@ -46,19 +46,30 @@ changes (where available).
   every 10 seconds by default. The interval can be changed via the
   preferences or fully disabled if the interval is set to 0.
 
+- New module, _rgb primaries_, can be used for delicate color corrections
+  as well as creative color grading. It moves the red, green and blue
+  primary colors around based on "hue" and "purity" parameters set by the
+  user. The underlying pixel operation is the same as channel mixing.
+
 ## Performance Improvements
 
-One of the major highlights of this release is the number of performance
-improvements and enhancements:
-
-## Performance Improvements
-
-- Initialise OpenCL in the background. Especially under Windows this
+- Initialize OpenCL in the background. Especially under Windows this
   can take a long time (>1 minute) when the OpenCL modules need to be
   (re)compiled, at first run or after driver updates. Nothing used to
   happen during that time, making it look like darktable failed to
   start. Now the UI comes up and reports progress in toast
   messages. Until OpenCL is fully available processing will be slower.
+
+- Implemented OpenCL code for embedded lens corrections.
+
+- When panning or zooming, a low resolution placeholder used to be
+  shown until the image was fully recalculated. Now the part of the
+  previous high quality preview that is still visible is moved or
+  resized and only the edges are temporarily shown in low quality.
+
+- Improve by 25% the display of the pictures on the map.
+
+- Faster export of JPEG 2000 and B&W TIFF images.
 
 ## Other Changes
 
@@ -78,18 +89,111 @@ improvements and enhancements:
 - Rastermasks are visualized the same way as other masks in the module
   header and via the mask visualize button.
 
+- Improved dual demosaicing mask visualizing and performance.
+
 - A manually controlled vignette correction has been added tot the
   lens module.
 
 - Always show the full uncropped image with cropping rectangle as a
   marker while working in liquify and retouch modules.
 
+- Add linear ProPhoto RGB as possible LUT color-space.
+
+- A set of changes done on OpenCL support:
+
+  - Removed the benchmarking code from opencl as it didn't produce valid
+    results on today's computers.
+
+  - Removed the preference option to select pinned memory transfer. Can
+    be selected on a per device basis.
+
+  - Usage of "headroom" can be selected in preferences, the default
+    has been increased to 600Mb as more systems use graphics memory
+    nowadays.
+
+  - Introduce selection of wanted OpenCL drivers in preferences.
+
+- Add Display P3 built-in color profile for input, output, display,
+  working and soft-proofing.
+
+- The highlights module is now made available for all non-raw files.
+
+- The speed of scrolling through the filmstrip can be increased by
+  holding <kbd>shift</kbd>; you will move by half of the visible
+  images at a time. Holding <kbd>ctrl</kbd> while scrolling changes
+  the number of images shown ("zooms") and thereby the shift speed.
+
+- Exported AVIF files no longer embed a superfluous ICC profile if the
+  color profile can be encoded as CICP (Coding-independent code
+  points).
+
+- Exported PNG files now include a CICP (Coding-independent code
+  points) encoded color profile in addition to ICC if possible.
+
+- Improved scaling and placement of images in culling view to make
+  better use of available screen space.
+
+- When hovering the sample patches in the global color picker module
+  the areas are displayed on the central area and on the histogram (if
+  the corresponding option is selected). It is not necessary anymore
+  to have the color-picker activated. This enhanced behavior comes
+  handy when doing color grading for example.
+
+- A function dt_bauhaus_widget_set_quad_tooltip was added that allows
+  setting a separate tooltip for the button linked to a slider or
+  dropdown (commonly color pickers).
+
+- Holding the ctrl key while double clicking a slider or combo, which
+  normally resets it to its default value, instead restores the
+  auto-applied preset for processing modules (if a preset is marked as
+  such).
+
+- When multiple mask shapes are combined, in the popup menu for a
+  shape a tick mark is shown in front of the active combine mode,
+  which can be easier to read than the icon in front of the shape.
+
+- Added mnemonics to dialog box buttons and marked default buttons so
+  pressing Enter will trigger them and close the dialog.
+
+- Extract more OpenEXR 3.2.0 attributes for image information if
+  present.
+
+- Add lens and cameras filters to the filtering module.
+
+- AVIF export changes: no conversion to YUV for lossless, update
+  quantizer selection logic and make lossy default.
+
+- The generation of the preference dialog now takes the specification
+  of tabs and sections from darktable.xml.in too, so almost the
+  complete layout can be changed by just editing that file.
+
+- Changed the preference dialog dropdowns to use bauhaus widgets so it
+  conforms to (and offers the same behavior) as widgets in the rest of
+  the program.
+
+- Improved numbers precision in configuration system.
+
+- Rework the collection module to be consistent about sorting. All
+  date/time can be reversed (older or newer first). Also the folder
+  can be reversed when sorted according to their id
+  (chronological). The preference has been renamed from id to
+  chronological for clarity.
+
+  The collection based on rating now use proper text like rejected
+  instead of -1 and the numbers are replaced by stars.
+
+  The color label collection now displays the color in the same order
+  as in all other part of the GUI.
+
+- Preference setting "after edit" for writing sidecar files now
+  accepts also adding a tag as a valid user edit.
+
 ## Bug Fixes
 
 - Fixes OpenCL platform checking which could lead to a freeze of
   darktable.
 
-- Fix the calculation of resizable widgets based on linesize of
+- Fix the calculation of resizable widgets based on line size of
   contents.
 
 - Fixed a bug in the collection filter module where the conjunction of
@@ -99,11 +203,36 @@ improvements and enhancements:
 
 - Fixed wrong cropping of sensor data for sraw dng files.
 
+- Apply the Lr color matrix only when importing a genuine Lr XMP.
+
+- Fix a crash when increasing the number of recent collections.
+
+- Fix crash when clicking & dragging the feather line on the path
+  mask.
+
+- Fixed crash when applying CMYK soft-proof ICC profile.
+
+- The white borders for ISO 12464 color assessment (toggled with
+  CTRL+B) are now correctly sized and placed at all zoom levels and
+  don't flash when switching between low and high quality preview,
+  both in the center view and secondary preview window.
+
+- Fix issue downloading to Piwigo when on conflict option is set to
+  "don't check".
+
+- Fixed several mouse scroll wheel issues on macOS in combination with
+  the shift modifier key, i.e.: Color harmonies width, module height,
+  geotagging date/time.
+
 ## Lua
 
 ### API Version
 
 - API version is now 9.2.0
+
+### Bug Fixes
+
+- Fixed scripts_installer to handle user names with spaces on Windows.
 
 ### Add action support for Lua
 
@@ -141,7 +270,7 @@ improvements and enhancements:
 
 ### Optional
 
-- ???
+- Bump libavif to 0.9.2
 
 ## RawSpeed changes
 
@@ -164,6 +293,7 @@ improvements and enhancements:
 - Fujifilm lossy RAFs
 - Nikon high efficiency NEFs
 - Samsung Expert RAW DNGs
+- Sony downsized lossless ARWs ("M" for full-frame, "S" for full-frame & APS-C)
 
 ### Suspended Support
 
@@ -183,11 +313,7 @@ are available on raw.pixls.us:
 - Panasonic DMC-FX150
 - Pentax Q10
 - Phase One IQ250
-- Samsung GX10
-- Samsung GX20
 - Samsung EK-GN120
-- Samsung SM-G920F
-- Samsung SM-G935F
 - Sinar Hy6/ Sinarback eXact
 - ST Micro STV680
 

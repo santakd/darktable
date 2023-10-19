@@ -178,8 +178,8 @@ typedef int32_t dt_mask_id_t;
 
 // version of current performance configuration version
 // if you want to run an updated version of the performance configuration later
-// bump this number and make sure you have an updated logic in dt_configure_performance()
-#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 14
+// bump this number and make sure you have an updated logic in dt_configure_runtime_performance()
+#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 15
 #define DT_PERF_INFOSIZE 4096
 
 // every module has to define this:
@@ -303,7 +303,6 @@ typedef enum dt_debug_thread_t
 
 typedef struct dt_codepath_t
 {
-  unsigned int SSE2 : 1;
   unsigned int _no_intrinsics : 1;
 } dt_codepath_t;
 
@@ -315,8 +314,18 @@ typedef struct dt_sys_resources_t
   int *refresource; // for the debug resource modes we use fixed settings
   int group;
   int level;
-  int tunemode;
+  gboolean tunehead;
 } dt_sys_resources_t;
+
+typedef struct dt_backthumb_t
+{
+  double time;
+  double idle;
+  gboolean writing;
+  gboolean service;
+  gboolean running;
+  int32_t mipsize;
+} dt_backthumb_t;
 
 typedef struct darktable_t
 {
@@ -379,6 +388,7 @@ typedef struct darktable_t
   GTimeZone *utc_tz;
   GDateTime *origin_gdt;
   struct dt_sys_resources_t dtresources;
+  struct dt_backthumb_t backthumbs;
 } darktable_t;
 
 typedef struct

@@ -57,7 +57,6 @@ jobs:
           - Release
         target:
           - build
-          - nofeatures_nosse
         generator:
           #- Unix Makefiles
           - Ninja
@@ -141,7 +140,7 @@ jobs:
             python3-jsonschema \
             xsltproc \
             zlib1g-dev;
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
           path: src
@@ -253,7 +252,7 @@ jobs:
           update: false
       - run: git config --global core.autocrlf input
         shell: bash
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
           path: src
@@ -288,7 +287,6 @@ jobs:
         build:
           - { os: macos-12,    xcode: 14.2,   deployment: 12.5 } # LLVM14
           - { os: macos-12,    xcode: 13.4,   deployment: 12.0 } # LLVM13
-          - { os: macos-11,    xcode: 13.2.1, deployment: 11.3 } # LLVM12
         compiler:
           - { compiler: XCode,   CC: cc, CXX: c++ }
         btype: [ Debug ]
@@ -310,7 +308,7 @@ jobs:
       GENERATOR: ${{ matrix.generator }}
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
           path: src

@@ -2306,16 +2306,15 @@ int process_cl(struct dt_iop_module_t *self,
 
   size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
-  cl_mem input_matrix_cl = NULL;
-  cl_mem output_matrix_cl = NULL;
-
-  input_matrix_cl = dt_opencl_copy_host_to_device_constant
+  cl_mem input_matrix_cl = dt_opencl_copy_host_to_device_constant
     (devid, 12 * sizeof(float), (float*)work_profile->matrix_in);
-  output_matrix_cl = dt_opencl_copy_host_to_device_constant
+  cl_mem output_matrix_cl = dt_opencl_copy_host_to_device_constant
     (devid, 12 * sizeof(float), (float*)work_profile->matrix_out);
   cl_mem MIX_cl = dt_opencl_copy_host_to_device_constant
     (devid, 12 * sizeof(float), d->MIX);
 
+  if(input_matrix_cl == NULL || output_matrix_cl == NULL || MIX_cl == NULL)
+    goto error;
   // select the right kernel for the current LMS space
   int kernel = gd->kernel_channelmixer_rgb_rgb;
 
@@ -2357,23 +2356,15 @@ int process_cl(struct dt_iop_module_t *self,
      CLARG(MIX_cl), CLARG(d->illuminant), CLARG(d->saturation),
      CLARG(d->lightness), CLARG(d->grey),
      CLARG(d->p), CLARG(d->gamut), CLARG(d->clip), CLARG(d->apply_grey),
-    CLARG(d->version));
+     CLARG(d->version));
 
   err = dt_opencl_enqueue_kernel_2d(devid, kernel, sizes);
-  if(err != CL_SUCCESS) goto error;
 
+error:
   dt_opencl_release_mem_object(input_matrix_cl);
   dt_opencl_release_mem_object(output_matrix_cl);
   dt_opencl_release_mem_object(MIX_cl);
-  return TRUE;
-
-error:
-  if(input_matrix_cl) dt_opencl_release_mem_object(input_matrix_cl);
-  if(output_matrix_cl) dt_opencl_release_mem_object(output_matrix_cl);
-  if(MIX_cl) dt_opencl_release_mem_object(MIX_cl);
-  dt_print(DT_DEBUG_OPENCL,
-           "[opencl_channelmixerrgb] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
+  return err;
 }
 
 void init_global(dt_iop_module_so_t *module)
@@ -2471,11 +2462,12 @@ static inline void init_bounding_box(dt_iop_channelmixer_rgb_gui_data_t *g,
 
 
 
-int mouse_moved(struct dt_iop_module_t *self,
-                const double x,
-                const double y,
+int mouse_moved(dt_iop_module_t *self,
+                const float pzx,
+                const float pzy,
                 const double pressure,
-                const int which)
+                const int which,
+                const float zoom_scale)
 {
   if(!self->enabled) return 0;
 
@@ -2489,27 +2481,20 @@ int mouse_moved(struct dt_iop_module_t *self,
   const float ht = dev->preview_pipe->backbuf_height;
   if(wd == 0.f || ht == 0.f) return 0;
 
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(dev, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
-  pzx *= wd;
-  pzy *= ht;
-
   // if dragging and dropping, don't update active nodes,
   // just update cursor coordinates then redraw
   // this ensure smooth updates
   if(g->drag_drop)
   {
     dt_iop_gui_enter_critical_section(self);
-    g->click_end.x = pzx;
-    g->click_end.y = pzy;
+    g->click_end.x = pzx * wd;
+    g->click_end.y = pzy * ht;
 
     _update_bounding_box(g, g->click_end.x - g->click_start.x,
                          g->click_end.y - g->click_start.y);
 
-    g->click_start.x = pzx;
-    g->click_start.y = pzy;
+    g->click_start.x = pzx * wd;
+    g->click_start.y = pzy * ht;
     dt_iop_gui_leave_critical_section(self);
 
     dt_control_queue_redraw_center();
@@ -2522,7 +2507,7 @@ int mouse_moved(struct dt_iop_module_t *self,
 
   for(size_t k = 0; k < 4; k++)
   {
-    if(hypotf(pzx - g->box[k].x, pzy - g->box[k].y) < 15.f)
+    if(hypotf(pzx * wd - g->box[k].x, pzy * ht - g->box[k].y) < 15.f)
     {
       g->active_node[k] = TRUE;
       g->is_cursor_close = TRUE;
@@ -2553,13 +2538,14 @@ int mouse_moved(struct dt_iop_module_t *self,
   return 1;
 }
 
-int button_pressed(struct dt_iop_module_t *self,
-                   const double x,
-                   const double y,
+int button_pressed(dt_iop_module_t *self,
+                   const float pzx,
+                   const float pzy,
                    const double pressure,
                    const int which,
                    const int type,
-                   const uint32_t state)
+                   const uint32_t state,
+                   const float zoom_scale)
 {
   if(!self->enabled) return 0;
 
@@ -2592,17 +2578,10 @@ int button_pressed(struct dt_iop_module_t *self,
   // cursor is not on a node, abort
   if(!g->is_cursor_close) return 0;
 
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(dev, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
-  pzx *= wd;
-  pzy *= ht;
-
   dt_iop_gui_enter_critical_section(self);
   g->drag_drop = TRUE;
-  g->click_start.x = pzx;
-  g->click_start.y = pzy;
+  g->click_start.x = pzx * wd;
+  g->click_start.y = pzy * ht;
   dt_iop_gui_leave_critical_section(self);
 
   dt_control_queue_redraw_center();
@@ -2610,11 +2589,12 @@ int button_pressed(struct dt_iop_module_t *self,
   return 1;
 }
 
-int button_released(struct dt_iop_module_t *self,
-                    const double x,
-                    const double y,
+int button_released(dt_iop_module_t *self,
+                    const float pzx,
+                    const float pzy,
                     const int which,
-                    const uint32_t state)
+                    const uint32_t state,
+                    const float zoom_scale)
 {
   if(!self->enabled) return 0;
 
@@ -2630,17 +2610,10 @@ int button_released(struct dt_iop_module_t *self,
   const float ht = dev->preview_pipe->backbuf_height;
   if(wd == 0.f || ht == 0.f) return 0;
 
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(dev, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
-  pzx *= wd;
-  pzy *= ht;
-
   dt_iop_gui_enter_critical_section(self);
   g->drag_drop = FALSE;
-  g->click_end.x = pzx;
-  g->click_end.y = pzy;
+  g->click_end.x = pzx * wd;
+  g->click_end.y = pzy * ht;
   _update_bounding_box(g, g->click_end.x - g->click_start.x,
                        g->click_end.y - g->click_start.y);
   dt_iop_gui_leave_critical_section(self);
@@ -2650,37 +2623,26 @@ int button_released(struct dt_iop_module_t *self,
   return 1;
 }
 
-void gui_post_expose(struct dt_iop_module_t *self,
+void gui_post_expose(dt_iop_module_t *self,
                      cairo_t *cr,
                      const int32_t width,
                      const int32_t height,
-                     const int32_t pointerx,
-                     const int32_t pointery)
+                     const float pointerx,
+                     const float pointery,
+                     const float zoom_scale)
 {
   const dt_iop_order_iccprofile_info_t *const work_profile =
-    dt_ioppr_get_pipe_output_profile_info(self->dev->pipe);
+    dt_ioppr_get_pipe_output_profile_info(self->dev->full.pipe);
   if(work_profile == NULL) return;
 
   dt_iop_channelmixer_rgb_gui_data_t *g =
     (dt_iop_channelmixer_rgb_gui_data_t *)self->gui_data;
   if(!g->is_profiling_started) return;
 
-  // Rescale and shift Cairo drawing coordinates
-  dt_develop_t *dev = self->dev;
-  const float wd = dev->preview_pipe->backbuf_width;
-  const float ht = dev->preview_pipe->backbuf_height;
-  if(wd == 0.f || ht == 0.f) return;
+  const gboolean showhandle = dt_iop_color_picker_is_visible(darktable.develop) == FALSE;
+  const double lwidth = (showhandle ? 1.0 : 0.5) / zoom_scale;
 
-  const float zoom_y = dt_control_get_dev_zoom_y();
-  const float zoom_x = dt_control_get_dev_zoom_x();
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1);
-  cairo_translate(cr, width / 2.0, height / 2.0);
-  cairo_scale(cr, zoom_scale, zoom_scale);
-  cairo_translate(cr, -.5f * wd - zoom_x * wd, -.5f * ht - zoom_y * ht);
-
-  cairo_set_line_width(cr, 2.0 / zoom_scale);
+  cairo_set_line_width(cr, 2.0 * lwidth);
   const double origin = 9. / zoom_scale;
   const double destination = 18. / zoom_scale;
 
@@ -2706,19 +2668,22 @@ void gui_post_expose(struct dt_iop_module_t *self,
       cairo_stroke(cr);
     }
 
-    // draw outline circle
-    cairo_set_source_rgba(cr, 1., 1., 1., 1.);
-    cairo_arc(cr, g->box[k].x, g->box[k].y, 8. / zoom_scale, 0, 2. * M_PI);
-    cairo_stroke(cr);
+    if(showhandle)
+    {
+      // draw outline circle
+      cairo_set_source_rgba(cr, 1., 1., 1., 1.);
+      cairo_arc(cr, g->box[k].x, g->box[k].y, 8. / zoom_scale, 0, 2. * M_PI);
+      cairo_stroke(cr);
 
-    // draw black dot
-    cairo_set_source_rgba(cr, 0., 0., 0., 1.);
-    cairo_arc(cr, g->box[k].x, g->box[k].y, 1.5 / zoom_scale, 0, 2. * M_PI);
-    cairo_fill(cr);
+      // draw black dot
+      cairo_set_source_rgba(cr, 0., 0., 0., 1.);
+      cairo_arc(cr, g->box[k].x, g->box[k].y, 1.5 / zoom_scale, 0, 2. * M_PI);
+      cairo_fill(cr);
+    }
   }
 
   // draw symmetry axes
-  cairo_set_line_width(cr, 1.5 / zoom_scale);
+  cairo_set_line_width(cr, 1.5 * lwidth);
   cairo_set_source_rgba(cr, 1., 1., 1., 1.);
   const point_t top_ideal = { 0.5f, 1.f };
   const point_t top = apply_homography(top_ideal, g->homography);
@@ -2796,9 +2761,9 @@ void gui_post_expose(struct dt_iop_module_t *self,
       }
     }
 
-    cairo_set_line_width(cr, 5.0 / zoom_scale);
+    cairo_set_line_width(cr, 5.0 * lwidth);
     cairo_stroke_preserve(cr);
-    cairo_set_line_width(cr, 2.0 / zoom_scale);
+    cairo_set_line_width(cr, 2.0 * lwidth);
     cairo_set_source_rgba(cr, 1., 1., 1., 1.);
     cairo_stroke(cr);
 
@@ -3477,7 +3442,7 @@ static void _update_RGB_colors(dt_iop_module_t *self,
   // update the fill background color of x, y sliders
   dt_iop_channelmixer_rgb_params_t *p = (dt_iop_channelmixer_rgb_params_t *)self->params;
   const struct dt_iop_order_iccprofile_info_t *const work_profile =
-    dt_ioppr_get_pipe_current_profile_info(self, self->dev->pipe);
+    dt_ioppr_get_pipe_current_profile_info(self, self->dev->full.pipe);
 
   // scale params if needed
   dt_aligned_pixel_t RGB = { a[0], a[1], a[2] };
@@ -3984,7 +3949,7 @@ static void _spot_settings_changed_callback(GtkWidget *slider, dt_iop_module_t *
   // Re-run auto illuminant if color picker is active and mode is correct
   const dt_spot_mode_t mode = dt_bauhaus_combobox_get(g->spot_mode);
   if(mode == DT_SPOT_MODE_CORRECT)
-    _auto_set_illuminant(self, darktable.develop->pipe);
+    _auto_set_illuminant(self, darktable.develop->full.pipe);
   // else : just record new values and do nothing
 }
 

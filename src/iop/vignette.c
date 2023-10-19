@@ -329,6 +329,8 @@ static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int 
   cairo_restore(cr);
   cairo_stroke(cr);
 
+  if(dt_iop_color_picker_is_visible(darktable.develop))
+    return;
   // the handles
   const float radius_sel = DT_PIXEL_APPLY_DPI(6.0) / zoom_scale;
   const float radius_reg = DT_PIXEL_APPLY_DPI(4.0) / zoom_scale;
@@ -361,8 +363,13 @@ static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int 
 
 // FIXME: For portrait images the overlay is a bit off. The coordinates in mouse_moved seem to be ok though.
 // WTF?
-void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, int32_t height,
-                     int32_t pointerx, int32_t pointery)
+void gui_post_expose(dt_iop_module_t *self,
+                     cairo_t *cr,
+                     const int32_t width,
+                     const int32_t height,
+                     const float pzx,
+                     const float pzy,
+                     const float zoom_scale)
 {
   dt_develop_t *dev = self->dev;
   //   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
@@ -381,19 +388,6 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
     bigger_side = ht;
     smaller_side = wd;
   }
-  const float zoom_y = dt_control_get_dev_zoom_y();
-  const float zoom_x = dt_control_get_dev_zoom_x();
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(dev, zoom, 1<<closeup, 1);
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(dev, pointerx, pointery, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
-
-  cairo_translate(cr, width / 2.0, height / 2.0);
-  cairo_scale(cr, zoom_scale, zoom_scale);
-  cairo_translate(cr, -.5f * wd - zoom_x * wd, -.5f * ht - zoom_y * ht);
 
   float vignette_x = (p->center.x + 1.0) * 0.5 * wd;
   float vignette_y = (p->center.y + 1.0) * 0.5 * ht;
@@ -447,16 +441,22 @@ void gui_post_expose(struct dt_iop_module_t *self, cairo_t *cr, int32_t width, i
   int grab = get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
                       -vignette_fy, zoom_scale);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) / zoom_scale);
+  const double lwidth = (dt_iop_color_picker_is_visible(darktable.develop) ? 0.5 : 1.0) / zoom_scale;
+  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) * lwidth);
   dt_draw_set_color_overlay(cr, FALSE, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
-  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(1.0) / zoom_scale);
+  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(1.0) * lwidth);
   dt_draw_set_color_overlay(cr, TRUE, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
 }
 
 // FIXME: Pumping of the opposite direction when changing width/height. See two FIXMEs further down.
-int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressure, int which)
+int mouse_moved(dt_iop_module_t *self,
+                const float pzx,
+                const float pzy,
+                const double pressure,
+                const int which,
+                const float zoom_scale)
 {
   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
   dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
@@ -473,13 +473,6 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
     bigger_side = ht;
     smaller_side = wd;
   }
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  const float zoom_scale = dt_dev_get_zoom_scale(self->dev, zoom, 1<<closeup, 1);
-  float pzx, pzy;
-  dt_dev_get_pointer_zoom_pos(self->dev, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
   static int old_grab = -1;
   int grab = old_grab;
 
@@ -652,14 +645,25 @@ int mouse_moved(struct dt_iop_module_t *self, double x, double y, double pressur
   return 0;
 }
 
-int button_pressed(struct dt_iop_module_t *self, double x, double y, double pressure, int which, int type,
-                   uint32_t state)
+int button_pressed(dt_iop_module_t *self,
+                   const float x,
+                   const float y,
+                   const double pressure,
+                   const int which,
+                   const int type,
+                   const uint32_t state,
+                   const float zoom_scale)
 {
   if(which == 1) return 1;
   return 0;
 }
 
-int button_released(struct dt_iop_module_t *self, double x, double y, int which, uint32_t state)
+int button_released(dt_iop_module_t *self,
+                    const float x,
+                    const float y,
+                    const int which,
+                    const uint32_t state,
+                    const float zoom_scale)
 {
   if(which == 1) return 1;
   return 0;
@@ -824,7 +828,6 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
   dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->global_data;
 
-  cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
   const int width = roi_out->width;
   const int height = roi_out->height;
@@ -897,17 +900,10 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float saturation = data->saturation;
   const int unbound = data->unbound;
 
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_vignette, width, height,
+  return dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_vignette, width, height,
     CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(scale), CLARG(roi_center_scaled_f),
     CLARG(expt), CLARG(dscale), CLARG(fscale), CLARG(brightness), CLARG(saturation), CLARG(dither),
     CLARG(unbound));
-  if(err != CL_SUCCESS) goto error;
-
-  return TRUE;
-
-error:
-  dt_print(DT_DEBUG_OPENCL, "[opencl_vignette] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
 }
 #endif
 

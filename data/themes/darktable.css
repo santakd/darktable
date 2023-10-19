@@ -1100,8 +1100,13 @@ treeview header label
   margin-right: 1.75em;
 }
 
-#preferences-notebook combobox,
-#preferences-notebook spinbutton,
+#preference_non_default
+{
+  font-weight: bolder;
+  margin: 0.07em;
+  min-width: 1em;
+}
+
 #preset-controls entry,
 #shortcut-controls entry
 {
@@ -1669,6 +1674,7 @@ progressbar progress
   ------------------------------------------------------------------*/
 /*** All states options are designed below, active, hover, selected, disabled and check states ***/
 /* Main states */
+.default, /* dialog button that activates with Enter */
 .dt_history_items:active,
 .dt_history_items:checked,
 button:active,
@@ -1682,7 +1688,6 @@ entry:checked,
 filechooser *:selected,
 menuitem:active,
 menuitem:selected,
-messagedialog .default,  /* this show that a button in confirmation action pop-up has the focus (no by default) */
 treeview *:selected:not(check),
 treeview *:checked:not(check),
 #main-histogram .dt_module_btn:checked:not(.rgb_toggle)
@@ -1767,6 +1772,7 @@ treeview *:active
   color: @field_active_fg;
 }
 
+#preferences-box .dt_bauhaus,
 treeview check:selected
 {
   background-color: @button_bg;

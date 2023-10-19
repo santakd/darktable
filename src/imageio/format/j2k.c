@@ -395,9 +395,15 @@ int write_image(dt_imageio_module_data_t *j2k_tmp, const char *filename, const v
 //        }
 //        break;
       case 12:
-        for(int i = 0; i < w * h; i++)
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(in, w, h, image, numcomps) \
+  schedule(simd:static) \
+  collapse(2)
+#endif
+        for(int i = 0; i < w * h; ++i)
         {
-          for(int k = 0; k < numcomps; k++)
+          for(int k = 0; k < numcomps; ++k)
             image->comps[k].data[i] = DOWNSAMPLE_FLOAT_TO_12BIT(in[i * 4 + k]);
         }
         break;
@@ -598,7 +604,6 @@ void *get_params(dt_imageio_module_format_t *self)
   d->bpp = 12; // can be 8, 12 or 16
   d->preset = dt_conf_get_int("plugins/imageio/format/j2k/preset");
   d->quality = dt_conf_get_int("plugins/imageio/format/j2k/quality");
-  if(d->quality <= 0 || d->quality > 100) d->quality = 100;
   return d;
 }
 
@@ -672,8 +677,7 @@ void gui_init(dt_imageio_module_format_t *self)
                                                   dt_confgen_get_int("plugins/imageio/format/j2k/quality", DT_DEFAULT),
                                                   0);
   dt_bauhaus_widget_set_label(gui->quality, NULL, N_("quality"));
-  dt_bauhaus_slider_set_default(gui->quality, dt_confgen_get_int("plugins/imageio/format/j2k/quality", DT_DEFAULT));
-  if(quality_last > 0 && quality_last <= 100) dt_bauhaus_slider_set(gui->quality, quality_last);
+  dt_bauhaus_slider_set(gui->quality, quality_last);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(gui->quality), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(gui->quality), "value-changed", G_CALLBACK(quality_changed), NULL);
 

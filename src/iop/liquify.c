@@ -1619,7 +1619,7 @@ int process_cl(struct dt_iop_module_t *module,
     size_t dest[]   = { 0, 0, 0 };
     size_t extent[] = { width, height, 1 };
     err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, src, dest, extent);
-    if(err != CL_SUCCESS) goto error;
+    if(err != CL_SUCCESS) return err;
   }
 
   // 2. build the distortion map
@@ -1629,21 +1629,14 @@ int process_cl(struct dt_iop_module_t *module,
                                roi_out, &map_extent, FALSE, &map);
 
   if(map == NULL)
-    return TRUE;
+    return CL_SUCCESS;
 
   // 3. apply the map
   if(map_extent.width != 0 && map_extent.height != 0)
     err = _apply_global_distortion_map_cl(module, piece, dev_in,
                                           dev_out, roi_in, roi_out, map, &map_extent);
   dt_free_align((void *) map);
-  if(err != CL_SUCCESS) goto error;
-
-  return TRUE;
-
-error:
-  dt_print(DT_DEBUG_OPENCL,
-           "[opencl_liquify] couldn't enqueue kernel! %s\n", cl_errstr(err));
-  return FALSE;
+  return err;
 }
 
 #endif
@@ -1738,7 +1731,7 @@ static void set_line_width(cairo_t *cr,
                            dt_liquify_ui_width_enum_t w)
 {
   const double width = get_ui_width(scale, w);
-  cairo_set_line_width(cr, width);
+  cairo_set_line_width(cr, width * (dt_iop_color_picker_is_visible(darktable.develop) ? 0.5 : 1.0));
 }
 
 static gboolean detect_drag(const dt_iop_liquify_gui_data_t *g,
@@ -1862,6 +1855,7 @@ static void _draw_paths(dt_iop_module_t *module,
 
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 
+  const gboolean showhandle = dt_iop_color_picker_is_visible(darktable.develop) == FALSE;
   // do not display any iterpolated items as slow when:
   //   - we are dragging (pan)
   //   - the button one is pressed
@@ -2027,7 +2021,7 @@ static void _draw_paths(dt_iop_module_t *module,
 
       if(data->header.type == DT_LIQUIFY_PATH_CURVE_TO_V1)
       {
-        if(layer == DT_LIQUIFY_LAYER_CTRLPOINT1_HANDLE &&
+        if(layer == DT_LIQUIFY_LAYER_CTRLPOINT1_HANDLE && showhandle &&
             !(prev && prev->header.node_type == DT_LIQUIFY_NODE_TYPE_AUTOSMOOTH))
         {
           THINLINE; FG_COLOR;
@@ -2035,7 +2029,7 @@ static void _draw_paths(dt_iop_module_t *module,
           cairo_line_to(cr, crealf(data->node.ctrl1), cimagf(data->node.ctrl1));
           cairo_stroke(cr);
         }
-        if(layer == DT_LIQUIFY_LAYER_CTRLPOINT2_HANDLE &&
+        if(layer == DT_LIQUIFY_LAYER_CTRLPOINT2_HANDLE && showhandle &&
             data->header.node_type != DT_LIQUIFY_NODE_TYPE_AUTOSMOOTH)
         {
           THINLINE; FG_COLOR;
@@ -2065,7 +2059,7 @@ static void _draw_paths(dt_iop_module_t *module,
 
       const dt_liquify_warp_t *warp  = &data->warp;
 
-      if(layer == DT_LIQUIFY_LAYER_RADIUSPOINT_HANDLE)
+      if(layer == DT_LIQUIFY_LAYER_RADIUSPOINT_HANDLE && showhandle)
       {
         draw_circle(cr, point, 2.0 * cabsf(warp->radius - point));
         THICKLINE; FG_COLOR;
@@ -2083,7 +2077,7 @@ static void _draw_paths(dt_iop_module_t *module,
         cairo_stroke(cr);
       }
 
-      if(layer == DT_LIQUIFY_LAYER_HARDNESSPOINT1_HANDLE)
+      if(layer == DT_LIQUIFY_LAYER_HARDNESSPOINT1_HANDLE && showhandle)
       {
         draw_circle(cr, point, 2.0 * cabsf(warp->radius - point) * warp->control1);
         THICKLINE; FG_COLOR;
@@ -2092,7 +2086,7 @@ static void _draw_paths(dt_iop_module_t *module,
         cairo_stroke(cr);
       }
 
-      if(layer == DT_LIQUIFY_LAYER_HARDNESSPOINT2_HANDLE)
+      if(layer == DT_LIQUIFY_LAYER_HARDNESSPOINT2_HANDLE && showhandle)
       {
         draw_circle(cr, point, 2.0 * cabsf(warp->radius - point) * warp->control2);
         THICKLINE; FG_COLOR;
@@ -2123,7 +2117,7 @@ static void _draw_paths(dt_iop_module_t *module,
         cairo_stroke(cr);
       }
 
-      if(layer == DT_LIQUIFY_LAYER_STRENGTHPOINT_HANDLE)
+      if(layer == DT_LIQUIFY_LAYER_STRENGTHPOINT_HANDLE && showhandle)
       {
         cairo_move_to(cr, crealf(point), cimagf(point));
         if(warp->type == DT_LIQUIFY_WARP_TYPE_LINEAR)
@@ -2738,19 +2732,13 @@ static void unselect_all(dt_iop_liquify_params_t *p)
       p->nodes[k].header.selected = 0;
 }
 
-static float get_zoom_scale(dt_develop_t *develop)
-{
-  const dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-  const int closeup = dt_control_get_dev_closeup();
-  return dt_dev_get_zoom_scale(develop, zoom, 1<<closeup, 1);
-}
-
-void gui_post_expose(struct dt_iop_module_t *module,
+void gui_post_expose(dt_iop_module_t *module,
                      cairo_t *cr,
                      const int32_t width,
                      const int32_t height,
-                     const int32_t pointerx,
-                     const int32_t pointery)
+                     const float pointerx,
+                     const float pointery,
+                     const float zoom_scale)
 {
   dt_develop_t *develop = module->dev;
   dt_iop_liquify_gui_data_t *g = (dt_iop_liquify_gui_data_t *)module->gui_data;
@@ -2783,15 +2771,6 @@ void gui_post_expose(struct dt_iop_module_t *module,
   _distort_paths(module, &d_params, &copy_params);
   dt_pthread_mutex_unlock(&develop->preview_pipe_mutex);
 
-  // You're not supposed to understand this
-  const float zoom_x = dt_control_get_dev_zoom_x();
-  const float zoom_y = dt_control_get_dev_zoom_y();
-  const float zoom_scale = get_zoom_scale(develop);
-
-  // setup CAIRO coordinate system
-  cairo_translate(cr, 0.5 * width, 0.5 * height); // origin @ center of view
-  cairo_scale    (cr, zoom_scale, zoom_scale);    // the zoom
-  cairo_translate(cr, -bb_width * (0.5 + zoom_x), -bb_height * (0.5 + zoom_y));
   cairo_scale(cr, scale, scale);
 
   draw_paths(module, cr, 1.0 / (scale * zoom_scale), &copy_params);
@@ -2809,7 +2788,7 @@ void gui_focus(struct dt_iop_module_t *self,
     dt_collection_hint_message(darktable.collection);
     btn_make_radio_callback(NULL, NULL, self);
   }
-  self->dev->cropping.requester = (in && !darktable.develop->image_loading) ? self : NULL;
+  self->dev->cropping.requester = (in && !darktable.develop->full.loading) ? self : NULL;
 }
 
 static void sync_pipe(struct dt_iop_module_t *module,
@@ -2844,17 +2823,13 @@ static void sync_pipe(struct dt_iop_module_t *module,
 */
 
 static void get_point_scale(struct dt_iop_module_t *module,
-                            const float x,
-                            const float y,
+                            const float pzx,
+                            const float pzy,
                             float complex *pt,
                             float *scale)
 {
   const float pr_d = darktable.develop->preview_downsampling;
 
-  float pzx = 0.0f, pzy = 0.0f;
-  dt_dev_get_pointer_zoom_pos(darktable.develop, x, y, &pzx, &pzy);
-  pzx += 0.5f;
-  pzy += 0.5f;
   const float wd = darktable.develop->preview_pipe->backbuf_width;
   const float ht = darktable.develop->preview_pipe->backbuf_height;
   float pts[2] = { pzx * wd, pzy * ht };
@@ -2867,16 +2842,17 @@ static void get_point_scale(struct dt_iop_module_t *module,
   const float nx = pts[0] / darktable.develop->preview_pipe->iwidth;
   const float ny = pts[1] / darktable.develop->preview_pipe->iheight;
 
-  *scale = darktable.develop->preview_pipe->iscale * (pr_d * get_zoom_scale(module->dev));
-  *pt = (nx * darktable.develop->pipe->iwidth)
-    +  (ny * darktable.develop->pipe->iheight) * I;
+  *scale = darktable.develop->preview_pipe->iscale * (pr_d * dt_dev_get_zoom_scale_full());
+  *pt = (nx * darktable.develop->full.pipe->iwidth)
+    +  (ny * darktable.develop->full.pipe->iheight) * I;
 }
 
-int mouse_moved(struct dt_iop_module_t *module,
-                 const double x,
-                 const double y,
-                 const double pressure,
-                 const int which)
+int mouse_moved(dt_iop_module_t *module,
+                const float x,
+                const float y,
+                const double pressure,
+                const int which,
+                const float zoom_scale)
 {
   dt_iop_liquify_gui_data_t *g = (dt_iop_liquify_gui_data_t *)module->gui_data;
   dt_iop_liquify_params_t *pa = (dt_iop_liquify_params_t *)module->params;
@@ -3091,7 +3067,7 @@ static void get_stamp_params(dt_iop_module_t *module,
   const float iwd_min = MIN(devpipe->iwidth, devpipe->iheight);
   const float proc_wdht_min = MIN(devpipe->processed_width, devpipe->processed_height);
   const float pr_d = darktable.develop->preview_downsampling;
-  const float scale = devpipe->iscale / (pr_d * get_zoom_scale(module->dev));
+  const float scale = devpipe->iscale / (pr_d * dt_dev_get_zoom_scale_full());
   const float im_scale = 0.09f * iwd_min * last_win_min * scale / proc_wdht_min;
 
   *radius = dt_conf_get_sanitize_float(CONF_RADIUS, 0.1f*im_scale,
@@ -3104,8 +3080,8 @@ static void get_stamp_params(dt_iop_module_t *module,
   add support for changing the radius and the strength vector for the temp node
  */
 int scrolled(struct dt_iop_module_t *module,
-             const double x,
-             const double y,
+             const float x,
+             const float y,
              const int up,
              const uint32_t state)
 {
@@ -3160,13 +3136,14 @@ int scrolled(struct dt_iop_module_t *module,
   return 0;
 }
 
-int button_pressed(struct dt_iop_module_t *module,
-                    const double x,
-                    const double y,
-                    const double pressure,
-                    const int which,
-                    const int type,
-                    const uint32_t state)
+int button_pressed(dt_iop_module_t *module,
+                   const float x,
+                   const float y,
+                   const double pressure,
+                   const int which,
+                   const int type,
+                   const uint32_t state,
+                   const float zoom_scale)
 {
   dt_iop_liquify_gui_data_t *g = (dt_iop_liquify_gui_data_t *)module->gui_data;
   dt_iop_liquify_params_t *p = (dt_iop_liquify_params_t *)module->params;
@@ -3258,7 +3235,7 @@ static void _start_new_shape(dt_iop_module_t *module)
   //  create initial shape at the center
   float complex pt = 0.0f;
   float scale = 1.0f;
-  get_point_scale(module, 0.5f * darktable.develop->width, 0.5f * darktable.develop->height, &pt, &scale);
+  get_point_scale(module, 0.5f * darktable.develop->full.width, 0.5f * darktable.develop->full.height, &pt, &scale);
   float radius = 0.0f, r = 1.0f, phi = 0.0f;
   get_stamp_params(module, &radius, &r, &phi);
   //  start a new path
@@ -3275,11 +3252,12 @@ static void _start_new_shape(dt_iop_module_t *module)
   g->last_hit = NOWHERE;
 }
 
-int button_released(struct dt_iop_module_t *module,
-                     const double x,
-                     const double y,
-                     const int which,
-                     const uint32_t state)
+int button_released(dt_iop_module_t *module,
+                    const float x,
+                    const float y,
+                    const int which,
+                    const uint32_t state,
+                    const float zoom_scale)
 {
   dt_iop_liquify_gui_data_t *g = (dt_iop_liquify_gui_data_t *)module->gui_data;
   dt_iop_liquify_params_t *p = (dt_iop_liquify_params_t *)module->params;

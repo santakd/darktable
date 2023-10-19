@@ -333,9 +333,12 @@ int dt_iop_load_module_so(void *m, const char *libname, const char *module_name)
 #define INCLUDE_API_FROM_MODULE_LOAD "iop_load_module"
 #include "iop/iop_api.h"
 
-  if(!module->init) module->init = dt_iop_default_init;
-  if(!module->modify_roi_in) module->modify_roi_in = _iop_modify_roi_in;
-  if(!module->modify_roi_out) module->modify_roi_out = _iop_modify_roi_out;
+  if(!module->init)
+    module->init = dt_iop_default_init;
+  if(!module->modify_roi_in)
+    module->modify_roi_in = _iop_modify_roi_in;
+  if(!module->modify_roi_out)
+    module->modify_roi_out = _iop_modify_roi_out;
 
   module->process_plain = module->process;
   module->process = default_process;
@@ -351,10 +354,10 @@ int dt_iop_load_module_so(void *m, const char *libname, const char *module_name)
       // set the introspection related fields in module
       module->have_introspection = TRUE;
 
-      if(module->get_p == default_get_p ||
-         module->get_f == default_get_f ||
-         module->get_introspection_linear == default_get_introspection_linear ||
-         module->get_introspection == default_get_introspection)
+      if(module->get_p == default_get_p
+         || module->get_f == default_get_f
+         || module->get_introspection_linear == default_get_introspection_linear
+         || module->get_introspection == default_get_introspection)
         goto api_h_error;
     }
     else
@@ -363,13 +366,14 @@ int dt_iop_load_module_so(void *m, const char *libname, const char *module_name)
                module_name);
   }
 
-  if(module->init_global) module->init_global(module);
+  if(module->init_global)
+    module->init_global(module);
   return 0;
 }
 
 gboolean dt_iop_load_module_by_so(dt_iop_module_t *module,
-                             dt_iop_module_so_t *so,
-                             dt_develop_t *dev)
+                                  dt_iop_module_so_t *so,
+                                  dt_develop_t *dev)
 {
   module->actions = DT_ACTION_TYPE_IOP_INSTANCE;
   module->dev = dev;
@@ -2101,7 +2105,7 @@ void dt_iop_gui_update(dt_iop_module_t *module)
   {
     if(module->gui_data)
     {
-      dt_bauhaus_update_module(module);
+      dt_bauhaus_update_from_field(module, NULL, NULL, NULL);
 
       if(module->params && module->gui_update)
       {
@@ -2145,7 +2149,7 @@ static void _gui_reset_callback(GtkButton *button,
   // If Ctrl was not pressed, or no auto-presets were applied, reset the module parameters
   if(!(event
        && dt_modifier_is(event->state, GDK_CONTROL_MASK))
-     || !dt_gui_presets_autoapply_for_module(module))
+     || !dt_gui_presets_autoapply_for_module(module, NULL))
   {
     // if a drawn mask is set, remove it from the list
     if(dt_is_valid_maskid(module->blend_params->mask_id))
@@ -2198,12 +2202,18 @@ static gboolean _presets_scroll_callback(GtkWidget *widget,
 
 void dt_iop_request_focus(dt_iop_module_t *module)
 {
-  dt_iop_module_t *out_focus_module = darktable.develop->gui_module;
+  dt_develop_t *dev = darktable.develop;
+  dt_iop_module_t *out_focus_module = dev->gui_module;
+
+  // disable global color picker on any focus change request
+  // unless restrict histogram is active
+  if(!darktable.lib->proxy.colorpicker.restrict_histogram)
+    dt_iop_color_picker_reset(NULL, TRUE);
 
   if(darktable.gui->reset || (out_focus_module == module)) return;
 
-  darktable.develop->gui_module = module;
-  darktable.develop->focus_hash = TRUE;
+  dev->gui_module = module;
+  dev->focus_hash = TRUE;
 
   /* lets lose the focus of previous focus module*/
   if(out_focus_module)
@@ -2215,12 +2225,6 @@ void dt_iop_request_focus(dt_iop_module_t *module)
 
     gtk_widget_set_state_flags(dt_iop_gui_get_pluginui(out_focus_module),
                                GTK_STATE_FLAG_NORMAL, TRUE);
-
-    if(out_focus_module->operation_tags_filter())
-    {
-      dt_dev_invalidate_all(darktable.develop);
-      dt_dev_pixelpipe_rebuild(darktable.develop);
-    }
 
     dt_iop_connect_accels_multi(out_focus_module->so);
 
@@ -2247,12 +2251,6 @@ void dt_iop_request_focus(dt_iop_module_t *module)
     gtk_widget_set_state_flags(dt_iop_gui_get_pluginui(module),
                                GTK_STATE_FLAG_SELECTED, TRUE);
 
-    if(module->operation_tags_filter())
-    {
-      dt_dev_invalidate_all(darktable.develop);
-      dt_dev_pixelpipe_rebuild(darktable.develop);
-    }
-
     dt_iop_connect_accels_multi(module->so);
 
     if(module->gui_focus)
@@ -2263,7 +2261,7 @@ void dt_iop_request_focus(dt_iop_module_t *module)
 
     // we also add the focus css class
     GtkWidget *iop_w =
-      gtk_widget_get_parent(dt_iop_gui_get_pluginui(darktable.develop->gui_module));
+      gtk_widget_get_parent(dt_iop_gui_get_pluginui(dev->gui_module));
     dt_gui_add_class(iop_w, "dt_module_focus");
 
     // update last preset name to get the update preset entry
@@ -2278,6 +2276,34 @@ void dt_iop_request_focus(dt_iop_module_t *module)
   if(darktable.view_manager->accels_window.window
      && darktable.view_manager->accels_window.sticky)
     dt_view_accels_refresh(darktable.view_manager);
+
+  const int tags_filter = (out_focus_module ? out_focus_module->operation_tags_filter() : 0)
+                        | (module ? module->operation_tags_filter() : 0);
+  if(tags_filter)
+  {
+    dt_dev_pixelpipe_rebuild(dev);
+    /*  We don't want to use previous image as overlay to avoid some flicker if we have
+        any active module in the pipe having an operation_tag excluded by combined tags_filter.
+        FIXME later as a reminder. We can either
+        a) leave out the following section; this leads to a flicker related to the pipes
+            writing onto the main canvas one ofter the other.
+        b) use the "set backbuf_zoom_x = 1000" trick in all cases. This currently
+            leads to a displacement flicker, easy to observe when getting retouch in-focus
+            without any active crop module.
+        c) only use the b) variant if there _is_ a module possibly processing what the
+            tags_filter switches on/off in the pixelpipe.
+    */
+    for(GList *modules = dev->iop; modules; modules = g_list_next(modules))
+    {
+      const dt_iop_module_t *tmodule = (dt_iop_module_t *)modules->data;
+      if(tmodule->enabled && (tmodule->operation_tags() & tags_filter))
+      {
+        if(dev->full.pipe) dev->full.pipe->backbuf_zoom_x = 1000;
+        if(dev->preview2.pipe) dev->preview2.pipe->backbuf_zoom_x = 1000;
+        break;
+      }
+    }
+  }
 
   // update guides button state
   dt_guides_update_button_state();
@@ -2681,7 +2707,7 @@ static gboolean _mask_indicator_tooltip(GtkWidget *treeview,
   return res;
 }
 
-void add_remove_mask_indicator(dt_iop_module_t *module, gboolean add)
+void dt_iop_add_remove_mask_indicator(dt_iop_module_t *module, gboolean add)
 {
   const gboolean show = add && dt_conf_get_bool("darkroom/ui/show_mask_indicator");
 
@@ -3019,11 +3045,11 @@ GtkWidget *dt_iop_gui_get_pluginui(dt_iop_module_t *module)
 gboolean dt_iop_breakpoint(struct dt_develop_t *dev, struct dt_dev_pixelpipe_t *pipe)
 {
   if(pipe != dev->preview_pipe
-     && pipe != dev->preview2_pipe)
+     && pipe != dev->preview2.pipe)
     sched_yield();
 
   if(pipe != dev->preview_pipe
-     && pipe != dev->preview2_pipe
+     && pipe != dev->preview2.pipe
      && pipe->changed == DT_DEV_PIPE_ZOOMED)
     return TRUE;
 
@@ -3495,9 +3521,9 @@ void dt_iop_refresh_center(dt_iop_module_t *module)
   dt_develop_t *dev = module->dev;
   if(dev && dev->gui_attached)
   {
-    dt_dev_pixelpipe_cache_invalidate_later(dev->pipe, module->iop_order);
+    dt_dev_pixelpipe_cache_invalidate_later(dev->full.pipe, module->iop_order);
     //ensure that commit_params gets called to pick up any GUI changes
-    dev->pipe->changed |= DT_DEV_PIPE_SYNCH;
+    dev->full.pipe->changed |= DT_DEV_PIPE_SYNCH;
     dt_dev_invalidate(dev);
     dt_control_queue_redraw_center();
   }
@@ -3511,7 +3537,7 @@ void dt_iop_refresh_preview(dt_iop_module_t *module)
   {
     dt_dev_pixelpipe_cache_invalidate_later(dev->preview_pipe, module->iop_order);
     //ensure that commit_params gets called to pick up any GUI changes
-    dev->pipe->changed |= DT_DEV_PIPE_SYNCH;
+    dev->full.pipe->changed |= DT_DEV_PIPE_SYNCH;
     dt_dev_invalidate_all(dev);
     dt_control_queue_redraw();
   }
@@ -3523,9 +3549,9 @@ void dt_iop_refresh_preview2(dt_iop_module_t *module)
   dt_develop_t *dev = module->dev;
   if(dev && dev->gui_attached)
   {
-    dt_dev_pixelpipe_cache_invalidate_later(dev->preview2_pipe, module->iop_order);
+    dt_dev_pixelpipe_cache_invalidate_later(dev->preview2.pipe, module->iop_order);
     //ensure that commit_params gets called to pick up any GUI changes
-    dev->pipe->changed |= DT_DEV_PIPE_SYNCH;
+    dev->full.pipe->changed |= DT_DEV_PIPE_SYNCH;
     dt_dev_invalidate_all(dev);
     dt_control_queue_redraw();
   }
