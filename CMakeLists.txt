@@ -81,7 +81,7 @@ if (USE_OPENMP)
 
         # Clang has an option to specify the OpenMP standard to use. Specify it.
         # FIXME: Implement this in FindOpenMP.cmake
-        set(OPENMP_VERSION_SPECIFIER "-fopenmp-version=45")
+        set(OPENMP_VERSION_SPECIFIER "-fopenmp-version=51")
 
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OPENMP_VERSION_SPECIFIER}")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPENMP_VERSION_SPECIFIER}")
@@ -150,7 +150,7 @@ if(APPLE)
 
   if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64" AND CMAKE_C_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
     # request classic linker for Xcode 15 for Apple Silicon Macs
-    message("-- Xcode >= 15 on arm6 detected, requesting classic linker")
+    message("-- Xcode >= 15 on arm64 detected, requesting classic linker")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -ld_classic")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -ld_classic")
     set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -ld_classic")
@@ -165,7 +165,6 @@ include(compiler-versions)
 
 if(WIN32)
   message("-- Win32 build detected, setting default features")
-  set(CMAKE_FIND_LIBRARY_SUFFIXES .dll ${CMAKE_FIND_LIBRARY_SUFFIXES})
   set(USE_COLORD OFF)
   set(USE_KWALLET OFF)
   set(BUILD_CMSTEST OFF)
@@ -277,25 +276,14 @@ include(windows-macros)
 
 # we need some external programs for building darktable
 message(STATUS "Looking for external programs")
-set(EXTERNAL_PROGRAMS_FOUND 1)
 
 # we need perl for introspection
-find_program(perl_BIN perl)
-if(${perl_BIN} STREQUAL "perl_BIN-NOTFOUND")
-  message(STATUS "Missing perl")
-  set(EXTERNAL_PROGRAMS_FOUND 0)
-else(${perl_BIN} STREQUAL "perl_BIN-NOTFOUND")
-  message(STATUS "Found perl")
-endif(${perl_BIN} STREQUAL "perl_BIN-NOTFOUND")
+find_program(perl_BIN perl REQUIRED)
+message(STATUS "Found perl")
 
 # we need intltool-merge for org.darktable.darktable.desktop
-find_program(intltool_merge_BIN intltool-merge)
-if(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
-  message(STATUS "Missing intltool-merge")
-  set(EXTERNAL_PROGRAMS_FOUND 0)
-else(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
-  message(STATUS "Found intltool-merge")
-endif(${intltool_merge_BIN} STREQUAL "intltool_merge_BIN-NOTFOUND")
+find_program(intltool_merge_BIN intltool-merge REQUIRED)
+message(STATUS "Found intltool-merge")
 
 # we need desktop-file-validate to check org.darktable.darktable.desktop
 find_program(desktop_file_validate_BIN desktop-file-validate)
@@ -341,7 +329,7 @@ if(TESTBUILD_OPENCL_PROGRAMS)
 
       find_path(CLANG_OPENCL_INCLUDE_DIR opencl-c.h
         HINTS ${LLVM_INSTALL_PREFIX}/lib/clang ${LLVM_INSTALL_PREFIX}/lib64/clang
-        PATH_SUFFIXES include ${LLVM_PACKAGE_VERSION}/include
+        PATH_SUFFIXES include ${LLVM_PACKAGE_VERSION}/include ${LLVM_VERSION_MAJOR}/include
         NO_DEFAULT_PATH
       )
 
@@ -384,11 +372,10 @@ if(${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
   message(STATUS "Missing xsltproc")
   find_program(Saxon_BIN saxon-xslt)
   if(${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
-    message(STATUS "Missing Saxon-XSLT")
-    message(STATUS "No XSLT interpreter found")
-    set(EXTERNAL_PROGRAMS_FOUND 0)
+    message(STATUS "Missing saxon-xslt")
+    message(FATAL_ERROR "No XSLT interpreter found")
   else(${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
-    message(STATUS "Found Saxon-XSLT")
+    message(STATUS "Found saxon-xslt")
   endif(${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
 else(${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
   message(STATUS "Found xsltproc")
@@ -405,32 +392,16 @@ if(USE_XMLLINT)
   endif(${Xmllint_BIN} STREQUAL "Xmllint_BIN-NOTFOUND")
 endif(USE_XMLLINT)
 
-find_program(exiftool_BIN exiftool)
-if(${exiftool_BIN} STREQUAL "exiftool_BIN-NOTFOUND")
-  message(STATUS "Missing exiftool")
-  set(HAVE_EXIFTOOL 0)
-else()
-  message(STATUS "Found exiftool")
-  set(HAVE_EXIFTOOL 1)
-endif()
-
 # done with looking for programs
-if(NOT EXTERNAL_PROGRAMS_FOUND)
-  message(FATAL_ERROR "Some external programs couldn't be found")
-else(NOT EXTERNAL_PROGRAMS_FOUND)
-  message(STATUS "All external programs found")
-endif(NOT EXTERNAL_PROGRAMS_FOUND)
+message(STATUS "All external programs found")
 
 # The path can be modified by setting CMAKE_INSTALL_LOCALEDIR
-if(USE_NLS)
-    find_package(Gettext)
-    if(GETTEXT_MSGFMT_EXECUTABLE)
-        message(STATUS "Found msgfmt to convert .po file. Translation enabled")
-        add_subdirectory(po)
-    else()
-        message(STATUS "Cannot find msgfmt to convert .po file. Translation won't be enabled")
-    endif()
-endif(USE_NLS)
+find_package(Gettext REQUIRED)
+if(GETTEXT_MSGFMT_EXECUTABLE)
+    add_subdirectory(po)
+else()
+    message(FATAL_ERROR "ERROR: Cannot find msgfmt to convert .po file")
+endif()
 
 # needed to generate file "preferences_gen.h" accordingly
 if(USE_OPENCL)

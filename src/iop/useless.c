@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2021 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,6 +28,15 @@
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
+
+// Silence the compiler during dev of new module as we often
+// need to have temporary unfinished code that will hurt the
+// compiler.
+// THIS MUST be REMOVED before submitting a PR.
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 
 // This is an example implementation of an image operation module that
 // does nothing useful.  It demonstrates how the different functions
@@ -118,7 +127,7 @@ const char *name()
 
 // a routine returning the description of the module. this is
 // displayed when the mouse is over the module's header.
-const char **description(struct dt_iop_module_t *self)
+const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description
     (self,
@@ -195,7 +204,7 @@ int legacy_params(dt_iop_module_t *self,
 
   // do migration from 2 to 3 (one step at a time, this legacy_params
   // update is incremental and will be done as many time as needed to
-  // bring the parameters to the lastes version of the module.
+  // bring the parameters to the latest version of the module.
 
   if(old_version == 2)
   {
@@ -207,8 +216,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_basecurve_params_v5_t;
 
     dt_iop_useless_params_v2_t *o = (dt_iop_useless_params_v2_t *)old_params;
-    dt_iop_useless_params_v3_t *n =
-      (dt_iop_useless_params_v3_t *)malloc(sizeof(dt_iop_useless_params_v3_t));
+    dt_iop_useless_params_v3_t *n = malloc(sizeof(dt_iop_useless_params_v3_t));
     memcpy(n, o, sizeof(dt_iop_useless_params_v2_t));
     n->strength = 1;
 
@@ -244,11 +252,11 @@ void commit_params(dt_iop_module_t *self,
     IOP_FLAGS_ALLOW_TILING Also define this if the module uses more
     memory on the OpenCl device than the in& output buffers.
 */
-void tiling_callback(struct dt_iop_module_t *self,
-                     struct dt_dev_pixelpipe_iop_t *piece,
+void tiling_callback(dt_iop_module_t *self,
+                     dt_dev_pixelpipe_iop_t *piece,
                      const dt_iop_roi_t *roi_in,
                      const dt_iop_roi_t *roi_out,
-                     struct dt_develop_tiling_t *tiling)
+                     dt_develop_tiling_t *tiling)
 {
   tiling->factor = 2.0f;    // input buffer + output buffer; increase
                             // if additional memory allocated
@@ -265,27 +273,27 @@ void tiling_callback(struct dt_iop_module_t *self,
 #endif
 
 /** modify regions of interest (optional, per pixel ops don't need this) */
-// void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t
+// void modify_roi_out(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t
 // *roi_out, const dt_iop_roi_t *roi_in);
-// void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t
+// void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t
 // *roi_out, dt_iop_roi_t *roi_in);
 
 #if 0
 /** modify pixel coordinates according to the pixel shifts the module
  * applies (optional, per-pixel ops don't need) */
-int distort_transform(dt_iop_module_t *self,
-                      dt_dev_pixelpipe_iop_t *piece,
-                      float *points,
-                      const size_t points_count)
+gboolean distort_transform(dt_iop_module_t *self,
+                           dt_dev_pixelpipe_iop_t *piece,
+                           float *points,
+                           const size_t points_count)
 {
-  const dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
+  const dt_iop_useless_params_t *d = piece->data;
 
   const float adjx = 0.0 * d->factor;
   const float adjy = 0.0;
 
   // nothing to be done if parameters are set to neutral values (no pixel shifts)
   if(adjx == 0.0 && adjy == 0.0)
-    return 1;
+    return TRUE;
 
   // apply the coordinate adjustment to each provided point
   for(size_t i = 0; i < points_count * 2; i += 2)
@@ -294,24 +302,24 @@ int distort_transform(dt_iop_module_t *self,
     points[i + 1] -= adjy;
   }
 
-  return 1;  // return 1 on success, 0 if one or more points could not be transformed
+  return TRUE;  // return TRUE on success, FALSE if one or more points could not be transformed
 }
 #endif
 
 #if 0
 /** undo pixel shifts the module applies (optional, per-pixel ops don't need this) */
-int distort_backtransform(dt_iop_module_t *self,
-                          dt_dev_pixelpipe_iop_t *piece,
-                          float *points,
-                          const size_t points_count)
+gboolean distort_backtransform(dt_iop_module_t *self,
+                               dt_dev_pixelpipe_iop_t *piece,
+                               float *points,
+                               const size_t points_count)
 {
-  const dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
+  const dt_iop_useless_params_t *d = piece->data;
 
   const float adjx = 0.0 * d->factor;
   const float adjy = 0.0;
 
   // nothing to be done if parameters are set to neutral values (no pixel shifts)
-  if(adjx == 0.0 && adjy == 0.0) return 1;
+  if(adjx == 0.0 && adjy == 0.0) return TRUE;
 
   // apply the inverse coordinate adjustment to each provided point
   for(size_t i = 0; i < points_count * 2; i += 2)
@@ -320,12 +328,12 @@ int distort_backtransform(dt_iop_module_t *self,
     points[i + 1] += adjy;
   }
 
-  return 1;  // return 1 on success, 0 if one or more points could not be back-transformed
+  return TRUE;  // return TRUE on success, FALSE if one or more points could not be back-transformed
 }
 #endif
 
 /** modify a mask according to the pixel shifts the module applies (optional, per-pixel ops don't need this) */
-// void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const float *const in,
+// void distort_mask(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const float *const in,
 // float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out);
 
 /** process, all real work is done here.
@@ -335,7 +343,7 @@ int distort_backtransform(dt_iop_module_t *self,
           a signal should be used (raise a signal here) and a corresponding callback
           must be connected to this signal.
 */
-void process(struct dt_iop_module_t *self,
+void process(dt_iop_module_t *self,
              dt_dev_pixelpipe_iop_t *piece,
              const void *const ivoid,
              void *const ovoid,
@@ -344,7 +352,7 @@ void process(struct dt_iop_module_t *self,
 {
   // this is called for preview and full pipe separately, each with
   // its own pixelpipe piece.  get our data struct:
-  dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)piece->data;
+  dt_iop_useless_params_t *d = piece->data;
   // the total scale is composed of scale before input to the pipeline (iscale),
   // and the scale of the roi.
   const float scale = piece->iscale / roi_in->scale;
@@ -354,7 +362,7 @@ void process(struct dt_iop_module_t *self,
   // most modules only support a single type of input data, so we can
   // check whether that format has been supplied and simply pass along
   // the data if not (setting a trouble flag to inform the user)
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
   if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/,
                                         self, piece->colors,
                                          ivoid, ovoid, roi_in, roi_out))
@@ -387,10 +395,7 @@ void process(struct dt_iop_module_t *self,
     g_hash_table_remove(piece->raster_masks, GINT_TO_POINTER(mask_id));
 
 // iterate over all output pixels (same coordinates as input)
-#ifdef _OPENMP
-// optional: parallelize it!
-#pragma omp parallel for default(none) schedule(static) shared(d) dt_omp_firstprivate(scale, ivoid, ovoid, roi_in, roi_out, ch, mask)
-#endif
+  DT_OMP_FOR()
   for(int j = 0; j < roi_out->height; j++)
   {
     float *in = ((float *)ivoid)
@@ -429,7 +434,7 @@ void process(struct dt_iop_module_t *self,
 }
 
 /** Optional init and cleanup */
-void init(dt_iop_module_t *module)
+void init(dt_iop_module_t *self)
 {
   // Allocates memory for a module instance and fills default_params.
   // If this callback is not provided, the standard implementation in
@@ -442,7 +447,7 @@ void init(dt_iop_module_t *module)
   // initialisation.  The values in params will not be used and
   // default_params can be overwritten by reload_params on a per-image
   // basis.
-  dt_iop_default_init(module);
+  dt_iop_default_init(self);
 
   // Any non-default settings; for example disabling the on/off switch:
   module->hide_enable_button = TRUE;
@@ -452,26 +457,26 @@ void init(dt_iop_module_t *module)
   // label with an explanatory text when the module can't be used.
 }
 
-void init_global(dt_iop_module_so_t *module)
+void init_global(dt_iop_module_so_t *self)
 {
-  module->data = malloc(sizeof(dt_iop_useless_global_data_t));
+  self->data = malloc(sizeof(dt_iop_useless_global_data_t));
 }
 
-void cleanup(dt_iop_module_t *module)
+void cleanup(dt_iop_module_t *self)
 {
   // Releases any memory allocated in init(module) Implement this
   // function explicitly if the module allocates additional memory
   // besides (default_)params.  this is rare.
-  free(module->params);
-  module->params = NULL;
-  free(module->default_params);
-  module->default_params = NULL;
+  free(self->params);
+  self->params = NULL;
+  free(self->default_params);
+  self->default_params = NULL;
 }
 
-void cleanup_global(dt_iop_module_so_t *module)
+void cleanup_global(dt_iop_module_so_t *self)
 {
-  free(module->data);
-  module->data = NULL;
+  free(self->data);
+  self->data = NULL;
 }
 
 /** Put your local callbacks here, be sure to make them static so they
@@ -482,8 +487,8 @@ static void extra_callback(GtkWidget *w,
   // this is important to avoid cycles!
   if(darktable.gui->reset) return;
 
-  dt_iop_useless_params_t *p = (dt_iop_useless_params_t *)self->params;
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
+  dt_iop_useless_params_t *p = self->params;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
 
   float extra = dt_bauhaus_slider_get(w);
 
@@ -507,8 +512,8 @@ void gui_changed(dt_iop_module_t *self,
   // (created with dt_bauhaus_..._from_params) are changed.
   // The updated value from the widget is already set in params.
   // any additional side-effects can be achieved here.
-  dt_iop_useless_params_t *p = (dt_iop_useless_params_t *)self->params;
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
+  dt_iop_useless_params_t *p = self->params;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
 
   // Test which widget was changed.
   // If allowing w == NULL, this can be called from gui_update, so that
@@ -526,8 +531,8 @@ void color_picker_apply(dt_iop_module_t *self,
                         GtkWidget *picker,
                         dt_dev_pixelpipe_t *pipe)
 {
-  dt_iop_useless_params_t *p = (dt_iop_useless_params_t *)self->params;
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
+  dt_iop_useless_params_t *p = self->params;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
 
   // This automatically gets called when any of the color pickers set up with
   // dt_color_picker_new in gui_init is used. If there is more than one,
@@ -554,22 +559,20 @@ void gui_update(dt_iop_module_t *self)
   // handled by gui_changed (and the automatic callback) for
   // introspection based widgets or by the explicit callback set up
   // manually (see example of extra_callback above).
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)self->gui_data;
-  dt_iop_useless_params_t *p = (dt_iop_useless_params_t *)self->params;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
+  dt_iop_useless_params_t *p = self->params;
 
-  dt_bauhaus_slider_set(g->scale, p->checker_scale);
-
-  // For introspection based widgets (dt_bauhaus_slider_from_params)
-  // do not use any transformations here (for example *100 for
+  // introspection based bauhaus widgets, created with
+  // dt_bauhaus_slider_from_params or dt_bauhaus_combobox_from_params,
+  // get updated automatically.
+  // they cannot use any transformations here (for example *100 for
   // percentages) because that will break enforcement of $MIN/$MAX.
   // Use dt_bauhaus_slider_set_factor/offset in gui_init instead.
-  dt_bauhaus_slider_set(g->factor, p->factor);
 
   // dt_bauhaus_toggle_from_params creates a standard gtk_toggle_button.
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->check), p->check);
 
-  // Use set_from_value to correctly handle out of order values.
-  dt_bauhaus_combobox_set_from_value(g->method, p->method);
+  dt_bauhaus_slider_set(g->extra, 0.0f);
 
   // Any configuration changes to the gui that depend on field values
   // should be done here, or can be done in gui_changed which can then
@@ -579,23 +582,23 @@ void gui_update(dt_iop_module_t *self)
 
 /** optional: if this exists, it will be called to init new defaults if a new image is
  * loaded from film strip mode. */
-void reload_defaults(dt_iop_module_t *module)
+void reload_defaults(dt_iop_module_t *self)
 {
   // This only has to be provided if module settings or default_params
   // need to depend on image type (raw?) or exif data.  Make sure to
   // always reset to the default for non-special cases, otherwise the
   // override will stick when switching to another image.
-  dt_iop_useless_params_t *d = (dt_iop_useless_params_t *)module->default_params;
+  dt_iop_useless_params_t *d = self->default_params;
 
   // As an example, switch off for non-raw images. The enable button
   // was already hidden in init().
-  if(!dt_image_is_raw(&module->dev->image_storage))
+  if(!dt_image_is_raw(&self->dev->image_storage))
   {
-    module->default_enabled = FALSE;
+    self->default_enabled = FALSE;
   }
   else
   {
-    module->default_enabled = TRUE;
+    self->default_enabled = TRUE;
     d->checker_scale = 3; // something dependent on exif, for example.
   }
 
@@ -605,7 +608,7 @@ void reload_defaults(dt_iop_module_t *module)
   // the default values in widgets. Resetting the individual widgets
   // will then have the same effect as resetting the whole module at
   // once.
-  dt_iop_useless_gui_data_t *g = (dt_iop_useless_gui_data_t *)module->gui_data;
+  dt_iop_useless_gui_data_t *g = self->gui_data;
   if(g)
   {
     dt_bauhaus_slider_set_default(g->scale, d->checker_scale);
@@ -713,7 +716,7 @@ void gui_cleanup(dt_iop_module_t *self)
 // int mouse_moved(dt_iop_module_t *self, double x, double y, double pressure, int which);
 // int button_pressed(dt_iop_module_t *self, double x, double y, double pressure, int which, int type,
 // uint32_t state);
-// int button_released(struct dt_iop_module_t *self, double x, double y, int which, uint32_t state);
+// int button_released(dt_iop_module_t *self, double x, double y, int which, uint32_t state);
 // int scrolled(dt_iop_module_t *self, double x, double y, int up, uint32_t state);
 
 // optional: if mouse events are handled by the iop, we can add text to the help screen by declaring

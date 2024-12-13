@@ -24,13 +24,13 @@
 extern "C" {
 #endif
 
-void dt_osx_autoset_dpi(GtkWidget *widget);
 float dt_osx_get_ppd();
 void dt_osx_disallow_fullscreen(GtkWidget *widget);
 gboolean dt_osx_file_trash(const char *filename, GError **error);
 char* dt_osx_get_bundle_res_path();
 void dt_osx_prepare_environment();
 void dt_osx_focus_window();
+gboolean dt_osx_open_url(const char *url);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2023 darktable developers.
+    Copyright (C) 2009-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -117,12 +117,22 @@ typedef unsigned int u_int;
 #endif
 #endif /* dt_omp_nontemporal */
 
+#define DT_OMP_STRINGIFY(...) #__VA_ARGS__
+#define DT_OMP_PRAGMA(...) _Pragma(DT_OMP_STRINGIFY(omp __VA_ARGS__))
+
 #else /* _OPENMP */
 
 # define omp_get_max_threads() 1
 # define omp_get_thread_num() 0
 
+#define DT_OMP_PRAGMA(...)
+
 #endif /* _OPENMP */
+
+#define DT_OMP_SIMD(clauses) DT_OMP_PRAGMA(simd clauses)
+#define DT_OMP_DECLARE_SIMD(clauses) DT_OMP_PRAGMA(declare simd clauses)
+#define DT_OMP_FOR(clauses) DT_OMP_PRAGMA(parallel for default(firstprivate) schedule(static) clauses)
+#define DT_OMP_FOR_SIMD(clauses) DT_OMP_PRAGMA(parallel for simd default(firstprivate) schedule(simd:static) clauses)
 
 #ifndef _RELEASE
 #include "common/poison.h"
@@ -140,7 +150,7 @@ extern "C" {
 /* Create cloned functions for various CPU SSE generations */
 /* See for instructions https://hannes.hauswedell.net/post/2017/12/09/fmv/ */
 /* TL;DR : use only on SIMD functions containing low-level paralellized/vectorized loops */
-#if __has_attribute(target_clones) && !defined(_WIN32) && !defined(NATIVE_ARCH)
+#if __has_attribute(target_clones) && !defined(_WIN32) && !defined(NATIVE_ARCH) && !defined(__APPLE__) && defined(__GLIBC__)
 # if defined(__amd64__) || defined(__amd64) || defined(__x86_64__) || defined(__x86_64)
 #define __DT_CLONE_TARGETS__ __attribute__((target_clones("default", "sse2", "sse3", "sse4.1", "sse4.2", "popcnt", "avx", "avx2", "avx512f", "fma4")))
 # elif defined(__PPC64__)
@@ -154,15 +164,20 @@ extern "C" {
 #endif
 
 typedef int32_t dt_imgid_t;
+typedef int32_t dt_filmid_t;
 #define NO_IMGID (0)
+#define NO_FILMID (0)
 #define dt_is_valid_imgid(n) ((n) > NO_IMGID)
-
+#define dt_is_valid_filmid(n) ((n) > NO_FILMID)
 /*
   A dt_mask_id_t can be
   0  -> a formless mask
   >0 -> having a form
   INVALID_MASKID is used while testing in mask manager
 */
+
+#define DT_DEVICE_CPU -1
+#define DT_DEVICE_NONE -2
 
 typedef int32_t dt_mask_id_t;
 #define INVALID_MASKID (-1)
@@ -171,15 +186,18 @@ typedef int32_t dt_mask_id_t;
 // testing for a valid form
 #define dt_is_valid_maskid(n) ((n) > NO_MASKID)
 
-/* Helper to force stack vectors to be aligned on 64 bits blocks to enable AVX2 */
-#define DT_IS_ALIGNED(x) __builtin_assume_aligned(x, 64)
+/* Helper to force stack vectors to be aligned on DT_CACHELINE_BYTES blocks to enable AVX2 */
+#define DT_IS_ALIGNED(x) __builtin_assume_aligned(x, DT_CACHELINE_BYTES)
+
+/* Helper for 4-float pixel vectors */
+#define DT_IS_ALIGNED_PIXEL(x) __builtin_assume_aligned(x, 16)
 
 #define DT_MODULE_VERSION 25 // version of dt's module interface
 
 // version of current performance configuration version
 // if you want to run an updated version of the performance configuration later
 // bump this number and make sure you have an updated logic in dt_configure_runtime_performance()
-#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 15
+#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 17
 #define DT_PERF_INFOSIZE 4096
 
 // every module has to define this:
@@ -266,6 +284,7 @@ struct dt_colorspaces_t;
 struct dt_l10n_t;
 
 typedef float dt_boundingbox_t[4];  //(x,y) of upperleft, then (x,y) of lowerright
+typedef float dt_pickerbox_t[8];
 
 typedef enum dt_debug_thread_t
 {
@@ -297,8 +316,10 @@ typedef enum dt_debug_thread_t
   DT_DEBUG_VERBOSE        = 1 << 24,
   DT_DEBUG_PIPE           = 1 << 25,
   DT_DEBUG_EXPOSE         = 1 << 26,
+  DT_DEBUG_PICKER         = 1 << 27,
   DT_DEBUG_ALL            = 0xffffffff & ~DT_DEBUG_VERBOSE,
   DT_DEBUG_COMMON         = DT_DEBUG_OPENCL | DT_DEBUG_DEV | DT_DEBUG_MASKS | DT_DEBUG_PARAMS | DT_DEBUG_IMAGEIO | DT_DEBUG_PIPE,
+  DT_DEBUG_RESTRICT       = DT_DEBUG_VERBOSE | DT_DEBUG_PERF,
 } dt_debug_thread_t;
 
 typedef struct dt_codepath_t
@@ -321,11 +342,20 @@ typedef struct dt_backthumb_t
 {
   double time;
   double idle;
-  gboolean writing;
   gboolean service;
   gboolean running;
+  gboolean capable;
   int32_t mipsize;
 } dt_backthumb_t;
+
+typedef struct dt_gimp_t
+{
+  int32_t size;
+  char *mode;
+  char *path;
+  dt_imgid_t imgid;
+  gboolean error;
+} dt_gimp_t;
 
 typedef struct darktable_t
 {
@@ -376,6 +406,7 @@ typedef struct darktable_t
   char *cachedir;
   char *dump_pfm_module;
   char *dump_pfm_pipe;
+  char *dump_diff_pipe;
   char *tmp_directory;
   char *bench_module;
   dt_lua_state_t lua_state;
@@ -385,10 +416,12 @@ typedef struct darktable_t
   int32_t unmuted_signal_dbg_acts;
   gboolean unmuted_signal_dbg[DT_SIGNAL_COUNT];
   gboolean pipe_cache;
+  int gui_running;		// atomic, access with g_atomic_int_*()
   GTimeZone *utc_tz;
   GDateTime *origin_gdt;
   struct dt_sys_resources_t dtresources;
   struct dt_backthumb_t backthumbs;
+  struct dt_gimp_t gimp;
 } darktable_t;
 
 typedef struct
@@ -406,14 +439,28 @@ int dt_init(int argc, char *argv[],
 
 void dt_get_sysresource_level();
 void dt_cleanup();
-void dt_print(dt_debug_thread_t thread,
-              const char *msg, ...)
-  __attribute__((format(printf, 2, 3)));
+
+/*
+  for performance reasons the debug log functions should only be called,
+  and their arguments evaluated, if flags in thread match what is requested.
+*/
+#define dt_debug_if(thread, func, ...)                            \
+  do{ if( ( (~DT_DEBUG_RESTRICT & (thread)) == DT_DEBUG_ALWAYS    \
+          || ~DT_DEBUG_RESTRICT & (thread) &  darktable.unmuted ) \
+         && !(DT_DEBUG_RESTRICT & (thread) & ~darktable.unmuted)) \
+        func(__VA_ARGS__); } while(0)
+
+#define dt_print(thread, ...) dt_debug_if(thread, dt_print_ext, __VA_ARGS__)
+#define dt_print_nts(thread, ...) dt_debug_if(thread, dt_print_nts_ext, __VA_ARGS__)
+#define dt_print_pipe(thread, title, pipe, module, device, roi_in, roi_out, ...) \
+  dt_debug_if(thread, dt_print_pipe_ext, title, pipe, module, device, roi_in, roi_out, " " __VA_ARGS__)
+
+void dt_print_ext(const char *msg, ...)
+  __attribute__((format(printf, 1, 2)));
 
 /* same as above but without time stamp : nts = no time stamp */
-void dt_print_nts(dt_debug_thread_t thread,
-                  const char *msg, ...)
-  __attribute__((format(printf, 2, 3)));
+void dt_print_nts_ext(const char *msg, ...)
+  __attribute__((format(printf, 1, 2)));
 
 int dt_worker_threads();
 size_t dt_get_available_mem();
@@ -445,24 +492,67 @@ void dt_dump_pipe_pfm(const char *mod,
                       const gboolean input,
                       const char *pipe);
 
-void *dt_alloc_align(const size_t alignment, const size_t size);
+void dt_dump_pipe_diff_pfm(const char *mod,
+                          const float *a,
+                          const float *b,
+                          const int width,
+                          const int height,
+                          const int ch,
+                          const char *pipe);
 
-static inline void* dt_calloc_align(const size_t alignment, const size_t size)
+void *dt_alloc_aligned(const size_t size);
+
+static inline void* dt_calloc_aligned(const size_t size)
 {
-  void *buf = dt_alloc_align(alignment, size);
+  void *buf = dt_alloc_aligned(size);
   if(buf) memset(buf, 0, size);
   return buf;
 }
-static inline float *dt_alloc_align_float(const size_t pixels)
+#define dt_calloc1_align_type(TYPE) \
+  ((TYPE*)__builtin_assume_aligned(dt_calloc_aligned(sizeof(TYPE)), DT_CACHELINE_BYTES))
+#define dt_calloc_align_type(TYPE, count) \
+  ((TYPE*)__builtin_assume_aligned(dt_calloc_aligned(count * sizeof(TYPE)), DT_CACHELINE_BYTES))
+static inline int* dt_calloc_align_int(const size_t n_ints)
 {
-  return (float*)__builtin_assume_aligned(dt_alloc_align(64, pixels * sizeof(float)), 64);
+  return (int*)__builtin_assume_aligned(dt_calloc_aligned(n_ints * sizeof(int)), DT_CACHELINE_BYTES);
 }
-static inline float *dt_calloc_align_float(const size_t pixels)
+
+#define dt_alloc1_align_type(TYPE) \
+  ((TYPE*)__builtin_assume_aligned(dt_alloc_aligned(sizeof(TYPE)), DT_CACHELINE_BYTES))
+
+#define dt_alloc_align_type(TYPE, count) \
+  ((TYPE*)__builtin_assume_aligned(dt_alloc_aligned(count * sizeof(TYPE)), DT_CACHELINE_BYTES))
+
+static inline int *dt_alloc_align_int(const size_t n_ints)
 {
-  float *const buf = (float*)dt_alloc_align(64, pixels * sizeof(float));
-  if(buf) memset(buf, 0, pixels * sizeof(float));
-  return (float*)__builtin_assume_aligned(buf, 64);
+  return (int*)__builtin_assume_aligned(dt_alloc_aligned(n_ints * sizeof(int)), DT_CACHELINE_BYTES);
 }
+static inline uint8_t *dt_alloc_align_uint8(const size_t n_ints)
+{
+  return (uint8_t*)__builtin_assume_aligned(dt_alloc_aligned(n_ints * sizeof(uint8_t)), DT_CACHELINE_BYTES);
+}
+static inline float *dt_alloc_align_float(const size_t nfloats)
+{
+  return (float*)__builtin_assume_aligned(dt_alloc_aligned(nfloats * sizeof(float)),
+                                          DT_CACHELINE_BYTES);
+}
+static inline double *dt_alloc_align_double(const size_t ndoubles)
+{
+  return (double*)__builtin_assume_aligned(dt_alloc_aligned(ndoubles * sizeof(double)),
+                                           DT_CACHELINE_BYTES);
+}
+static inline float *dt_calloc_align_float(const size_t nfloats)
+{
+  float *const buf = (float*)dt_alloc_align_float(nfloats);
+  if(buf) memset(buf, 0, nfloats * sizeof(float));
+  return (float*)__builtin_assume_aligned(buf, DT_CACHELINE_BYTES);
+}
+
+static inline gboolean dt_check_aligned(void *addr)
+{
+  return ((uintptr_t)addr & (DT_CACHELINE_BYTES - 1)) == 0;
+}
+
 size_t dt_round_size(const size_t size, const size_t alignment);
 
 #ifdef _WIN32
@@ -560,24 +650,43 @@ static inline double dt_get_wtime(void)
   return time.tv_sec - 1290608000 + (1.0 / 1000000.0) * time.tv_usec;
 }
 
-static inline void dt_get_times(dt_times_t *t)
+static inline double dt_get_debug_wtime(void)
+{
+  return darktable.unmuted ? dt_get_wtime() : 0.0;
+}
+
+static inline double dt_get_lap_time(double *time)
+{
+  double prev = *time;
+  *time = dt_get_wtime();
+  return *time - prev;
+}
+
+static inline double dt_get_utime(void)
 {
   struct rusage ru;
-
   getrusage(RUSAGE_SELF, &ru);
+  return ru.ru_utime.tv_sec + ru.ru_utime.tv_usec * (1.0 / 1000000.0);
+}
+
+static inline double dt_get_lap_utime(double *time)
+{
+  double prev = *time;
+  *time = dt_get_utime();
+  return *time - prev;
+}
+
+static inline void dt_get_times(dt_times_t *t)
+{
   t->clock = dt_get_wtime();
-  t->user = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec * (1.0 / 1000000.0);
+  t->user = dt_get_utime();
 }
 
 static inline void dt_get_perf_times(dt_times_t *t)
 {
   if(darktable.unmuted & DT_DEBUG_PERF)
   {
-    struct rusage ru;
-
-    getrusage(RUSAGE_SELF, &ru);
-    t->clock = dt_get_wtime();
-    t->user = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec * (1.0 / 1000000.0);
+    dt_get_times(t);
   }
 }
 
@@ -619,6 +728,20 @@ static inline int dt_get_thread_num()
 #endif
 }
 
+#define DT_INITHASH 5381
+typedef uint64_t dt_hash_t;
+static inline dt_hash_t dt_hash(dt_hash_t hash, const void *data, const size_t size)
+{
+  const uint8_t* str = (uint8_t*)data;
+  // Scramble bits in str to create an (hopefully) unique hash representing the state of str
+  // Dan Bernstein algo v2 http://www.cse.yorku.ca/~oz/hash.html
+  // hash should be inited to DT_INITHASH if first run, or from a previous hash computed with this function.
+  for(size_t i = 0; i < size; i++)
+    hash = ((hash << 5) + hash) ^ str[i];
+
+  return hash;
+}
+
 // Allocate a buffer for 'n' objects each of size 'objsize' bytes for
 // each of the program's threads.  Ensures that there is no false
 // sharing among threads by aligning and rounding up the allocation to
@@ -631,10 +754,10 @@ static inline void *dt_alloc_perthread(const size_t n,
                                        size_t* padded_size)
 {
   const size_t alloc_size = n * objsize;
-  const size_t cache_lines = (alloc_size+63)/64;
-  *padded_size = 64 * cache_lines / objsize;
-  return __builtin_assume_aligned
-    (dt_alloc_align(64, 64 * cache_lines * dt_get_num_threads()), 64);
+  const size_t cache_lines = (alloc_size+DT_CACHELINE_BYTES-1)/DT_CACHELINE_BYTES;
+  *padded_size = DT_CACHELINE_BYTES * cache_lines / objsize;
+  const size_t total_bytes = DT_CACHELINE_BYTES * cache_lines * dt_get_num_threads();
+  return __builtin_assume_aligned(dt_alloc_aligned(total_bytes), DT_CACHELINE_BYTES);
 }
 static inline void *dt_calloc_perthread(const size_t n,
                                         const size_t objsize,
@@ -703,6 +826,7 @@ static inline void copy_pixel(float *const __restrict__ out,
 
 // a few macros and helper functions to speed up certain frequently-used GLib operations
 #define g_list_is_singleton(list) ((list) && (!(list)->next))
+#define g_list_is_empty(list) (!list)
 
 static inline gboolean g_list_shorter_than(const GList *list,
                                            unsigned len)
@@ -738,16 +862,41 @@ static inline const GList *g_list_prev_wraparound(const GList *list)
   return g_list_previous(list) ? g_list_previous(list) : g_list_last((GList*)list);
 }
 
+// returns true if the two GLists have the same length
+static inline gboolean dt_list_length_equal(GList *l1, GList *l2)
+{
+  while (l1 && l2)
+  {
+    l1 = g_list_next(l1);
+    l2 = g_list_next(l2);
+  }
+  return !l1 && !l2;
+}
+
+// returns true if the two GSLists have the same length
+static inline gboolean dt_slist_length_equal(GSList *l1, GSList *l2)
+{
+  while (l1 && l2)
+  {
+    l1 = g_slist_next(l1);
+    l2 = g_slist_next(l2);
+  }
+  return !l1 && !l2;
+}
+
 // checks internally for DT_DEBUG_MEMORY
-void dt_print_mem_usage();
+void dt_print_mem_usage(char *info);
+
+// try to start the backthumbs crawler
+void dt_start_backtumbs_crawler();
 
 void dt_configure_runtime_performance(const int version, char *config_info);
 // helper function which loads whatever image_to_load points to:
 // single image files or whole directories it tells you if it was a
 // single image or a directory in single_image (when it's not NULL)
-int dt_load_from_string(const gchar *image_to_load,
-                        const gboolean open_image_in_dr,
-                        gboolean *single_image);
+dt_imgid_t dt_load_from_string(const gchar *image_to_load,
+                               const gboolean open_image_in_dr,
+                               gboolean *single_image);
 
 #define dt_unreachable_codepath_with_desc(D)                                                                 \
   dt_unreachable_codepath_with_caller(D, __FILE__, __LINE__, __FUNCTION__)
@@ -760,7 +909,7 @@ static inline void dt_unreachable_codepath_with_caller(const char *description,
 {
   dt_print(DT_DEBUG_ALWAYS,
            "[dt_unreachable_codepath] {%s} %s:%d (%s) - we should not be here."
-           " please report this to the developers.",
+           " please report this to the developers",
            description, file, line, function);
   __builtin_unreachable();
 }
@@ -820,6 +969,21 @@ static inline const gchar *NQ_(const gchar *String)
 {
   const gchar *context_end = strchr(String, '|');
   return context_end ? context_end + 1 : String;
+}
+
+static inline gboolean dt_gimpmode(void)
+{
+  return darktable.gimp.mode ? TRUE : FALSE;
+}
+
+static inline gboolean dt_check_gimpmode(const char *mode)
+{
+  return darktable.gimp.mode ? strcmp(darktable.gimp.mode, mode) == 0 : FALSE;
+}
+
+static inline gboolean dt_check_gimpmode_ok(const char *mode)
+{
+  return darktable.gimp.mode ? !darktable.gimp.error && strcmp(darktable.gimp.mode, mode) == 0 : FALSE;
 }
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -35,8 +36,10 @@
 #include <inttypes.h>
 
 #define GRAIN_LIGHTNESS_STRENGTH_SCALE 0.15f
+
 // (m_pi/2)/4 = half hue colorspan
 #define GRAIN_HUE_COLORRANGE 0.392699082
+
 #define GRAIN_HUE_STRENGTH_SCALE 0.25
 #define GRAIN_SATURATION_STRENGTH_SCALE 0.25
 #define GRAIN_RGB_STRENGTH_SCALE 0.25
@@ -110,8 +113,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_grain_params_v1_t;
 
     const dt_iop_grain_params_v1_t *o = old_params;
-    dt_iop_grain_params_v2_t *n =
-      (dt_iop_grain_params_v2_t *)malloc(sizeof(dt_iop_grain_params_v2_t));
+    dt_iop_grain_params_v2_t *n = malloc(sizeof(dt_iop_grain_params_v2_t));
 
     n->channel = o->channel;
     n->scale = o->scale;
@@ -314,64 +316,6 @@ static double _simplex_noise(double xin, double yin, double zin)
   return 32.0 * (n0 + n1 + n2 + n3);
 }
 
-#define PRIME_LEVELS 4
-// static uint64_t _low_primes[PRIME_LEVELS] ={ 12503,14029,15649, 11369 };
-// uint64_t _mid_primes[PRIME_LEVELS] ={ 784697,875783, 536461,639259};
-
-/*static double __value_noise(uint32_t level,uint32_t x,uint32_t y)
-{
-  //uint32_t lvl=level%PRIME_LEVELS;
-  uint32_t n = x + y * 57;
-  n = (n<<13) ^ n;
-  return ( 1.0 - (( (n * (n * n * 15731 + 789221) +1376312589) & 0x7fffffff) / 1073741824.0));
-}
-
-static double __value_smooth_noise(uint32_t level,double x,double y)
-{
-  double corners = ( __value_noise(level,x-1, y-1)+__value_noise(level,x+1, y-1)+__value_noise(level,x-1,
-y+1)+__value_noise(level,x+1, y+1) ) / 16;
-  double sides   = ( __value_noise(level,x-1, y)  +__value_noise(level,x+1, y)  +__value_noise(level,x, y-1)
-+__value_noise(level,x, y+1) ) /  8;
-  double center  =  __value_noise(level,x, y) / 4;
-  return corners + sides + center;
-}
-
-static double __preline_cosine_interpolate(double a,double b,double x)
-{
-  double ft = x * 3.1415927;
-  double f = (1 - cos(ft)) * .5;
-  return  a*(1-f) + b*f;
-}
-
-static double __value_interpolate(uint32_t level,double x,double y)
-{
-  double fx = x - (uint32_t)x;
-  double fy = y - (uint32_t)y;
-
-  double v1 = __value_smooth_noise(level,(uint32_t)x,     (uint32_t)y);
-  double v2 = __value_smooth_noise(level,(uint32_t)x + 1, (uint32_t)y);
-  double v3 = __value_smooth_noise(level,(uint32_t)x,     (uint32_t)y + 1);
-  double v4 = __value_smooth_noise(level,(uint32_t)x + 1, (uint32_t)y + 1);
-
-  double i1 = __preline_cosine_interpolate(v1 , v2 , fx);
-  double i2 = __preline_cosine_interpolate(v3 , v4 , fx);
-
-  return __preline_cosine_interpolate(i1 , i2 , fy);
-}
-static double _perlin_2d_noise(double x,double y,uint32_t octaves,double persistance,double z)
-{
-  double f=1,a=1,total=0;
-
-  for(int o=0;o<octaves;o++) {
-    total+= (__value_interpolate(o,x*f/z,y*f/z)*a);
-    f=2*o;
-    a=persistance*o;
-  }
-  return total;
-}*/
-
-#define OCTAVES 3
-
 static double _simplex_2d_noise(double x, double y, double z)
 {
   double total = 0;
@@ -380,9 +324,9 @@ static double _simplex_2d_noise(double x, double y, double z)
   static const double f[] = {0.4910, 0.9441, 1.7280};
   static const double a[] = {0.2340, 0.7850, 1.2150};
 
-  for(uint32_t o = 0; o < OCTAVES; o++)
+  for(uint32_t octave = 0; octave < 3; octave++)
   {
-    total += (_simplex_noise(x * f[o] / z, y * f[o] / z, o) * a[o]);
+    total += (_simplex_noise(x * f[octave] / z, y * f[octave] / z, octave) * a[octave]);
   }
   return total;
 }
@@ -444,7 +388,7 @@ const char *name()
   return _("grain");
 }
 
-const char **description(struct dt_iop_module_t *self)
+const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("simulate silver grains from film"),
                                       _("creative"),
@@ -470,16 +414,23 @@ dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
   return IOP_CS_LAB;
 }
 
-// see: http://eternallyconfuzzled.com/tuts/algorithms/jsw_tut_hashing.aspx
-// this is the modified bernstein
-static unsigned int _hash_string(char *s)
+// This is a modified Bernstein hash known as DJBX33X (hash x 33 with bitwise XOR).
+// However, we calculate the hash from the end of the string to the beginning. Why?
+// We hash the image filename. This allows us to get rid of static grain when
+// creating a video from a sequence of images, the names of which will usually
+// differ by the last characters. Therefore, we start hashing from the changed
+// characters so that these changes have a greater impact on the resulting hash.
+static unsigned int _hash_string(char *str)
 {
-  unsigned int h = 0;
-  while(*s) h = 33 * h ^ *s++;
-  return h;
+  unsigned int hash = 5381;
+
+  for(int i = strlen(str) - 1; i >= 0; i--)
+    hash = ((hash << 5) + hash) ^ str[i];
+
+  return hash;
 }
 
-void process(struct dt_iop_module_t *self,
+void process(dt_iop_module_t *self,
              dt_dev_pixelpipe_iop_t *piece,
              const void *const ivoid,
              void *const ovoid,
@@ -490,7 +441,7 @@ void process(struct dt_iop_module_t *self,
                                         ivoid, ovoid, roi_in, roi_out))
     return;
 
-  dt_iop_grain_data_t *data = (dt_iop_grain_data_t *)piece->data;
+  dt_iop_grain_data_t *data = piece->data;
 
   unsigned int hash = _hash_string(piece->pipe->image.filename) % (int)fmax(roi_out->width * 0.3, 1.0);
 
@@ -510,12 +461,7 @@ void process(struct dt_iop_module_t *self,
   const double scale = roi_out->scale;	// is only used in double expressions, so avoid conversion
   const double fib2inv = 1.0 / fib2;
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(filter, filtermul, ivoid, ovoid, roi_out, strength, \
-                      scale, wd, zoom, fib2, fib2inv, fib1div2, data, hash) \
-  schedule(static)
-#endif
+  DT_OMP_FOR()
   for(int j = 0; j < roi_out->height; j++)
   {
     float *in = ((float *)ivoid) + (size_t)4 * roi_out->width * j;
@@ -558,11 +504,11 @@ void process(struct dt_iop_module_t *self,
   }
 }
 
-void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_grain_params_t *p = (dt_iop_grain_params_t *)p1;
-  dt_iop_grain_data_t *d = (dt_iop_grain_data_t *)piece->data;
+  dt_iop_grain_data_t *d = piece->data;
 
   d->channel = p->channel;
   d->scale = p->scale;
@@ -572,23 +518,23 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   evaluate_grain_lut(d->grain_lut, d->midtones_bias);
 }
 
-void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void init_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   piece->data = calloc(1, sizeof(dt_iop_grain_data_t));
 }
 
-void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   free(piece->data);
   piece->data = NULL;
 }
 
-void init_global(struct dt_iop_module_so_t *self)
+void init_global(dt_iop_module_so_t *self)
 {
   _simplex_noise_init();
 }
 
-void gui_init(struct dt_iop_module_t *self)
+void gui_init(dt_iop_module_t *self)
 {
   dt_iop_grain_gui_data_t *g = IOP_GUI_ALLOC(grain);
 

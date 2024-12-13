@@ -37,6 +37,7 @@ function install_dependencies {
 
     # Handle library relative paths
     oToolLDependencies=$(echo "$oToolLDependencies" | sed "s#@loader_path#${absolutePath}#")
+    oToolLDependencies=$(echo "$oToolLDependencies" | sed "s#@rpath#${absolutePath}#")
 
     # Filter for homebrew dependencies
     if [[ "$oToolLDependencies" == *"$homebrewHome"* ]]; then
@@ -55,11 +56,11 @@ function install_dependencies {
                 dynDepOrigFile=$(basename "$hbDependency")
                 dynDepTargetFile="$dtResourcesDir/lib/$dynDepOrigFile"
 
-                # Install dependency if not yet existant
+                # Install dependency if not yet existent
                 if [[ ! -f "$dynDepTargetFile" ]]; then
-                    echo "Installing dependency <$hbDependency> of <$1>."
+                    echo "Installing dependency $hbDependency of $1"
 
-                    # Copy dependency as not yet existant
+                    # Copy dependency as not yet existent
                     cp -L "$hbDependency" "$dynDepTargetFile"
 
                     # Handle transitive dependencies
@@ -76,6 +77,9 @@ function install_dependencies {
 function reset_exec_path {
     local hbDependencies
 
+    # Store file name
+    libraryOrigFile=$(basename "$1")
+
     # Get shared libraries used of current executable
     oToolLDependencies=$(otool -L "$1" 2>/dev/null | grep compatibility | cut -d\( -f1 | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | uniq)
 
@@ -84,7 +88,7 @@ function reset_exec_path {
         # Only need to reset binaries that live outside of lib/darktable
         oToolLoader=$(otool -l "$1" 2>/dev/null | grep '@loader_path' | cut -d\( -f1 | sed 's/^[[:blank:]]*path[[:blank:]]*//;s/[[:blank:]]*$//' )
         if [[ "$oToolLoader" == "@loader_path/../lib/darktable" ]]; then
-            echo "Resetting loader path for libdarktable.dylib of <$1>"
+            echo "Resetting loader path for libdarktable.dylib of $libraryOrigFile"
             install_name_tool -rpath @loader_path/../lib/darktable @loader_path/../Resources/lib/darktable "$1" || true
         fi
     fi
@@ -107,7 +111,7 @@ function reset_exec_path {
             dynDepOrigFile=$(basename "$hbDependency")
             dynDepTargetFile="$dtResourcesDir/lib/$dynDepOrigFile"
 
-            echo "Resetting executable path for dependency <$hbDependency> of <$1>"
+            echo "Resetting executable path for $dynDepOrigFile of $libraryOrigFile"
 
             # Set correct executable path
             install_name_tool -change "$hbDependency" "@executable_path/../Resources/lib/$dynDepOrigFile" "$1"  || true
@@ -115,7 +119,7 @@ function reset_exec_path {
             # Check for loader path
             oToolLoader=$(otool -L "$1" 2>/dev/null | grep '@loader_path' | grep $dynDepOrigFile | cut -d\( -f1 | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' ) || true
             if [[ -n "$oToolLoader" ]]; then
-                echo "Resetting loader path for dependency <$hbDependency> of <$1>"
+                echo "Resetting loader path for $hbDependency of $libraryOrigFile"
                 oToolLoaderNew=$(echo $oToolLoader | sed "s#@loader_path/##" | sed "s#../../../../opt/.*##")
                 install_name_tool -change "$oToolLoader" "@loader_path/${oToolLoaderNew}${dynDepOrigFile}" "$1"  || true
             fi
@@ -128,11 +132,7 @@ function reset_exec_path {
 
     # Set correct ID to new destination if required
     if [[ "$oToolDDependencies" == *"$homebrewHome"* ]]; then
-
-        # Store file name
-        libraryOrigFile=$(basename "$1")
-
-        echo "Resetting library ID of <$1>"
+        echo "Resetting library ID of $libraryOrigFile"
 
         # Set correct library id
         install_name_tool -id "@executable_path/../Resources/lib/$libraryOrigFile" "$1"  || true
@@ -183,6 +183,9 @@ mkdir -p "$dtExecDir"
 mkdir -p "$dtResourcesDir"/share/applications
 mkdir -p "$dtResourcesDir"/etc/gtk-3.0
 
+# exiv2 expects the localization files in '../share/locale'
+ln -s "Resources/share" "$dtWorkingDir"/Contents/share
+
 # Add basic elements
 cp Info.plist "$dtWorkingDir"/Contents/
 echo "APPL$dtAppName" >>"$dtWorkingDir"/Contents/PkgInfo
@@ -216,13 +219,21 @@ for dtExecutable in $dtExecutables; do
 done
 
 # Add homebrew shared objects
-dtSharedObjDirs="ImageMagick gtk-3.0 libgphoto2 libgphoto2_port gdk-pixbuf-2.0 gio"
+dtSharedObjDirs="ImageMagick gtk-3.0 gdk-pixbuf-2.0 gio"
 for dtSharedObj in $dtSharedObjDirs; do
-    cp -LR "$homebrewHome"/lib/"$dtSharedObj" "$dtResourcesDir"/lib/
+    mkdir "$dtResourcesDir"/lib/"$dtSharedObj"
+    cp -LR "$homebrewHome"/lib/"$dtSharedObj"/* "$dtResourcesDir"/lib/"$dtSharedObj"/
+done
+
+dtSharedObjDirs="libgphoto2 libgphoto2_port"
+for dtSharedObj in $dtSharedObjDirs; do
+    mkdir "$dtResourcesDir"/lib/"$dtSharedObj"
+    dtSharedObjVersion=$(pkg-config --modversion "$dtSharedObj")
+    cp -LR "$homebrewHome"/lib/"$dtSharedObj"/"$dtSharedObjVersion"/* "$dtResourcesDir"/lib/"$dtSharedObj"
 done
 
 # Add homebrew translations
-dtTranslations="gtk30 gtk30-properties gtk-mac-integration iso_639-2 gphoto2"
+dtTranslations="gtk30 gtk30-properties gtk-mac-integration iso_639-2 gphoto2 exiv2"
 for dtTranslation in $dtTranslations; do
     install_translations "$dtTranslation"
 done
@@ -267,6 +278,9 @@ loadersCacheFile="$dtResourcesDir"/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache
 sed -i '' "s#$homebrewHome/lib/gdk-pixbuf-2.0/2.10.0/loaders#@executable_path/../Resources/lib/gdk-pixbuf-2.0/2.10.0/loaders#g" "$loadersCacheFile"
 # Move it to the right place
 mv "$loadersCacheFile" "$dtResourcesDir"/etc/gtk-3.0/
+
+# ImageMagick config files
+cp -R $homebrewHome/Cellar/imagemagick/*/etc $dtResourcesDir
 
 # Install homebrew dependencies of lib subdirectories
 dtLibFiles=$(find -E "$dtResourcesDir"/lib/*/* -regex '.*\.(so|dylib)')

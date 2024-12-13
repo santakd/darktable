@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -56,28 +56,59 @@
 #include <librsvg/rsvg-cairo.h>
 #endif
 
-gchar *dt_util_dstrcat(gchar *str, const gchar *format, ...)
+const char *dt_util_localize_string(const char *s)
 {
+  // check whether the string starts with the magic tag to request localization
+  static const char prefix[] = "_l10n_";
+  static const int prefix_len = sizeof(prefix)-1;
+
+  if(s && strncmp(s, prefix, prefix_len) == 0)
+    return _(s+prefix_len);
+  else
+    return s;
+}
+
+gchar *dt_util_localize_segmented_name(const char *s)
+{
+  gchar **split = g_strsplit(s, "|", 0);
+  gchar *localized = NULL;
+  if (split && split[0])
+  {
+    gsize loc_len = 1 + strlen(dt_util_localize_string(split[0]));
+    for(int i = 1; split[i] != NULL; i++)
+      loc_len += strlen(dt_util_localize_string(split[i])) + strlen(" | ");
+    localized = g_new0(gchar, loc_len);
+    gchar *end = g_stpcpy(localized, dt_util_localize_string(split[0]));
+    for(int i = 1; split[i] != NULL; i++)
+    {
+      end = g_stpcpy(end, " | ");
+      end = g_stpcpy(end, dt_util_localize_string(split[i]));
+    }
+  }
+  g_strfreev(split);
+  return localized;
+}
+
+void dt_util_str_cat(gchar **str, const gchar *format, ...)
+{
+  if(!str) return;
+
   va_list args;
-  gchar *ns;
   va_start(args, format);
-  const size_t clen = str ? strlen(str) : 0;
+  const size_t clen = *str ? strlen(*str) : 0;
   const int alen = g_vsnprintf(NULL, 0, format, args);
+  va_end(args);
   const int nsize = alen + clen + 1;
 
   /* realloc for new string */
-  ns = g_realloc(str, nsize);
-  if(str == NULL) ns[0] = '\0';
-  va_end(args);
+  *str = g_realloc(*str, nsize);
 
   /* append string */
   va_start(args, format);
-  g_vsnprintf(ns + clen, alen + 1, format, args);
+  g_vsnprintf(*str + clen, alen + 1, format, args);
   va_end(args);
 
-  ns[nsize - 1] = '\0';
-
-  return ns;
+  (*str)[nsize - 1] = '\0';
 }
 
 guint dt_util_str_occurence(const gchar *haystack, const gchar *needle)
@@ -95,6 +126,27 @@ guint dt_util_str_occurence(const gchar *haystack, const gchar *needle)
     }
   }
   return o;
+}
+
+gchar *dt_util_float_to_str(const gchar *format, const double value)
+{
+#if defined(WIN32)
+  _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+  setlocale (LC_NUMERIC, "C");
+#else
+  locale_t nlocale = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
+  locale_t locale = uselocale(nlocale);
+#endif
+
+  gchar *txt = g_strdup_printf(format, value);
+
+#if defined(WIN32)
+  _configthreadlocale(_DISABLE_PER_THREAD_LOCALE);
+#else
+  uselocale(locale);
+  freelocale(nlocale);
+#endif
+  return txt;
 }
 
 gchar *dt_util_str_replace(const gchar *string, const gchar *pattern, const gchar *substitute)
@@ -438,7 +490,7 @@ static cairo_surface_t *_util_get_svg_img(gchar *logo, const float size)
                 final_height = dimension.height * factor * ppd;
     const int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, final_width);
 
-    guint8 *image_buffer = (guint8 *)calloc(stride * final_height, sizeof(guint8));
+    guint8 *image_buffer = calloc(stride * final_height, sizeof(guint8));
     if(darktable.gui)
       surface = dt_cairo_image_surface_create_for_data(image_buffer, CAIRO_FORMAT_ARGB32, final_width,
                                                       final_height, stride);
@@ -447,7 +499,7 @@ static cairo_surface_t *_util_get_svg_img(gchar *logo, const float size)
                                                        final_height, stride);
     if(cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
     {
-      dt_print(DT_DEBUG_ALWAYS, "warning: can't load darktable logo from SVG file `%s'\n", dtlogo);
+      dt_print(DT_DEBUG_ALWAYS, "warning: can't load darktable logo from SVG file `%s'", dtlogo);
       cairo_surface_destroy(surface);
       free(image_buffer);
       image_buffer = NULL;
@@ -466,7 +518,7 @@ static cairo_surface_t *_util_get_svg_img(gchar *logo, const float size)
   else
   {
     dt_print(DT_DEBUG_ALWAYS,
-             "warning: can't load darktable logo from SVG file `%s'\n%s\n", dtlogo, error->message);
+             "warning: can't load darktable logo from SVG file `%s'\n%s", dtlogo, error->message);
     g_error_free(error);
   }
 
@@ -568,7 +620,9 @@ double dt_util_gps_string_to_number(const gchar *input)
   gchar **list = g_strsplit(input, ",", 0);
   if(list)
   {
-    if(list[2] == NULL) // format DDD,MM.mm{N|S}
+    if(list[1] == NULL) // Already in decimal format
+      res = g_ascii_strtod(list[0], NULL);
+    else if(list[2] == NULL) // format DDD,MM.mm{N|S}
       res = g_ascii_strtoll(list[0], NULL, 10) + (g_ascii_strtod(list[1], NULL) / 60.0);
     else if(list[3] == NULL) // format DDD,MM,SS{N|S}
       res = g_ascii_strtoll(list[0], NULL, 10) + (g_ascii_strtoll(list[1], NULL, 10) / 60.0)
@@ -852,7 +906,7 @@ char *dt_read_file(const char *const filename, size_t *filesize)
   const size_t end = ftell(fd);
   rewind(fd);
 
-  char *content = (char *)malloc(sizeof(char) * end);
+  char *content = malloc(sizeof(char) * end);
   if(!content) return NULL;
 
   const size_t count = fread(content, sizeof(char), end, fd);
@@ -866,26 +920,47 @@ char *dt_read_file(const char *const filename, size_t *filesize)
   return NULL;
 }
 
-void dt_copy_file(const char *const sourcefile, const char *dst)
+void dt_copy_file(const char *const sourcefile, const char *destination)
 {
   char *content = NULL;
   FILE *fin = g_fopen(sourcefile, "rb");
-  FILE *fout = g_fopen(dst, "wb");
+  FILE *fout = g_fopen(destination, "wb");
 
   if(fin && fout)
   {
     fseek(fin, 0, SEEK_END);
-    const size_t end = ftell(fin);
+    const size_t filesize = ftell(fin);
     rewind(fin);
-    content = (char *)g_malloc_n(end, sizeof(char));
-    if(content == NULL) goto END;
-    if(fread(content, sizeof(char), end, fin) != end) goto END;
-    if(fwrite(content, sizeof(char), end, fout) != end) goto END;
+
+    content = (char *)g_try_malloc_n(filesize, sizeof(char));
+    if(content == NULL)
+    {
+      dt_print(DT_DEBUG_ALWAYS,
+               "[dt_copy_file] failure to allocate memory for copying file '%s'",
+               sourcefile);
+      goto END;
+    }
+    if(fread(content, sizeof(char), filesize, fin) != filesize)
+    {
+      dt_print(DT_DEBUG_ALWAYS,
+               "[dt_copy_file] error reading file '%s' for copying",
+               sourcefile);
+      goto END;
+    }
+    if(fwrite(content, sizeof(char), filesize, fout) != filesize)
+    {
+      dt_print(DT_DEBUG_ALWAYS,
+               "[dt_copy_file] error writing file '%s' during copying",
+               destination);
+      goto END;
+    }
   }
 
 END:
-  if(fout != NULL) fclose(fout);
-  if(fin != NULL) fclose(fin);
+  if(fout != NULL)
+    fclose(fout);
+  if(fin != NULL)
+    fclose(fin);
 
   g_free(content);
 }
@@ -971,18 +1046,26 @@ gboolean dt_has_same_path_basename(const char *filename1, const char *filename2)
 char *dt_copy_filename_extension(const char *filename1, const char *filename2)
 {
   // assume both filenames have an extension
-  if(!filename1 || !filename2) return NULL;
-  const char *dot1 = strrchr(filename1, '.');
-  if(!dot1) return NULL;
+  if(!filename2) return NULL;
   const char *dot2 = strrchr(filename2, '.');
   if(!dot2) return NULL;
-  const int name_lgth = dot1 - filename1;
-  const int ext_lgth = strlen(dot2);
-  char *output = g_malloc(name_lgth + ext_lgth + 1);
+
+  return dt_filename_change_extension(filename1, dot2+1);
+}
+
+char *dt_filename_change_extension(const char *filename, const char *ext)
+{
+  // assume both filenames have an extension
+  if(!filename || !ext) return NULL;
+  const char *dot = strrchr(filename, '.');
+  if(!dot) return NULL;
+  const int name_lgth = dot - filename + 1;
+  const int ext_lgth = strlen(ext);
+  char *output = g_try_malloc(name_lgth + ext_lgth + 1);
   if(output)
   {
-    memcpy(output, filename1, name_lgth);
-    memcpy(&output[name_lgth], &filename2[strlen(filename2) - ext_lgth], ext_lgth + 1);
+    memcpy(output, filename, name_lgth);
+    memcpy(&output[name_lgth], ext, ext_lgth + 1);
   }
   return output;
 }

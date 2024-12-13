@@ -72,17 +72,15 @@ typedef struct dt_thumbtable_t
   int prefs_size;              // size value to determine overlays mode and css class
   int view_width, view_height; // last main widget size
   GdkRectangle thumbs_area;    // coordinate of all the currently loaded thumbs area
+  PangoRectangle manual_button;// coordinates of the click "here" text
 
   int center_offset; // in filemanager, we can have a gap, esp. for zoom==1, we need to center everything
 
   gboolean dragging;
-  int last_x, last_y;         // last position of cursor during move
-  int drag_dx, drag_dy;       // distance of move of the current dragging session
-  dt_thumbnail_t *drag_thumb; // thumb currently dragged (under the mouse)
-
-  // for some reasons, in filemanager, first image can not be at x=0
-  // in that case, we count the number of "scroll-top" try and reallign after 2 try
-  int realign_top_try;
+  int last_x, last_y;             // last position of cursor during move
+  int drag_dx, drag_dy;           // distance of move of the current dragging session
+  dt_thumbnail_t *drag_thumb;     // thumb currently dragged (under the mouse)
+  dt_imgid_t drag_initial_imgid;  // image_over_id at the dragging start
 
   gboolean mouse_inside; // is the mouse pointer inside thumbtable widget ?
   gboolean key_inside;   // is the key move pointer inside thumbtable widget ?
@@ -103,6 +101,14 @@ typedef struct dt_thumbtable_t
   // let's remember previous thumbnail generation settings to detect if they change
   int pref_embedded;
   int pref_hq;
+
+  // scroll timeout values
+  guint scroll_timeout_id;
+  float scroll_value;
+
+  // darkroom selection from filmstrip (support for single & double click)
+  guint sel_single_cb;
+  dt_imgid_t to_selid;
 } dt_thumbtable_t;
 
 dt_thumbtable_t *dt_thumbtable_new();
@@ -125,7 +131,7 @@ gboolean dt_thumbtable_ensure_imgid_visibility(dt_thumbtable_t *table, dt_imgid_
 gboolean dt_thumbtable_check_imgid_visibility(dt_thumbtable_t *table, dt_imgid_t imgid);
 
 // drag & drop receive function - handles dropping of files in the center view (files are added to the library)
-void dt_thumbtable_event_dnd_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y, GtkSelectionData *selection_data, guint target_type, guint time, gpointer user_data);
+void dt_thumbtable_event_dnd_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y, GtkSelectionData *selection_data, guint target_type, guint time, dt_thumbtable_t *table);
 
 // move by key actions.
 // this key accels are not managed here but inside view
@@ -147,4 +153,3 @@ void dt_thumbtable_set_overlays_block_timeout(dt_thumbtable_t *table, const int 
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-

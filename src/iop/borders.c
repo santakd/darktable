@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2023 darktable developers.
+    Copyright (C) 2011-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include "control/control.h"
 #include "develop/develop.h"
 #include "develop/imageop.h"
+#include "develop/borders_helper.h"
 #include "develop/imageop_gui.h"
 #include "dtgtk/button.h"
 #include "dtgtk/resetlabel.h"
@@ -44,7 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-DT_MODULE_INTROSPECTION(3, dt_iop_borders_params_t)
+DT_MODULE_INTROSPECTION(4, dt_iop_borders_params_t)
 
 // Module constants
 #define DT_IOP_BORDERS_ASPECT_IMAGE_VALUE 0.0f
@@ -55,6 +56,15 @@ typedef enum dt_iop_orientation_t
   DT_IOP_BORDERS_ASPECT_ORIENTATION_PORTRAIT = 1,  // $DESCRIPTION: "portrait"
   DT_IOP_BORDERS_ASPECT_ORIENTATION_LANDSCAPE = 2, // $DESCRIPTION: "landscape"
 } dt_iop_orientation_t;
+
+typedef enum dt_iop_basis_t
+{
+  DT_IOP_BORDERS_BASIS_AUTO = 0,     // $DESCRIPTION: "auto"
+  DT_IOP_BORDERS_BASIS_WIDTH = 1,    // $DESCRIPTION: "width"
+  DT_IOP_BORDERS_BASIS_HEIGHT = 2,   // $DESCRIPTION: "height"
+  DT_IOP_BORDERS_BASIS_SHORTER = 3,  // $DESCRIPTION: "shorter"
+  DT_IOP_BORDERS_BASIS_LONGER = 4,   // $DESCRIPTION: "longer"
+} dt_iop_basis_t;
 
 static const float _aspect_ratios[]
   = { DT_IOP_BORDERS_ASPECT_IMAGE_VALUE,
@@ -72,14 +82,14 @@ static const float _pos_v_ratios[] = { 0.5f, 1.0f / 3.0f, 3.0f / 8.0f, 5.0f / 8.
 
 typedef struct dt_iop_borders_params_t
 {
-  float color[3];           // border color $DEFAULT: 1.0
+  float color[3];           // border color $DEFAULT: 1.0 $DESCRIPTION: "border color"
   float aspect;             /* aspect ratio of the outer frame w/h
                                $MIN: 1.0 $MAX: 3.0 $DEFAULT: DT_IOP_BORDERS_ASPECT_CONSTANT_VALUE $DESCRIPTION: "aspect ratio" */
   char aspect_text[20];     /* UNUSED aspect ratio of the outer frame w/h (user string version)
                                DEFAULT: "constant border" */
   dt_iop_orientation_t aspect_orient;        /* aspect ratio orientation
                                $DEFAULT: 0 $DESCRIPTION: "orientation" */
-  float size;               /* border width relative to overall frame width
+  float size;               /* border width relative to the length of the chosen basis
                                $MIN: 0.0 $MAX: 0.5 $DEFAULT: 0.1 $DESCRIPTION: "border size" */
   float pos_h;              /* picture horizontal position ratio into the final image
                                $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.5 $DESCRIPTION: "horizontal offset" */
@@ -93,13 +103,16 @@ typedef struct dt_iop_borders_params_t
                                $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.0 $DESCRIPTION: "frame line size" */
   float frame_offset;       /* frame offset from picture size relative to [border width - frame width]
                                $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.5 $DESCRIPTION: "frame line offset" */
-  float frame_color[3];     // frame line color $DEFAULT: 0.0
+  float frame_color[3];     // frame line color $DEFAULT: 0.0 $DESCRIPTION: "frame line color"
   gboolean max_border_size; /* the way border size is computed
                                $DEFAULT: TRUE */
+  dt_iop_basis_t basis;     /* side of the photo to use as basis for the size calculation
+                               $DEFAULT: 0 $DESCRIPTION: "basis" */
 } dt_iop_borders_params_t;
 
 typedef struct dt_iop_borders_gui_data_t
 {
+  GtkWidget *basis;
   GtkWidget *size;
   GtkWidget *aspect;
   GtkWidget *aspect_slider;
@@ -178,8 +191,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_borders_params_v1_t;
 
     const dt_iop_borders_params_v1_t *o = (dt_iop_borders_params_v1_t *)old_params;
-    dt_iop_borders_params_v3_t *n =
-      (dt_iop_borders_params_v3_t *)malloc(sizeof(dt_iop_borders_params_v3_t));
+    dt_iop_borders_params_v3_t *n = malloc(sizeof(dt_iop_borders_params_v3_t));
 
     *n = default_v3; // start with a fresh copy of default parameters
     memcpy(n->color, o->color, sizeof(o->color));
@@ -215,8 +227,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_borders_params_v2_t;
 
     const dt_iop_borders_params_v2_t *o = (dt_iop_borders_params_v2_t *)old_params;
-    dt_iop_borders_params_v3_t *n =
-      (dt_iop_borders_params_v3_t *)malloc(sizeof(dt_iop_borders_params_v3_t));
+    dt_iop_borders_params_v3_t *n = malloc(sizeof(dt_iop_borders_params_v3_t));
 
     memcpy(n, o, sizeof(struct dt_iop_borders_params_v2_t));
     n->max_border_size = FALSE;
@@ -224,6 +235,60 @@ int legacy_params(dt_iop_module_t *self,
     *new_params = n;
     *new_params_size = sizeof(dt_iop_borders_params_v3_t);
     *new_version = 3;
+    return 0;
+  }
+
+  if(old_version == 3)
+  {
+    typedef struct dt_iop_borders_params_v4_t
+    {
+      float color[3];           // border color $DEFAULT: 1.0
+      float aspect;             /* aspect ratio of the outer frame w/h
+                                $MIN: 1.0 $MAX: 3.0 $DEFAULT: DT_IOP_BORDERS_ASPECT_CONSTANT_VALUE $DESCRIPTION: "aspect ratio" */
+      char aspect_text[20];     /* UNUSED aspect ratio of the outer frame w/h (user string version)
+                                  DEFAULT: "constant border" */
+      dt_iop_orientation_t aspect_orient;        /* aspect ratio orientation
+                                                    $DEFAULT: 0 $DESCRIPTION: "orientation" */
+      float size;               /* border width relative to overall frame width
+                                  $MIN: 0.0 $MAX: 0.5 $DEFAULT: 0.1 $DESCRIPTION: "border size" */
+      float pos_h;              /* picture horizontal position ratio into the final image
+                                  $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.5 $DESCRIPTION: "horizontal offset" */
+      char pos_h_text[20];      /* UNUSED picture horizontal position ratio into the final image (user string version)
+                                  DEFAULT: "1/2" */
+      float pos_v;              /* picture vertical position ratio into the final image
+                                  $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.5 $DESCRIPTION: "vertical offset"*/
+      char pos_v_text[20];      /* UNUSED picture vertical position ratio into the final image (user string version)
+                                  DEFAULT: "1/2" */
+      float frame_size;         /* frame line width relative to border width
+                                  $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.0 $DESCRIPTION: "frame line size" */
+      float frame_offset;       /* frame offset from picture size relative to [border width - frame width]
+                                  $MIN: 0.0 $MAX: 1.0 $DEFAULT: 0.5 $DESCRIPTION: "frame line offset" */
+      float frame_color[3];     // frame line color $DEFAULT: 0.0
+      gboolean max_border_size; /* the way border size is computed
+                                  $DEFAULT: TRUE */
+      dt_iop_basis_t basis;     /* side of the photo to use as basis for the size calculation
+                                  $DEFAULT: 0 $DESCRIPTION: "basis" */
+    } dt_iop_borders_params_v4_t;
+
+    const dt_iop_borders_params_v3_t *o = (dt_iop_borders_params_v3_t *)old_params;
+    dt_iop_borders_params_v4_t *n = malloc(sizeof(dt_iop_borders_params_v4_t));
+
+    memcpy(n, o, sizeof(struct dt_iop_borders_params_v3_t));
+
+    if (n->aspect == DT_IOP_BORDERS_ASPECT_CONSTANT_VALUE && !n->max_border_size)
+    {
+      // the legacy behaviour is, when a constant border is used and the
+      // max_border_size flag is set, the width is always used as basis.
+      n->basis = DT_IOP_BORDERS_BASIS_WIDTH;
+    }
+    else
+    {
+      n->basis = DT_IOP_BORDERS_BASIS_AUTO;
+    }
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_borders_params_v4_t);
+    *new_version = 4;
     return 0;
   }
 
@@ -249,9 +314,9 @@ const char *aliases()
   return _("borders|enlarge canvas|expand canvas");
 }
 
-const char **description(struct dt_iop_module_t *self)
+const char **description(dt_iop_module_t *self)
 {
-  return dt_iop_set_description(self, _("add solid borders or margins around the picture"),
+  return dt_iop_set_description(self, _("add solid borders or margins around the image"),
                                       _("creative"),
                                       _("linear or non-linear, RGB, display-referred"),
                                       _("geometric, RGB"),
@@ -271,7 +336,7 @@ int operation_tags()
 
 int flags()
 {
-  return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_TILING_FULL_ROI | IOP_FLAGS_GUIDES_WIDGET;
+  return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_TILING_FULL_ROI | IOP_FLAGS_GUIDES_WIDGET | IOP_FLAGS_EXPAND_ROI_IN;
 }
 
 dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
@@ -281,9 +346,12 @@ dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
   return IOP_CS_RGB;
 }
 
-int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const restrict points, size_t points_count)
+gboolean distort_transform(dt_iop_module_t *self,
+                           dt_dev_pixelpipe_iop_t *piece,
+                           float *const restrict points,
+                           size_t points_count)
 {
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
 
   const int border_tot_width = (piece->buf_out.width - piece->buf_in.width);
   const int border_tot_height = (piece->buf_out.height - piece->buf_in.height);
@@ -291,25 +359,26 @@ int distort_transform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, floa
   const int border_size_l = border_tot_width * d->pos_h;
 
   // nothing to be done if parameters are set to neutral values (no top/left border)
-  if(border_size_l == 0 && border_size_t == 0) return 1;
+  if(border_size_l == 0 && border_size_t == 0) return TRUE;
 
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(points, points_count, border_size_l, border_size_t)  \
-  schedule(static) if(points_count > 100) aligned(points:64)
-#endif
+  float *const pts = DT_IS_ALIGNED(points);
+
+  DT_OMP_FOR(if(points_count > 100))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
-    points[i] += border_size_l;
-    points[i + 1] += border_size_t;
+    pts[i] += border_size_l;
+    pts[i + 1] += border_size_t;
   }
 
-  return 1;
+  return TRUE;
 }
-int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, float *const restrict points,
-                          size_t points_count)
+
+gboolean distort_backtransform(dt_iop_module_t *self,
+                               dt_dev_pixelpipe_iop_t *piece,
+                               float *const restrict points,
+                               size_t points_count)
 {
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
 
   const int border_tot_width = (piece->buf_out.width - piece->buf_in.width);
   const int border_tot_height = (piece->buf_out.height - piece->buf_in.height);
@@ -317,43 +386,41 @@ int distort_backtransform(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, 
   const int border_size_l = border_tot_width * d->pos_h;
 
   // nothing to be done if parameters are set to neutral values (no top/left border)
-  if(border_size_l == 0 && border_size_t == 0) return 1;
+  if(border_size_l == 0 && border_size_t == 0) return TRUE;
 
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(points, points_count, border_size_l, border_size_t)  \
-  schedule(static) if(points_count > 100) aligned(points:64)
-#endif
+  float *const pts = DT_IS_ALIGNED(points);
+  DT_OMP_FOR(if(points_count > 100))
   for(size_t i = 0; i < points_count * 2; i += 2)
   {
-    points[i] -= border_size_l;
-    points[i + 1] -= border_size_t;
+    pts[i] -= border_size_l;
+    pts[i + 1] -= border_size_t;
   }
 
-  return 1;
+  return TRUE;
 }
 
-void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const float *const in,
-                  float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void distort_mask(dt_iop_module_t *self,
+                  dt_dev_pixelpipe_iop_t *piece,
+                  const float *const in,
+                  float *const out,
+                  const dt_iop_roi_t *const roi_in,
+                  const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
 
-  const int border_tot_width = (piece->buf_out.width - piece->buf_in.width) * roi_in->scale;
-  const int border_tot_height = (piece->buf_out.height - piece->buf_in.height) * roi_in->scale;
-  const int border_size_t = border_tot_height * d->pos_v;
-  const int border_size_l = border_tot_width * d->pos_h;
-  const int border_in_x = MAX(border_size_l - roi_out->x, 0);
-  const int border_in_y = MAX(border_size_t - roi_out->y, 0);
+  dt_iop_border_positions_t binfo;
+
+  dt_iop_setup_binfo(piece, roi_in, roi_out, d->pos_v, d->pos_h,
+                     d->color, d->frame_color, d->frame_size, d->frame_offset, &binfo);
+
+  const int border_in_x = binfo.border_in_x;
+  const int border_in_y = binfo.border_in_y;
 
   // fill the image with 0 so that the added border isn't part of the mask
   dt_iop_image_fill(out, 0.0f, roi_out->width, roi_out->height, 1);
 
   // blit image inside border and fill the output with previous processed out
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(roi_in, roi_out, border_in_x, border_in_y, in, out)   \
-  schedule(static)
-#endif
+  DT_OMP_FOR()
   for(int j = 0; j < roi_in->height; j++)
   {
     float *outb = out + (size_t)(j + border_in_y) * roi_out->width + border_in_x;
@@ -362,35 +429,63 @@ void distort_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *p
   }
 }
 
-// 1st pass: how large would the output be, given this input roi?
-// this is always called with the full buffer before processing.
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+void modify_roi_out(dt_iop_module_t *self,
+                    dt_dev_pixelpipe_iop_t *piece,
+                    dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
   *roi_out = *roi_in;
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
 
   const float size = fabsf(d->size);
-  if(size == 0) return;
 
-  if(d->aspect == DT_IOP_BORDERS_ASPECT_CONSTANT_VALUE)
+  const gboolean is_constant_border = d->aspect == DT_IOP_BORDERS_ASPECT_CONSTANT_VALUE;
+
+  dt_iop_basis_t basis = d->basis;
+  if (basis == DT_IOP_BORDERS_BASIS_AUTO)
   {
+    // automatic/legacy/default behaviour:
     // for a constant border be sure to base the computation on the
-    // larger border, failing that the border will have a difference
+    // larger border, failing that the border will have a different
     // size depending on the orientation.
+    // for all other borders use the width.
+    basis = is_constant_border
+      ? DT_IOP_BORDERS_BASIS_LONGER : DT_IOP_BORDERS_BASIS_WIDTH;
+  }
+  if(basis == DT_IOP_BORDERS_BASIS_LONGER)
+  {
+    basis = roi_in->width > roi_in->height
+      ? DT_IOP_BORDERS_BASIS_WIDTH : DT_IOP_BORDERS_BASIS_HEIGHT;
+  }
+  else if(basis == DT_IOP_BORDERS_BASIS_SHORTER)
+  {
+    basis = roi_in->width < roi_in->height
+      ? DT_IOP_BORDERS_BASIS_WIDTH : DT_IOP_BORDERS_BASIS_HEIGHT;
+  }
 
-    if(roi_in->width > roi_in->height || !d->max_border_size)
-    {
-      // this means: relative to width and constant for height as well:
-      roi_out->width = roundf((float)roi_in->width / (1.0f - size));
-      roi_out->height = roi_in->height + roi_out->width - roi_in->width;
-    }
-    else
-    {
-      // this means: relative to height and constant for width as well:
-      roi_out->height = roundf((float)roi_in->height / (1.0f - size));
-      roi_out->width = roi_in->width + roi_out->height - roi_in->height;
-    }
+  assert(basis == DT_IOP_BORDERS_BASIS_WIDTH
+         || basis == DT_IOP_BORDERS_BASIS_HEIGHT);
+
+  const int *basis_in = NULL, *other_in = NULL;
+  int *basis_out = NULL, *other_out = NULL;
+
+  #define DT_IOP_BORDERS_ASSIGN(b, b_uc, o) \
+    basis_in = &roi_in->b, basis_out = &roi_out->b, \
+    other_in = &roi_in->o, other_out = &roi_out->o, \
+    basis = DT_IOP_BORDERS_BASIS_ ## b_uc
+  #define DT_IOP_BORDERS_ASSIGN_width DT_IOP_BORDERS_ASSIGN(width, WIDTH, height)
+  #define DT_IOP_BORDERS_ASSIGN_height DT_IOP_BORDERS_ASSIGN(height, HEIGHT, width)
+  #define DT_IOP_BORDERS_ASSIGN_BASIS(basis) DT_IOP_BORDERS_ASSIGN_ ## basis
+
+  if(basis == DT_IOP_BORDERS_BASIS_WIDTH)
+    DT_IOP_BORDERS_ASSIGN_BASIS(width);
+  else if(basis == DT_IOP_BORDERS_BASIS_HEIGHT)
+    DT_IOP_BORDERS_ASSIGN_BASIS(height);
+
+  if(is_constant_border)
+  {
+    *basis_out = roundf((float)*basis_in / (1.0f - size));
+    *other_out = *other_in + *basis_out - *basis_in;
   }
   else
   {
@@ -410,16 +505,27 @@ void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t 
     else if(d->aspect_orient == DT_IOP_BORDERS_ASPECT_ORIENTATION_PORTRAIT)
       aspect = (aspect > 1.0f) ? 1.0f / aspect : aspect;
 
-    // min width: constant ratio based on size:
-    roi_out->width = roundf((float)roi_in->width / (1.0f - size));
-    // corresponding height: determined by aspect ratio:
-    roi_out->height = roundf((float)roi_out->width / aspect);
-    // insane settings used?
-    if(roi_out->height < (float)roi_in->height / (1.0f - size))
-    {
-      roi_out->height = roundf((float)roi_in->height / (1.0f - size));
-      roi_out->width = roundf((float)roi_out->height * aspect);
-    }
+    // first determine how large the border should be,
+    float border_width = (float)*basis_in * (1.0f / (1.0f - size) - 1.0f);
+
+    // then make sure we add that amount to the shorter side,
+    if (basis == DT_IOP_BORDERS_BASIS_WIDTH && image_aspect < 1.0f)
+      DT_IOP_BORDERS_ASSIGN_BASIS(height);
+    else if (basis == DT_IOP_BORDERS_BASIS_HEIGHT && image_aspect > 1.0f)
+      DT_IOP_BORDERS_ASSIGN_BASIS(width);
+
+    // but add it to the longer side instead,
+    // if the selected aspect ratio would cut off the image.
+    if (basis == DT_IOP_BORDERS_BASIS_WIDTH && image_aspect < aspect)
+      DT_IOP_BORDERS_ASSIGN_BASIS(height);
+    else if (basis == DT_IOP_BORDERS_BASIS_HEIGHT && image_aspect > aspect)
+      DT_IOP_BORDERS_ASSIGN_BASIS(width);
+
+    if (basis == DT_IOP_BORDERS_BASIS_HEIGHT)
+      aspect = 1.0f / aspect;
+
+    *basis_out = roundf((float)*basis_in + border_width);
+    *other_out = roundf((float)*basis_out / aspect);
   }
 
   // sanity check.
@@ -428,11 +534,12 @@ void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t 
   roi_out->height = CLAMP(roi_out->height, 1, 3 * max_dim);
 }
 
-// 2nd pass: which roi would this operation need as input to fill the given output region?
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
-                   const dt_iop_roi_t *roi_out, dt_iop_roi_t *roi_in)
+void modify_roi_in(dt_iop_module_t *self,
+                   dt_dev_pixelpipe_iop_t *piece,
+                   const dt_iop_roi_t *roi_out,
+                   dt_iop_roi_t *roi_in)
 {
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
   *roi_in = *roi_out;
 
   const float bw = (piece->buf_out.width - piece->buf_in.width) * roi_out->scale;
@@ -463,259 +570,81 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
   // a division by zero.
 }
 
-struct border_positions_t
+void process(dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const ivoid,
+             void *const ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
-  dt_aligned_pixel_t bcolor;
-  dt_aligned_pixel_t flcolor;
-  int border_top;		// 0..bt is rows of top border outside the frameline
-  int fl_top;			//bt..ft is the top frameline
-  int image_top;		//ft..it is the top border inside the frameline
-  int border_left;		// 0..bl is columns of left border outside the frameline
-  int fl_left;			//bl..fl is the left frameline
-  int image_left;		//fl..il is the left border inside the frameline
-  int image_right;		//il..ir is the actual image area
-  int fl_right;			//ir..fr is the right border inside the frameline
-  int border_right;		//fr..br is the right frameeline
-  int width;			//br..width is the right border outside the frameline
-  int image_bot;		//it..ib is the actual image area
-  int fl_bot;			//ib..fb is the bottom border inside the frameline
-  int border_bot;		//fb..bt is the frameline
-  int height;			//bt..height is the bottom border outside the frameline
-  int stride;			// width of input roi
-};
+  const dt_iop_borders_data_t *const d = piece->data;
 
-// this will be called from inside an OpenMP parallel section, so no need to parallelize further
-static inline void set_pixels(float *buf, const dt_aligned_pixel_t color, const int npixels)
-{
-  for(int i = 0; i < npixels; i++)
-  {
-    copy_pixel_nontemporal(buf + 4*i,  color);
-  }
-}
+  dt_iop_border_positions_t binfo;
 
-// this will be called from inside an OpenMP parallel section, so no need to parallelize further
-static inline void copy_pixels(float *out, const float *const in, const int npixels)
-{
-  for(int i = 0; i < npixels; i++)
-  {
-    copy_pixel_nontemporal(out + 4*i, in + 4*i);
-  }
-}
+  dt_iop_setup_binfo(piece, roi_in, roi_out, d->pos_v, d->pos_h,
+                     d->color, d->frame_color, d->frame_size, d->frame_offset, &binfo);
 
-void copy_image_with_border(float *out, const float *const in, const struct border_positions_t *binfo)
-{
-  const int image_width = binfo->image_right - binfo->image_left;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, out, binfo, image_width) \
-  schedule(static)
-#endif
-  for(size_t row = 0; row < binfo->height; row++)
-  {
-    float *outrow = out + 4 * row * binfo->width;
-    if(row < binfo->border_top || row >= binfo->border_bot)
-    {
-      // top/bottom border outside the frameline: entirely the border color
-      set_pixels(outrow, binfo->bcolor, binfo->width);
-    }
-    else if(row < binfo->fl_top || row >= binfo->fl_bot)
-    {
-      // top/bottom frameline
-      set_pixels(outrow, binfo->bcolor, binfo->border_left);
-      set_pixels(outrow + 4*binfo->border_left, binfo->flcolor, binfo->border_right - binfo->border_left);
-      set_pixels(outrow + 4*binfo->border_right, binfo->bcolor, binfo->width - binfo->border_right);
-    }
-    else if(row < binfo->image_top || row >= binfo->image_bot)
-    {
-      // top/bottom border inside the frameline
-      set_pixels(outrow, binfo->bcolor, binfo->border_left);
-      set_pixels(outrow + 4*binfo->border_left, binfo->flcolor, binfo->fl_left - binfo->border_left);
-      set_pixels(outrow + 4*binfo->fl_left, binfo->bcolor, binfo->fl_right - binfo->fl_left);
-      set_pixels(outrow + 4*binfo->fl_right, binfo->flcolor, binfo->border_right - binfo->fl_right);
-      set_pixels(outrow + 4*binfo->border_right, binfo->bcolor, binfo->width - binfo->border_right);
-    }
-    else
-    {
-      // image area: set left border (w/optional frame line), copy image row, set right border (w/optional frame line)
-      // set outer border
-      set_pixels(outrow, binfo->bcolor, binfo->border_left);
-      if(binfo->image_left > binfo->border_left)
-      {
-        // we have a frameline, so set it and the inner border
-        set_pixels(outrow + 4*binfo->border_left, binfo->flcolor, binfo->fl_left - binfo->border_left);
-        set_pixels(outrow + 4*binfo->fl_left, binfo->bcolor, binfo->image_left - binfo->fl_left);
-      }
-      // copy image row
-      copy_pixels(outrow + 4*binfo->image_left, in + 4 * (row - binfo->image_top) * binfo->stride, image_width);
-      // set right border
-      set_pixels(outrow + 4*binfo->image_right, binfo->bcolor, binfo->fl_right - binfo->image_right);
-      if(binfo->width > binfo->fl_right)
-      {
-        // we have a frameline, so set it and the outer border
-        set_pixels(outrow + 4*binfo->fl_right, binfo->flcolor, binfo->border_right - binfo->fl_right);
-        set_pixels(outrow + 4*binfo->border_right, binfo->bcolor, binfo->width - binfo->border_right);
-      }
-    }
-  }
-  // ensure that all streaming writes complete before we attempt to read from the output buffer
-  dt_omploop_sfence();
-}
-
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
-{
-  const dt_iop_borders_data_t *const d = (dt_iop_borders_data_t *)piece->data;
-
-  const int border_tot_width = (piece->buf_out.width - piece->buf_in.width) * roi_in->scale;
-  const int border_tot_height = (piece->buf_out.height - piece->buf_in.height) * roi_in->scale;
-  const int border_size_t = border_tot_height * d->pos_v;
-  const int border_size_b = border_tot_height - border_size_t;
-  const int border_size_l = border_tot_width * d->pos_h;
-  const int border_size_r = border_tot_width - border_size_l;
-  const int border_in_x = MAX(border_size_l - roi_out->x, 0);
-  const int border_in_y = MAX(border_size_t - roi_out->y, 0);
-
-  // compute frame line parameters
-  const int border_min_size = MIN(MIN(border_size_t, border_size_b), MIN(border_size_l, border_size_r));
-  const int frame_size = border_min_size * d->frame_size;
-
-  const int b_in_x = CLAMP(border_in_x, 0, roi_out->width - 1);
-  struct border_positions_t binfo =
-    { .bcolor = { d->color[0], d->color[1], d->color[2], 1.0f },
-      .flcolor = { d->frame_color[0], d->frame_color[1], d->frame_color[2], 1.0f },
-      .border_top = border_in_y,
-      .fl_top = border_in_y,
-      .image_top = border_in_y,
-      .border_left = b_in_x,
-      .fl_left = b_in_x,
-      .image_left = b_in_x,
-      .image_right = b_in_x + roi_in->width,
-      .fl_right = roi_out->width,
-      .border_right = roi_out->width,
-      .width = roi_out->width,
-      .image_bot = border_in_y + roi_in->height,
-      .fl_bot = roi_out->height,
-      .border_bot = roi_out->height,
-      .height = roi_out->height,
-      .stride = roi_in->width
-  };
-  if(frame_size > 0)
-  {
-    const int image_lx = border_size_l - roi_out->x;
-    const int image_ty = border_size_t - roi_out->y;
-    const int frame_space = border_min_size - frame_size;
-    const int frame_offset = frame_space * d->frame_offset;
-    const int frame_tl_in_x = MAX(border_in_x - frame_offset, 0);
-    const int frame_tl_out_x = MAX(frame_tl_in_x - frame_size, 0);
-    const int frame_tl_in_y = MAX(border_in_y - frame_offset, 0);
-    const int frame_tl_out_y = MAX(frame_tl_in_y - frame_size, 0);
-    binfo.border_top = frame_tl_out_y;
-    binfo.fl_top = frame_tl_in_y;
-    binfo.border_left = CLAMP(frame_tl_out_x, 0, roi_out->width);
-    binfo.fl_left = CLAMP(frame_tl_in_x, 0, roi_out->width);
-    const int frame_in_width = floor((piece->buf_in.width * roi_in->scale) + frame_offset * 2);
-    const int frame_in_height = floor((piece->buf_in.height * roi_in->scale) + frame_offset * 2);
-    const int frame_out_width = frame_in_width + frame_size * 2;
-    const int frame_out_height = frame_in_height + frame_size * 2;
-    const int frame_br_in_x = CLAMP(image_lx - frame_offset + frame_in_width - 1, 0, roi_out->width - 1);
-    const int frame_br_in_y = CLAMP(image_ty - frame_offset + frame_in_height - 1, 0, roi_out->height - 1);
-    // ... if 100% frame_offset we ensure frame_line "stick" the out border
-    const int frame_br_out_x
-        = (d->frame_offset == 1.0f && (border_min_size == MIN(border_size_l, border_size_r)))
-              ? (roi_out->width)
-              : CLAMP(image_lx - frame_offset - frame_size + frame_out_width - 1, 0, roi_out->width - 1);
-    const int frame_br_out_y
-        = (d->frame_offset == 1.0f && (border_min_size == MIN(border_size_t, border_size_b)))
-              ? (roi_out->height)
-              : CLAMP(image_ty - frame_offset - frame_size + frame_out_height - 1, 0, roi_out->height - 1);
-    binfo.fl_right = frame_br_in_x + 1;		// need end+1 for these coordinates
-    binfo.border_right = frame_br_out_x + 1;
-    binfo.fl_bot = frame_br_in_y + 1;
-    binfo.border_bot = frame_br_out_y + 1;
-  }
-  copy_image_with_border((float*)ovoid, (const float*)ivoid, &binfo);
+  dt_iop_copy_image_with_border((float*)ovoid, (const float*)ivoid, &binfo);
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(dt_iop_module_t *self,
+               dt_dev_pixelpipe_iop_t *piece,
+               cl_mem dev_in, cl_mem dev_out,
+               const dt_iop_roi_t *const roi_in,
+               const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
-  dt_iop_borders_global_data_t *gd = (dt_iop_borders_global_data_t *)self->global_data;
+  dt_iop_borders_data_t *d = piece->data;
+  dt_iop_borders_global_data_t *gd = self->global_data;
 
   cl_int err = DT_OPENCL_DEFAULT_ERROR;
   const int devid = piece->pipe->devid;
 
+  dt_iop_border_positions_t binfo;
+
+  dt_iop_setup_binfo(piece, roi_in, roi_out, d->pos_v, d->pos_h,
+                     d->color, d->frame_color, d->frame_size, d->frame_offset, &binfo);
+
   const int width = roi_out->width;
   const int height = roi_out->height;
-  size_t sizes[2] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid) };
-
-  const int border_tot_width = (piece->buf_out.width - piece->buf_in.width) * roi_in->scale;
-  const int border_tot_height = (piece->buf_out.height - piece->buf_in.height) * roi_in->scale;
-  const int border_size_t = border_tot_height * d->pos_v;
-  const int border_size_b = border_tot_height - border_size_t;
-  const int border_size_l = border_tot_width * d->pos_h;
-  const int border_size_r = border_tot_width - border_size_l;
-  const int border_in_x = MAX(border_size_l - roi_out->x, 0);
-  const int border_in_y = MAX(border_size_t - roi_out->y, 0);
 
   // ----- Filling border
   const float col[4] = { d->color[0], d->color[1], d->color[2], 1.0f };
   const int zero = 0;
-  dt_opencl_set_kernel_args(devid, gd->kernel_borders_fill, 0, CLARG(dev_out), CLARG(zero), CLARG(zero),
-    CLARG(width), CLARG(height), CLARG(col));
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_borders_fill, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_borders_fill, width, height,
+                            CLARG(dev_out), CLARG(zero), CLARG(zero),
+                            CLARG(width), CLARG(height), CLARG(col));
   if(err != CL_SUCCESS) goto error;
 
-  // ----- Frame line
-  const int border_min_size = MIN(MIN(border_size_t, border_size_b), MIN(border_size_l, border_size_r));
-  const int frame_size = border_min_size * d->frame_size;
-  if(frame_size != 0)
+  if(binfo.frame_size != 0)
   {
-    const float col_frame[4] = { d->frame_color[0], d->frame_color[1], d->frame_color[2], 1.0f };
-    const int image_lx = border_size_l - roi_out->x;
-    const int image_ty = border_size_t - roi_out->y;
-    const int frame_space = border_min_size - frame_size;
-    const int frame_offset = frame_space * d->frame_offset;
-    const int frame_tl_in_x = MAX(border_in_x - frame_offset, 0);
-    const int frame_tl_out_x = MAX(frame_tl_in_x - frame_size, 0);
-    const int frame_tl_in_y = MAX(border_in_y - frame_offset, 0);
-    const int frame_tl_out_y = MAX(frame_tl_in_y - frame_size, 0);
-    const int frame_in_width = floor((piece->buf_in.width * roi_in->scale) + frame_offset * 2);
-    const int frame_in_height = floor((piece->buf_in.height * roi_in->scale) + frame_offset * 2);
-    const int frame_out_width = frame_in_width + frame_size * 2;
-    const int frame_out_height = frame_in_height + frame_size * 2;
-    const int frame_br_in_x = CLAMP(image_lx - frame_offset + frame_in_width - 1, 0, roi_out->width - 1);
-    const int frame_br_in_y = CLAMP(image_ty - frame_offset + frame_in_height - 1, 0, roi_out->height - 1);
-    // ... if 100% frame_offset we ensure frame_line "stick" the out border
-    const int frame_br_out_x
-        = (d->frame_offset == 1.0f && (border_min_size == MIN(border_size_l, border_size_r)))
-              ? (roi_out->width)
-              : CLAMP(image_lx - frame_offset - frame_size + frame_out_width - 1, 0, roi_out->width);
-    const int frame_br_out_y
-        = (d->frame_offset == 1.0f && (border_min_size == MIN(border_size_t, border_size_b)))
-              ? (roi_out->height)
-              : CLAMP(image_ty - frame_offset - frame_size + frame_out_height - 1, 0, roi_out->height);
+    const float col_frame[4] = { d->frame_color[0],
+                                 d->frame_color[1],
+                                 d->frame_color[2], 1.0f };
 
-    const int roi_frame_in_width = frame_br_in_x - frame_tl_in_x;
-    const int roi_frame_in_height = frame_br_in_y - frame_tl_in_y;
-    const int roi_frame_out_width = frame_br_out_x - frame_tl_out_x;
-    const int roi_frame_out_height = frame_br_out_y - frame_tl_out_y;
+    const int roi_frame_in_width   = binfo.frame_br_in_x - binfo.frame_tl_in_x;
+    const int roi_frame_in_height  = binfo.frame_br_in_y - binfo.frame_tl_in_y;
+    const int roi_frame_out_width  = binfo.frame_br_out_x - binfo.frame_tl_out_x;
+    const int roi_frame_out_height = binfo.frame_br_out_y - binfo.frame_tl_out_y;
 
-    dt_opencl_set_kernel_args(devid, gd->kernel_borders_fill, 0, CLARG(dev_out), CLARG(frame_tl_out_x),
-      CLARG(frame_tl_out_y), CLARG(roi_frame_out_width), CLARG(roi_frame_out_height), CLARG(col_frame));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_borders_fill, sizes);
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_borders_fill, width, height,
+                              CLARG(dev_out),
+                              CLARG(binfo.frame_tl_out_x), CLARG(binfo.frame_tl_out_y),
+                              CLARG(roi_frame_out_width), CLARG(roi_frame_out_height),
+                              CLARG(col_frame));
     if(err != CL_SUCCESS) goto error;
 
-    dt_opencl_set_kernel_args(devid, gd->kernel_borders_fill, 0, CLARG(dev_out), CLARG(frame_tl_in_x),
-      CLARG(frame_tl_in_y), CLARG(roi_frame_in_width), CLARG(roi_frame_in_height), CLARG(col));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_borders_fill, sizes);
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_borders_fill, width, height,
+                              CLARG(dev_out),
+                              CLARG(binfo.frame_tl_in_x), CLARG(binfo.frame_tl_in_y),
+                              CLARG(roi_frame_in_width), CLARG(roi_frame_in_height),
+                              CLARG(col));
     if(err != CL_SUCCESS) goto error;
   }
 
   size_t iorigin[] = { 0, 0, 0 };
-  size_t oorigin[] = { border_in_x, border_in_y, 0 };
-  size_t region[] = { roi_in->width, roi_in->height, 1 };
+  size_t oorigin[] = { binfo.border_in_x, binfo.border_in_y, 0 };
+  size_t region[]  = { roi_in->width, roi_in->height, 1 };
 
   // copy original input from dev_in -> dev_out as starting point
   err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, iorigin, oorigin, region);
@@ -726,39 +655,45 @@ error:
 #endif
 
 
-void init_global(dt_iop_module_so_t *module)
+void init_global(dt_iop_module_so_t *self)
 {
   const int program = 2; // basic.cl from programs.conf
-  dt_iop_borders_global_data_t *gd
-      = (dt_iop_borders_global_data_t *)malloc(sizeof(dt_iop_borders_global_data_t));
-  module->data = gd;
+
+  dt_iop_borders_global_data_t *gd = malloc(sizeof(dt_iop_borders_global_data_t));
+  self->data = gd;
   gd->kernel_borders_fill = dt_opencl_create_kernel(program, "borders_fill");
 }
 
 
-void cleanup_global(dt_iop_module_so_t *module)
+void cleanup_global(dt_iop_module_so_t *self)
 {
-  dt_iop_borders_global_data_t *gd = (dt_iop_borders_global_data_t *)module->data;
+  dt_iop_borders_global_data_t *gd = self->data;
   dt_opencl_free_kernel(gd->kernel_borders_fill);
-  free(module->data);
-  module->data = NULL;
+  free(self->data);
+  self->data = NULL;
 }
 
 
-void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+void commit_params(dt_iop_module_t *self,
+                   dt_iop_params_t *p1,
+                   dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)p1;
-  dt_iop_borders_data_t *d = (dt_iop_borders_data_t *)piece->data;
+  dt_iop_borders_data_t *d = piece->data;
   memcpy(d, p, sizeof(dt_iop_borders_params_t));
 }
 
-void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void init_pipe(dt_iop_module_t *self,
+               dt_dev_pixelpipe_t *pipe,
+               dt_dev_pixelpipe_iop_t *piece)
 {
   piece->data = malloc(sizeof(dt_iop_borders_data_t));
 }
 
-void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void cleanup_pipe(dt_iop_module_t *self,
+                  dt_dev_pixelpipe_t *pipe,
+                  dt_dev_pixelpipe_iop_t *piece)
 {
   free(piece->data);
   piece->data = NULL;
@@ -778,7 +713,8 @@ void init_presets(dt_iop_module_so_t *self)
                                                          0.0f,
                                                          0.5f,
                                                          { 0.0f, 0.0f, 0.0f },
-                                                         TRUE };
+                                                         TRUE,
+                                                         DT_IOP_BORDERS_BASIS_AUTO };
   dt_gui_presets_add_generic(_("15:10 postcard white"), self->op,
                              self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_NONE);
 
@@ -791,8 +727,8 @@ void init_presets(dt_iop_module_so_t *self)
 void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
                         dt_dev_pixelpipe_t *pipe)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
 
   if(fabsf(p->color[0] - self->picked_color[0]) < 0.0001f
      && fabsf(p->color[1] - self->picked_color[1]) < 0.0001f
@@ -833,10 +769,11 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void aspect_changed(GtkWidget *combo, dt_iop_module_t *self)
+static void _aspect_changed(GtkWidget *combo,
+                            dt_iop_module_t *self)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
   const int which = dt_bauhaus_combobox_get(combo);
   if(which < DT_IOP_BORDERS_ASPECT_COUNT)
   {
@@ -849,10 +786,11 @@ static void aspect_changed(GtkWidget *combo, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void position_h_changed(GtkWidget *combo, dt_iop_module_t *self)
+static void _position_h_changed(GtkWidget *combo,
+                                dt_iop_module_t *self)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
   const int which = dt_bauhaus_combobox_get(combo);
   if(which < DT_IOP_BORDERS_POSITION_H_COUNT)
   {
@@ -865,10 +803,11 @@ static void position_h_changed(GtkWidget *combo, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void position_v_changed(GtkWidget *combo, dt_iop_module_t *self)
+static void _position_v_changed(GtkWidget *combo,
+                                dt_iop_module_t *self)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
   const int which = dt_bauhaus_combobox_get(combo);
   if(which < DT_IOP_BORDERS_POSITION_V_COUNT)
   {
@@ -881,10 +820,12 @@ static void position_v_changed(GtkWidget *combo, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
+void gui_changed(dt_iop_module_t *self,
+                 GtkWidget *w,
+                 void *previous)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
 
   int k;
   if(!w || w == g->aspect_slider)
@@ -916,10 +857,11 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   }
 }
 
-static void colorpick_color_set(GtkColorButton *widget, dt_iop_module_t *self)
+static void _colorpick_color_set(GtkColorButton *widget,
+                                dt_iop_module_t *self)
 {
   if(darktable.gui->reset) return;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_params_t *p = self->params;
 
   // turn off the other color picker so that this tool actually works ...
   dt_iop_color_picker_reset(self, TRUE);
@@ -933,11 +875,10 @@ static void colorpick_color_set(GtkColorButton *widget, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-
-static void frame_colorpick_color_set(GtkColorButton *widget, dt_iop_module_t *self)
+static void _frame_colorpick_color_set(GtkColorButton *widget, dt_iop_module_t *self)
 {
   if(darktable.gui->reset) return;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_params_t *p = self->params;
 
   // turn off the other color picker so that this tool actually works ...
   dt_iop_color_picker_reset(self, TRUE);
@@ -951,38 +892,51 @@ static void frame_colorpick_color_set(GtkColorButton *widget, dt_iop_module_t *s
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-void gui_update(struct dt_iop_module_t *self)
+void gui_update(dt_iop_module_t *self)
 {
-  dt_iop_borders_gui_data_t *g = (dt_iop_borders_gui_data_t *)self->gui_data;
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->params;
+  dt_iop_borders_gui_data_t *g = self->gui_data;
+  dt_iop_borders_params_t *p = self->params;
 
   gui_changed(self, NULL, NULL);
 
   // ----- Border Color
-  GdkRGBA c = (GdkRGBA){.red = p->color[0], .green = p->color[1], .blue = p->color[2], .alpha = 1.0 };
+  GdkRGBA c = (GdkRGBA){.red   = p->color[0],
+                        .green = p->color[1],
+                        .blue  = p->color[2],
+                        .alpha = 1.0 };
+
   gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(g->colorpick), &c);
 
   // ----- Frame Color
   GdkRGBA fc = (GdkRGBA){
-    .red = p->frame_color[0], .green = p->frame_color[1], .blue = p->frame_color[2], .alpha = 1.0
+    .red   = p->frame_color[0],
+    .green = p->frame_color[1],
+    .blue  = p->frame_color[2],
+    .alpha = 1.0
   };
   gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(g->frame_colorpick), &fc);
 }
 
-void gui_init(struct dt_iop_module_t *self)
+void gui_init(dt_iop_module_t *self)
 {
   dt_iop_borders_gui_data_t *g = IOP_GUI_ALLOC(borders);
-  dt_iop_borders_params_t *p = (dt_iop_borders_params_t *)self->default_params;
+  dt_iop_borders_params_t *p = self->params;
+  dt_iop_borders_params_t *dp = self->default_params;
+
+  g->basis = dt_bauhaus_combobox_from_params(self, "basis");
+  gtk_widget_set_tooltip_text(g->basis,
+                              _("which dimension to use for the size calculation"));
 
   g->size = dt_bauhaus_slider_from_params(self, "size");
   dt_bauhaus_slider_set_digits(g->size, 4);
   dt_bauhaus_slider_set_format(g->size, "%");
-  gtk_widget_set_tooltip_text(g->size, _("size of the border in percent of the full image"));
+  gtk_widget_set_tooltip_text(g->size,
+                              _("size of the border in percent of the chosen basis"));
 
   DT_BAUHAUS_COMBOBOX_NEW_FULL(g->aspect, self, NULL, N_("aspect"),
                                _("select the aspect ratio\n"
-                                 "(right click on slider below to type your own w:h)"),
-                               0, aspect_changed, self,
+                                 "(right-click on slider below to type your own w:h)"),
+                               0, _aspect_changed, self,
                                N_("image"),
                                N_("3:1"),
                                N_("95:33"),
@@ -1008,16 +962,18 @@ void gui_init(struct dt_iop_module_t *self)
 
   g->aspect_slider = dt_bauhaus_slider_from_params(self, "aspect");
   gtk_widget_set_tooltip_text(g->aspect_slider, _("set the custom aspect ratio\n"
-                                                  "(right click to enter number or w:h)"));
+                                                  "(right-click to enter number or w:h)"));
 
   g->aspect_orient = dt_bauhaus_combobox_from_params(self, "aspect_orient");
-  gtk_widget_set_tooltip_text(g->aspect_orient, _("aspect ratio orientation of the image with border"));
+  gtk_widget_set_tooltip_text(g->aspect_orient,
+                              _("aspect ratio orientation of the image with border"));
 
   DT_BAUHAUS_COMBOBOX_NEW_FULL(g->pos_h, self, NULL, N_("horizontal position"),
                                _("select the horizontal position ratio relative to top\n"
-                                 "(right click on slider below to type your own x:w)"),
-                               0, position_h_changed, self,
-                               N_("center"), N_("1/3"), N_("3/8"), N_("5/8"), N_("2/3"), N_("custom..."));
+                                 "(right-click on slider below to type your own x:w)"),
+                               0, _position_h_changed, self,
+                               N_("center"), N_("1/3"), N_("3/8"),
+                               N_("5/8"), N_("2/3"), N_("custom..."));
   gtk_box_pack_start(GTK_BOX(self->widget), g->pos_h, TRUE, TRUE, 0);
 
   g->pos_h_slider = dt_bauhaus_slider_from_params(self, "pos_h");
@@ -1025,9 +981,10 @@ void gui_init(struct dt_iop_module_t *self)
 
   DT_BAUHAUS_COMBOBOX_NEW_FULL(g->pos_v, self, NULL, N_("vertical position"),
                                _("select the vertical position ratio relative to left\n"
-                                 "(right click on slider below to type your own y:h)"),
-                               0, position_v_changed, self,
-                               N_("center"), N_("1/3"), N_("3/8"), N_("5/8"), N_("2/3"), N_("custom..."));
+                                 "(right-click on slider below to type your own y:h)"),
+                               0, _position_v_changed, self,
+                               N_("center"), N_("1/3"), N_("3/8"),
+                               N_("5/8"), N_("2/3"), N_("custom..."));
   gtk_box_pack_start(GTK_BOX(self->widget), g->pos_v, TRUE, TRUE, 0);
 
   g->pos_v_slider = dt_bauhaus_slider_from_params(self, "pos_v");
@@ -1036,14 +993,24 @@ void gui_init(struct dt_iop_module_t *self)
   g->frame_size = dt_bauhaus_slider_from_params(self, "frame_size");
   dt_bauhaus_slider_set_digits(g->frame_size, 4);
   dt_bauhaus_slider_set_format(g->frame_size, "%");
-  gtk_widget_set_tooltip_text(g->frame_size, _("size of the frame line in percent of min border width"));
+  gtk_widget_set_tooltip_text(g->frame_size,
+                              _("size of the frame line in percent of min border width"));
 
   g->frame_offset = dt_bauhaus_slider_from_params(self, "frame_offset");
   dt_bauhaus_slider_set_digits(g->frame_offset, 4);
   dt_bauhaus_slider_set_format(g->frame_offset, "%");
-  gtk_widget_set_tooltip_text(g->frame_offset, _("offset of the frame line beginning on picture side"));
+  gtk_widget_set_tooltip_text(g->frame_offset,
+                              _("offset of the frame line beginning on image side"));
 
-  GdkRGBA color = (GdkRGBA){.red = p->color[0], .green = p->color[1], .blue = p->color[2], .alpha = 1.0 };
+  GdkRGBA color = (GdkRGBA){.red   = dp->color[0],
+                            .green = dp->color[1],
+                            .blue  = dp->color[2],
+                            .alpha = 1.0 };
+
+  GdkRGBA frame_color = (GdkRGBA){.red = dp->frame_color[0],
+                                  .green = dp->frame_color[1],
+                                  .blue = dp->frame_color[2],
+                                  .alpha = 1.0 };
 
   GtkWidget *label, *box;
 
@@ -1053,24 +1020,31 @@ void gui_init(struct dt_iop_module_t *self)
   g->colorpick = gtk_color_button_new_with_rgba(&color);
   gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(g->colorpick), FALSE);
   gtk_color_button_set_title(GTK_COLOR_BUTTON(g->colorpick), _("select border color"));
-  g_signal_connect(G_OBJECT(g->colorpick), "color-set", G_CALLBACK(colorpick_color_set), self);
+  g_signal_connect(G_OBJECT(g->colorpick), "color-set",
+                   G_CALLBACK(_colorpick_color_set), self);
   gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(g->colorpick), FALSE, TRUE, 0);
   g->border_picker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, box);
-  gtk_widget_set_tooltip_text(GTK_WIDGET(g->border_picker), _("pick border color from image"));
-  dt_action_define_iop(self, N_("pickers"), N_("border color"), g->border_picker, &dt_action_def_toggle);
+  gtk_widget_set_tooltip_text(GTK_WIDGET(g->border_picker),
+                              _("pick border color from image"));
+  dt_action_define_iop(self, N_("pickers"), N_("border color"),
+                       g->border_picker, &dt_action_def_toggle);
   gtk_box_pack_start(GTK_BOX(self->widget), box, TRUE, TRUE, 0);
 
   box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  label = dtgtk_reset_label_new(_("frame line color"), self, &p->color, 3 * sizeof(float));
+  label = dtgtk_reset_label_new(_("frame line color"), self, &p->frame_color, 3 * sizeof(float));
   gtk_box_pack_start(GTK_BOX(box), label, TRUE, TRUE, 0);
-  g->frame_colorpick = gtk_color_button_new_with_rgba(&color);
+  g->frame_colorpick = gtk_color_button_new_with_rgba(&frame_color);
   gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(g->frame_colorpick), FALSE);
-  gtk_color_button_set_title(GTK_COLOR_BUTTON(g->frame_colorpick), _("select frame line color"));
-  g_signal_connect(G_OBJECT(g->frame_colorpick), "color-set", G_CALLBACK(frame_colorpick_color_set), self);
+  gtk_color_button_set_title(GTK_COLOR_BUTTON(g->frame_colorpick),
+                             _("select frame line color"));
+  g_signal_connect(G_OBJECT(g->frame_colorpick), "color-set",
+                   G_CALLBACK(_frame_colorpick_color_set), self);
   gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(g->frame_colorpick), FALSE, TRUE, 0);
   g->frame_picker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, box);
-  gtk_widget_set_tooltip_text(GTK_WIDGET(g->frame_picker), _("pick frame line color from image"));
-  dt_action_define_iop(self, N_("pickers"), N_("frame line color"), g->frame_picker, &dt_action_def_toggle);
+  gtk_widget_set_tooltip_text(GTK_WIDGET(g->frame_picker),
+                              _("pick frame line color from image"));
+  dt_action_define_iop(self, N_("pickers"), N_("frame line color"),
+                       g->frame_picker, &dt_action_def_toggle);
   gtk_box_pack_start(GTK_BOX(self->widget), box, TRUE, TRUE, 0);
 }
 

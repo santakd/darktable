@@ -198,25 +198,26 @@ static int _process_image(dt_slideshow_t *d,
   const size_t s_width = d->width;
   const size_t s_height = d->height;
   const dt_imgid_t imgid = d->buf[slot].imgid;
-  size_t width = d->buf[slot].width;
-  size_t height = d->buf[slot].height;
-  uint8_t *buf;
+  size_t width, height;
+  uint8_t *buf = NULL;
 
   dt_pthread_mutex_unlock(&d->lock);
 
-  dt_dev_image_ext
+  dt_dev_image
     (imgid,
      d->width / darktable.gui->ppd,
      d->height / darktable.gui->ppd,
      -1,
      &buf,
+     NULL,
      &width,
      &height,
      NULL,
      NULL,
-     0,
-     FALSE,
-     -1);
+     -1,
+     NULL,
+     DT_DEVICE_NONE,
+     FALSE);
 
   dt_pthread_mutex_lock(&d->lock);
 
@@ -402,14 +403,14 @@ uint32_t view(const dt_view_t *self)
 void init(dt_view_t *self)
 {
   self->data = calloc(1, sizeof(dt_slideshow_t));
-  dt_slideshow_t *lib = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *lib = self->data;
   dt_pthread_mutex_init(&lib->lock, 0);
 }
 
 
 void cleanup(dt_view_t *self)
 {
-  dt_slideshow_t *lib = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *lib = self->data;
   dt_pthread_mutex_destroy(&lib->lock);
   free(self->data);
 }
@@ -430,7 +431,7 @@ gboolean try_enter(dt_view_t *self)
 
 void enter(dt_view_t *self)
 {
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
 
   dt_control_change_cursor(GDK_BLANK_CURSOR);
   d->mouse_timeout = 0;
@@ -515,7 +516,7 @@ void enter(dt_view_t *self)
 
 void leave(dt_view_t *self)
 {
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
 
   if(d->mouse_timeout > 0) g_source_remove(d->mouse_timeout);
   d->mouse_timeout = 0;
@@ -547,7 +548,7 @@ void expose(dt_view_t *self,
             const int32_t pointery)
 {
   // draw front buffer.
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
 
   dt_pthread_mutex_lock(&d->lock);
   dt_slideshow_buf_t *slot = &(d->buf[S_CURRENT]);
@@ -560,39 +561,51 @@ void expose(dt_view_t *self,
     _requeue_job(d);
   }
 
+  cairo_paint(cr);
+  cairo_save(cr);
+
+  cairo_translate(cr, 0.5 * width, 0.5 * height);
+
   // redraw even if the current displayed image is imgid as we want the
   // "working..." label to be cleared.
   if(slot->buf && dt_is_valid_imgid(imgid) && !slot->invalidated)
   {
+    double scale = MIN((double)width / slot->width, (double)height / slot->height);
+    cairo_scale(cr, scale, scale);
+    cairo_surface_t *surface = dt_view_create_surface(slot->buf, slot->width, slot->height);
+    cairo_set_source_surface(cr, surface, - 0.5 * slot->width, -0.5 * slot->height);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BEST);
     cairo_paint(cr);
-
-    cairo_save(cr);
-
-    dt_view_paint_buffer
-      (cr, width, height,
-       slot->buf, slot->width, slot->height, DT_WINDOW_SLIDESHOW);
+    cairo_surface_destroy(surface);
 
     d->id_displayed = imgid;
     d->id_preview_displayed = imgid;
-    cairo_restore(cr);
   }
   else if(dt_is_valid_imgid(imgid) && imgid != d->id_preview_displayed)
   {
     // get a small preview
     dt_mipmap_buffer_t buf;
     dt_mipmap_size_t mip =
-      dt_mipmap_cache_get_matching_size(darktable.mipmap_cache, width / 8, height /8);
+      dt_mipmap_cache_get_matching_size(darktable.mipmap_cache, width / 8, height / 8);
     dt_mipmap_cache_get(darktable.mipmap_cache, &buf, imgid, mip, DT_MIPMAP_BLOCKING, 'r');
     if(buf.buf)
     {
+      double scale = MIN((double)width / buf.width, (double)height / buf.height);
+      cairo_scale(cr, scale, scale);
+      GdkPixbuf *pixbuf = gdk_pixbuf_new_from_data
+          (buf.buf, GDK_COLORSPACE_RGB, TRUE, 8, buf.width, buf.height,
+           buf.width * 4, NULL, NULL);
+      gdk_cairo_set_source_pixbuf(cr, pixbuf, - 0.5 * buf.width, -0.5 * buf.height);
+      cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
       cairo_paint(cr);
-      dt_view_paint_pixbuf(cr, width, height,
-                           (uint8_t *)buf.buf, buf.width, buf.height, DT_WINDOW_SLIDESHOW);
+      g_object_unref(pixbuf);
     }
 
     d->id_preview_displayed = imgid;
     dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
   }
+
+  cairo_restore(cr);
 
   d->width = width * darktable.gui->ppd;
   d->height = height * darktable.gui->ppd;
@@ -603,7 +616,7 @@ void expose(dt_view_t *self,
 static gboolean _hide_mouse(gpointer user_data)
 {
   dt_view_t *self = (dt_view_t *)user_data;
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
   d->mouse_timeout = 0;
   dt_control_change_cursor(GDK_BLANK_CURSOR);
   return FALSE;
@@ -616,7 +629,7 @@ void mouse_moved(dt_view_t *self,
                  const double pressure,
                  const int which)
 {
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
 
   if(d->mouse_timeout > 0)
     g_source_remove(d->mouse_timeout);
@@ -644,7 +657,7 @@ int button_pressed(dt_view_t *self,
                    const int type,
                    const uint32_t state)
 {
-  dt_slideshow_t *d = (dt_slideshow_t *)self->data;
+  dt_slideshow_t *d = self->data;
 
   if(which == 1)
     _step_state(d, S_REQUEST_STEP);

@@ -37,9 +37,13 @@ typedef enum dt_dev_pixelpipe_type_t
   DT_DEV_PIXELPIPE_PREVIEW   = 1 << 2,
   DT_DEV_PIXELPIPE_THUMBNAIL = 1 << 3,
   DT_DEV_PIXELPIPE_PREVIEW2  = 1 << 4,
+  DT_DEV_PIXELPIPE_SCREEN    = DT_DEV_PIXELPIPE_PREVIEW | DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW2,
   DT_DEV_PIXELPIPE_ANY       = DT_DEV_PIXELPIPE_EXPORT | DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW
                                | DT_DEV_PIXELPIPE_THUMBNAIL | DT_DEV_PIXELPIPE_PREVIEW2,
-  DT_DEV_PIXELPIPE_FAST      = 1 << 8
+  DT_DEV_PIXELPIPE_FAST      = 1 << 8,
+  DT_DEV_PIXELPIPE_IMAGE     = 1 << 9,    // special additional flag used by dt_dev_image()
+  DT_DEV_PIXELPIPE_IMAGE_FINAL = 1 << 10, // special additional flag used by dt_dev_image(), mark to use finalscale
+  DT_DEV_PIXELPIPE_BASIC     = DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW
 } dt_dev_pixelpipe_type_t;
 
 /** when to collect histogram */
@@ -48,7 +52,7 @@ typedef enum dt_dev_request_flags_t
   DT_REQUEST_NONE = 0,
   DT_REQUEST_ON = 1 << 0,
   DT_REQUEST_ONLY_IN_GUI = 1 << 1,
-  DT_REQUEST_EXPANDED = 1 << 2 // 
+  DT_REQUEST_EXPANDED = 1 << 2 //
 } dt_dev_request_flags_t;
 
 typedef enum dt_dev_pixelpipe_display_mask_t
@@ -105,8 +109,6 @@ typedef struct dt_dev_histogram_stats_t
 #define DT_IOP_PARAMS_T
 typedef void dt_iop_params_t;
 #endif
-
-const char *dt_pixelpipe_name(dt_dev_pixelpipe_type_t pipe);
 
 #ifdef __cplusplus
 } // extern "C"

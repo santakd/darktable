@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2022 darktable developers.
+    Copyright (C) 2012-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #include "gtkentry.h"
 #include "common/darktable.h"
 
@@ -177,7 +178,7 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "VERSION.IF_MULTI", N_("$(VERSION.IF_MULTI) - same as $(VERSION) but null string if only one version exists") },
           { "VERSION.NAME", N_("$(VERSION.NAME) - version name from metadata") },
           { "JOBCODE", N_("$(JOBCODE) - job code for import") },
-          { "SEQUENCE", N_("$(SEQUENCE) - sequence number") },
+          { "SEQUENCE[4,1]", N_("$(SEQUENCE[n,m]) - sequence number, n: number of digits, m: start number") },
           { "WIDTH.MAX", N_("$(WIDTH.MAX) - maximum image export width") },
           { "WIDTH.SENSOR", N_("$(WIDTH.SENSOR) - image sensor width") },
           { "WIDTH.RAW", N_("$(WIDTH.RAW) - RAW image width") },
@@ -199,6 +200,8 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "MINUTE", N_("$(MINUTE) - minute") },
           { "SECOND", N_("$(SECOND) - second") },
           { "MSEC", N_("$(MSEC) - millisecond") },
+          { "EXIF.DATE.REGIONAL", N_("$(EXIF.DATE.REGIONAL) - localized EXIF date") },
+          { "EXIF.TIME.REGIONAL", N_("$(EXIF.TIME.REGIONAL) - localized EXIF time") },
           { "EXIF.YEAR", N_("$(EXIF.YEAR) - EXIF year") },
           { "EXIF.YEAR.SHORT", N_("$(EXIF.YEAR.SHORT) - EXIF year without century") },
           { "EXIF.MONTH", N_("$(EXIF.MONTH) - EXIF month") },
@@ -211,14 +214,25 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "EXIF.SECOND", N_("$(EXIF.SECOND) - EXIF second") },
           { "EXIF.MSEC", N_("$(EXIF.MSEC) - EXIF millisecond") },
           { "EXIF.ISO", N_("$(EXIF.ISO) - ISO value") },
-          { "EXIF.EXPOSURE", N_("$(EXIF.EXPOSURE) - EXIF exposure") },
           { "EXIF.EXPOSURE.BIAS", N_("$(EXIF.EXPOSURE.BIAS) - EXIF exposure bias") },
+          { "EXIF.EXPOSURE.PROGRAM", N_("$(EXIF.EXPOSURE.PROGRAM) - EXIF exposure program") },
+          { "EXIF.EXPOSURE", N_("$(EXIF.EXPOSURE) - EXIF exposure") },
           { "EXIF.APERTURE", N_("$(EXIF.APERTURE) - EXIF aperture") },
+          { "EXIF.CROP_FACTOR", N_("$(EXIF.CROP_FACTOR) - EXIF crop factor") },
           { "EXIF.FOCAL.LENGTH", N_("$(EXIF.FOCAL.LENGTH) - EXIF focal length") },
+          { "EXIF.FOCAL.LENGTH.EQUIV", N_("$(EXIF.FOCAL.LENGTH.EQUIV) - EXIF 35 mm equivalent focal length") },
           { "EXIF.FOCUS.DISTANCE", N_("$(EXIF.FOCUS.DISTANCE) - EXIF focal distance") },
           { "EXIF.MAKER", N_("$(EXIF.MAKER) - camera maker") },
           { "EXIF.MODEL", N_("$(EXIF.MODEL) - camera model") },
+          { "EXIF.WHITEBALANCE", N_("$(EXIF.WHITEBALANCE) - EXIF selected white balance") },
+          { "EXIF.METERING", N_("$(EXIF.METERING) - EXIF exposure metering mode") },
           { "EXIF.LENS", N_("$(EXIF.LENS) - lens") },
+          { "EXIF.FLASH.ICON", N_("$(EXIF.FLASH.ICON) - icon indicating whether flash was used") },
+          { "EXIF.FLASH", N_("$(EXIF.FLASH) - was flash used (yes/no/--)") },
+          { "GPS.LONGITUDE", N_("$(GPS.LONGITUDE) - longitude") },
+          { "GPS.LATITUDE", N_("$(GPS.LATITUDE) - latitude") },
+          { "GPS.ELEVATION", N_("$(GPS.ELEVATION) - elevation") },
+          { "GPS.LOCATION.ICON", N_("$(GPS.LOCATION.ICON) - icon indicating whether GPS location is known") },
           { "LONGITUDE", N_("$(LONGITUDE) - longitude") },
           { "LATITUDE", N_("$(LATITUDE) - latitude") },
           { "ELEVATION", N_("$(ELEVATION) - elevation") },
@@ -226,6 +240,10 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "RATING.ICONS", N_("$(RATING.ICONS) - star/reject rating in icon form") },
           { "LABELS", N_("$(LABELS) - color labels as text") },
           { "LABELS.ICONS", N_("$(LABELS.ICONS) - color labels as icons") },
+          { "IMAGE.TAGS.HIERARCHY", N_("$(IMAGE.TAGS.HIERARCHY) - tags as set in metadata settings, preserving hierarchy") },
+          { "IMAGE.TAGS", N_("$(IMAGE.TAGS) - tags as set in metadata settings, flattened") },
+          { "IMAGE.ID", N_("$(IMAGE.ID) - image ID") },
+          { "IMAGE.ID.NEXT", N_("$(IMAGE.ID.NEXT) - next image ID to be assigned on import") },
           { "ID", N_("$(ID) - image ID") },
           { "TITLE", N_("$(TITLE) - title from metadata") },
           { "DESCRIPTION", N_("$(DESCRIPTION) - description from metadata") },
@@ -237,10 +255,11 @@ const dt_gtkentry_completion_spec *dt_gtkentry_get_default_path_compl_list()
           { "FOLDER.HOME", N_("$(FOLDER.HOME) - home folder") },
           { "FOLDER.DESKTOP", N_("$(FOLDER.DESKTOP) - desktop folder") },
           { "OPENCL.ACTIVATED", N_("$(OPENCL.ACTIVATED) - whether OpenCL is activated") },
-          { "CATEGORY", N_("$(CATEGORY0(category)) - subtag of level 0 in hierarchical tags") },
+          { "CATEGORY[,]", N_("$(CATEGORY[n,category]) - subtag of level n in hierarchical tags") },
           { "TAGS", N_("$(TAGS) - tags as set in metadata settings") },
           { "DARKTABLE.NAME", N_("$(DARKTABLE.NAME) - darktable name") },
           { "DARKTABLE.VERSION", N_("$(DARKTABLE.VERSION) - current darktable version") },
+          { "SIDECAR_TXT", N_("$(SIDECAR_TXT) - contents of .txt sidecar file, if present") },
           { NULL, NULL } };
 
   return default_path_compl_list;
@@ -279,4 +298,3 @@ gchar *dt_gtkentry_build_completion_tooltip_text(const gchar *header,
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-

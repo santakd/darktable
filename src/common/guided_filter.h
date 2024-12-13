@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2017-2021 darktable developers.
+    Copyright (C) 2017-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,7 +34,7 @@ typedef struct gray_image
 // allocate space for 1-component image of size width x height
 static inline gray_image new_gray_image(int width, int height)
 {
-  return (gray_image){ dt_alloc_align(64, sizeof(float) * width * height), width, height };
+  return (gray_image){ dt_alloc_align_float((size_t)width * height), width, height };
 }
 
 
@@ -50,20 +50,6 @@ static inline void free_gray_image(gray_image *img_p)
 static inline void copy_gray_image(gray_image img1, gray_image img2)
 {
   memcpy(img2.data, img1.data, sizeof(float) * img1.width * img1.height);
-}
-
-
-// minimum of two integers
-static inline int min_i(int a, int b)
-{
-  return a < b ? a : b;
-}
-
-
-// maximum of two integers
-static inline int max_i(int a, int b)
-{
-  return a > b ? a : b;
 }
 
 void guided_filter(const float *guide, const float *in, float *out, int width, int height, int ch, int w,
@@ -88,7 +74,7 @@ dt_guided_filter_cl_global_t *dt_guided_filter_init_cl_global();
 
 void dt_guided_filter_free_cl_global(dt_guided_filter_cl_global_t *g);
 
-void guided_filter_cl(int devid, cl_mem guide, cl_mem in, cl_mem out, int width, int height, int ch, int w,
+int guided_filter_cl(int devid, cl_mem guide, cl_mem in, cl_mem out, int width, int height, int ch, int w,
                       float sqrt_eps, float guide_weight, float min, float max);
 
 #endif

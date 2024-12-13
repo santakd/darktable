@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2023 darktable developers.
+    Copyright (C) 2009-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -58,6 +58,8 @@ typedef enum dt_imageio_levels_t
   IMAGEIO_CHANNEL_MASK = 0xFF00
 } dt_imageio_levels_t;
 
+// Check that the image is raw by file extension
+gboolean dt_imageio_is_raw_by_extension(const char *extension);
 // Checks that the image is indeed an ldr image
 gboolean dt_imageio_is_ldr(const char *filename);
 // checks that the image has a monochrome preview attached
@@ -85,7 +87,7 @@ dt_imageio_retval_t dt_imageio_open_exotic(dt_image_t *img, const char *filename
 
 struct dt_imageio_module_format_t;
 struct dt_imageio_module_data_t;
-int dt_imageio_export(const dt_imgid_t imgid,
+gboolean dt_imageio_export(const dt_imgid_t imgid,
                       const char *filename,
                       struct dt_imageio_module_format_t *format,
                       struct dt_imageio_module_data_t *format_params,
@@ -102,7 +104,7 @@ int dt_imageio_export(const dt_imgid_t imgid,
                       const int total,
                       dt_export_metadata_t *metadata);
 
-int dt_imageio_export_with_flags(const dt_imgid_t imgid, const char *filename,
+gboolean dt_imageio_export_with_flags(const dt_imgid_t imgid, const char *filename,
                                  struct dt_imageio_module_format_t *format,
                                  struct dt_imageio_module_data_t *format_params,
                                  const gboolean ignore_exif,
@@ -156,7 +158,7 @@ void dt_imageio_flip_buffers_ui8_to_float(float *out,
                                           const dt_image_orientation_t orientation);
 
 // allocate buffer and return 0 on success along with largest jpg thumbnail from raw.
-int dt_imageio_large_thumbnail(const char *filename,
+gboolean dt_imageio_large_thumbnail(const char *filename,
                                uint8_t **buffer,
                                int32_t *width,
                                int32_t *height,

@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2013-2021 darktable developers.
+   Copyright (C) 2013-2024 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -43,8 +43,11 @@
 #include "lua/styles.h"
 #include "lua/tags.h"
 #include "lua/types.h"
+#include "lua/util.h"
 #include "lua/view.h"
 #include "lua/widget/widget.h"
+
+static int _lua_fully_initialized = false;
 
 static int dt_lua_init_init(lua_State*L)
 {
@@ -128,6 +131,7 @@ static int run_early_script(lua_State* L)
     dt_lua_check_print_error(L,luaL_dostring(L,lua_command));
   }
   dt_lua_redraw_screen();
+  g_atomic_int_set(&_lua_fully_initialized,true);
   return 0;
 }
 
@@ -138,7 +142,7 @@ static lua_CFunction init_funcs[]
         dt_lua_init_luastorages,   dt_lua_init_tags,        dt_lua_init_film,     dt_lua_init_call,
         dt_lua_init_view,          dt_lua_init_events,      dt_lua_init_init,     dt_lua_init_widget,
         dt_lua_init_lualib,        dt_lua_init_gettext,     dt_lua_init_guides,   dt_lua_init_cairo,
-        dt_lua_init_password,      NULL };
+        dt_lua_init_password,      dt_lua_init_util,        NULL };
 
 
 void dt_lua_init(lua_State *L, const char *lua_command)
@@ -240,13 +244,20 @@ int luaopen_darktable(lua_State *L)
   lua_pop(L, 1);
   return 1;
 }
+
 void dt_lua_finalize_early()
 {
   darktable.lua_state.ending = true;
-  dt_lua_lock();
-  dt_lua_event_trigger(darktable.lua_state.state,"exit",0);
-  dt_lua_unlock();
-  g_main_context_wakeup(darktable.lua_state.context);
+  gboolean running = (darktable.lua_state.loop
+                      && g_atomic_int_get(&_lua_fully_initialized)
+                      && g_main_loop_is_running(darktable.lua_state.loop));
+  if(running)
+  {
+    dt_lua_lock();
+    dt_lua_event_trigger(darktable.lua_state.state,"exit",0);
+    dt_lua_unlock();
+    g_main_context_wakeup(darktable.lua_state.context);
+  }
 }
 
 void dt_lua_finalize()

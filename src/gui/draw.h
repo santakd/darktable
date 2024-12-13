@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2023 darktable developers.
+    Copyright (C) 2009-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -165,9 +165,7 @@ static inline void dt_draw_grid_zoomed(cairo_t *cr,
   }
 }
 
-#ifdef _OPENMP
-#pragma omp declare simd uniform(base)
-#endif
+DT_OMP_DECLARE_SIMD(uniform(base))
 static inline float dt_log_scale_axis(const float x,
                                       const float base)
 {
@@ -400,19 +398,13 @@ static inline void dt_draw_curve_smaple_values(dt_draw_curve_t *c,
 {
   if(x)
   {
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(res) shared(x) schedule(static)
-#endif
+    DT_OMP_FOR()
     for(int k = 0; k < res; k++)
       x[k] = k * (1.0f / res);
   }
   if(y)
   {
-#ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) \
-  dt_omp_firstprivate(min, max, res) shared(y, c) schedule(static)
-#endif
+    DT_OMP_FOR()
     for(int k = 0; k < res; k++)
       y[k] = min + (max - min) * c->csample.m_Samples[k] * (1.0f / 0x10000);
   }
@@ -491,14 +483,13 @@ static inline float dt_draw_curve_calc_value(dt_draw_curve_t *c, const float x)
   return MIN(MAX(val, c->c.m_min_y), c->c.m_max_y);
 }
 
-static inline int dt_draw_curve_add_point(dt_draw_curve_t *c,
+static inline void dt_draw_curve_add_point(dt_draw_curve_t *c,
                                           const float x,
                                           const float y)
 {
   c->c.m_anchors[c->c.m_numAnchors].x = x;
   c->c.m_anchors[c->c.m_numAnchors].y = y;
   c->c.m_numAnchors++;
-  return 0;
 }
 
 // linear x linear y

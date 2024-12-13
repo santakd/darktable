@@ -74,7 +74,7 @@ static int _guides_get_value(gchar *name)
   int i = 0;
   for(GList *iter = darktable.guides; iter; iter = g_list_next(iter), i++)
   {
-    dt_guides_t *guide = (dt_guides_t *)iter->data;
+    dt_guides_t *guide = iter->data;
     if(!g_strcmp0(name, guide->name)) return i;
   }
   return -1;
@@ -99,9 +99,9 @@ static gchar *_conf_get_path(gchar *module_name, gchar *property_1, gchar *prope
   }
 
   if(property_2)
-    return dt_util_dstrcat(NULL, "guides/%s/%s%s/%s/%s", cv->module_name, lay, module_name, property_1, property_2);
+    return g_strdup_printf("guides/%s/%s%s/%s/%s", cv->module_name, lay, module_name, property_1, property_2);
   else
-    return dt_util_dstrcat(NULL, "guides/%s/%s%s/%s", cv->module_name, lay, module_name, property_1);
+    return g_strdup_printf("guides/%s/%s%s/%s", cv->module_name, lay, module_name, property_1);
 }
 
 static dt_guides_t *_conf_get_guide(gchar *module_name)
@@ -534,7 +534,7 @@ static void _guides_add_guide(GList **list, const char *name,
                               void *user_data, GDestroyNotify free,
                               gboolean support_flip)
 {
-  dt_guides_t *guide = (dt_guides_t *)malloc(sizeof(dt_guides_t));
+  dt_guides_t *guide = malloc(sizeof(dt_guides_t));
   g_strlcpy(guide->name, name, sizeof(guide->name));
   guide->draw = draw;
   guide->widget = widget;
@@ -587,7 +587,7 @@ GList *dt_guides_init()
 static void _settings_update_visibility(_guides_settings_t *gw)
 {
   // show or hide the flip and extra widgets for global case
-  dt_guides_t *guide = (dt_guides_t *)g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
+  dt_guides_t *guide = g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
   gtk_widget_set_visible(gw->g_flip, (guide && guide->support_flip));
   gtk_widget_set_visible(gw->g_widgets, (guide && guide->widget));
   if((guide && guide->widget))
@@ -606,7 +606,7 @@ static void _settings_flip_update(_guides_settings_t *gw)
   ++darktable.gui->reset;
 
   // we retrieve the global settings
-  dt_guides_t *guide = (dt_guides_t *)g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
+  dt_guides_t *guide = g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
   if(guide && guide->support_flip)
   {
     gchar *key = _conf_get_path("global", guide->name, "flip");
@@ -620,7 +620,7 @@ static void _settings_flip_update(_guides_settings_t *gw)
 static void _settings_guides_changed(GtkWidget *w, _guides_settings_t *gw)
 {
   // we save the new setting
-  dt_guides_t *guide = (dt_guides_t *)g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
+  dt_guides_t *guide = g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
   gchar *key = _conf_get_path("global", "guide", NULL);
   dt_conf_set_string(key, guide ? guide->name : "rule of thirds");
   g_free(key);
@@ -639,7 +639,7 @@ static void _settings_guides_changed(GtkWidget *w, _guides_settings_t *gw)
 static void _settings_flip_changed(GtkWidget *w, _guides_settings_t *gw)
 {
   // we save the new setting
-  dt_guides_t *guide = (dt_guides_t *)g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
+  dt_guides_t *guide = g_list_nth_data(darktable.guides, dt_bauhaus_combobox_get(darktable.view_manager->guides));
   if(guide)
   {
     gchar *key = _conf_get_path("global", guide->name, "flip");
@@ -693,7 +693,7 @@ GtkWidget *dt_guides_popover(dt_view_t *self, GtkWidget *button)
   GtkWidget *pop = gtk_popover_new(button);
 
   // create a new struct for all the widgets
-  _guides_settings_t *gw = (_guides_settings_t *)g_malloc0(sizeof(_guides_settings_t));
+  _guides_settings_t *gw = g_malloc0(sizeof(_guides_settings_t));
   GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
   // title
@@ -772,7 +772,7 @@ void dt_guides_draw(cairo_t *cr, const float left, const float top, const float 
 {
   const double dashes = DT_PIXEL_APPLY_DPI(5.0) / zoom_scale;
 
-  dt_iop_module_t *module = darktable.develop->gui_module;
+  dt_iop_module_t *module = dt_dev_gui_module();
 
   // first, we check if we need to show the guides or not
   gchar *key = _conf_get_path("global", "show", NULL);
@@ -842,7 +842,7 @@ static void _settings_autoshow_change(GtkWidget *mi, dt_iop_module_t *module)
   dt_control_queue_redraw_center();
 }
 
-void dt_guides_add_module_menuitem(void *menu, struct dt_iop_module_t *module)
+void dt_guides_add_module_menuitem(void *menu, dt_iop_module_t *module)
 {
   GtkWidget *mi = gtk_check_menu_item_new_with_label(_("show guides"));
   gchar *key = _conf_get_path(module->op, "autoshow", NULL);
@@ -864,7 +864,7 @@ void dt_guides_cleanup(GList *guides)
   g_list_free_full(guides, free_guide);
 }
 
-static void _settings_autoshow_change2(GtkWidget *combo, struct dt_iop_module_t *module)
+static void _settings_autoshow_change2(GtkWidget *combo, dt_iop_module_t *module)
 {
   if(darktable.gui->reset) return;
   gchar *key = _conf_get_path(module->op, "autoshow", NULL);
@@ -873,7 +873,7 @@ static void _settings_autoshow_change2(GtkWidget *combo, struct dt_iop_module_t 
   dt_control_queue_redraw_center();
 }
 
-static void _settings_autoshow_menu(GtkWidget *button, struct dt_iop_module_t *module)
+static void _settings_autoshow_menu(GtkWidget *button, dt_iop_module_t *module)
 {
   GtkWidget *popover = darktable.view_manager->guides_popover;
   gtk_popover_set_relative_to(GTK_POPOVER(popover), button);
@@ -885,7 +885,7 @@ static void _settings_autoshow_menu(GtkWidget *button, struct dt_iop_module_t *m
   gtk_widget_show_all(popover);
 }
 
-void dt_guides_init_module_widget(GtkWidget *iopw, struct dt_iop_module_t *module)
+void dt_guides_init_module_widget(GtkWidget *iopw, dt_iop_module_t *module)
 {
   if(!(module->flags() & IOP_FLAGS_GUIDES_WIDGET)) return;
 
@@ -915,7 +915,7 @@ void dt_guides_init_module_widget(GtkWidget *iopw, struct dt_iop_module_t *modul
   gtk_box_pack_start(GTK_BOX(iopw), box, TRUE, TRUE, 0);
 }
 
-void dt_guides_update_module_widget(struct dt_iop_module_t *module)
+void dt_guides_update_module_widget(dt_iop_module_t *module)
 {
   if(!module->guides_combo) return;
 

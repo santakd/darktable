@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,13 @@
 #ifndef TYPE_XYZA_FLT
   #define TYPE_XYZA_FLT (FLOAT_SH(1)|COLORSPACE_SH(PT_XYZ)|EXTRA_SH(1)|CHANNELS_SH(3)|BYTES_SH(4))
 #endif
+
+// CIE 1931 2° as used in dt
+//D50 (ProPhoto RGB)
+static const cmsCIExyY D50xyY = {0.34567, 0.35850, 1.0};
+
+//D65 (sRGB, AdobeRGB, Rec2020)
+static const cmsCIExyY D65xyY = {0.31271, 0.32902, 1.0};
 
 /** colorspace enums, must be in synch with dt_iop_colorspace_type_t
  * in color_conversion.cl */
@@ -146,12 +153,7 @@ typedef enum dt_colorspaces_cicp_transfer_characteristics_t
 typedef enum dt_colorspaces_cicp_matrix_coefficients_t
 {
     DT_CICP_MATRIX_COEFFICIENTS_IDENTITY = 0,
-    DT_CICP_MATRIX_COEFFICIENTS_REC709 = 1,
-    DT_CICP_MATRIX_COEFFICIENTS_UNSPECIFIED = 2,
-    DT_CICP_MATRIX_COEFFICIENTS_SYCC = 5,
-    DT_CICP_MATRIX_COEFFICIENTS_REC601 = 6,
-    DT_CICP_MATRIX_COEFFICIENTS_REC2020_NCL = 9,
-    DT_CICP_MATRIX_COEFFICIENTS_CHROMA_DERIVED_NCL = 12
+    DT_CICP_MATRIX_COEFFICIENTS_UNSPECIFIED = 2
 } dt_colorspaces_cicp_matrix_coefficients_t;
 
 typedef struct dt_colorspaces_t
@@ -265,6 +267,9 @@ int dt_colorspaces_get_matrix_from_output_profile(cmsHPROFILE prof,
                                                   float *lutb,
                                                   const int lutsize);
 
+/** create a temporary profile to be removed by dt_colorspaces_cleanup_profile */
+cmsHPROFILE dt_colorspaces_make_temporary_profile(cmsHPROFILE profile);
+
 /** wrapper to get the name from a color profile. this tries to handle character encodings. */
 void dt_colorspaces_get_profile_name(cmsHPROFILE p,
                                      const char *language,
@@ -285,8 +290,8 @@ static inline void rgb2hsl(const dt_aligned_pixel_t rgb,
                            float *l)
 {
   const float r = rgb[0], g = rgb[1], b = rgb[2];
-  const float pmax = fmaxf(r, fmax(g, b));
-  const float pmin = fminf(r, fmin(g, b));
+  const float pmax = fmaxf(r, fmaxf(g, b));
+  const float pmin = fminf(r, fminf(g, b));
   const float delta = (pmax - pmin);
 
   float hv = 0, sv = 0, lv = (pmin + pmax) / 2.0;

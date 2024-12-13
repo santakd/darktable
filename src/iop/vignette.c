@@ -114,7 +114,7 @@ const char *name()
   return _("vignetting");
 }
 
-const char **description(struct dt_iop_module_t *self)
+const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("simulate a lens fall-off close to edges"),
                                       _("creative"),
@@ -132,6 +132,11 @@ int flags()
 int default_group()
 {
   return IOP_GROUP_EFFECT | IOP_GROUP_EFFECTS;
+}
+
+int operation_tags()
+{
+  return IOP_TAG_DECORATION;
 }
 
 dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
@@ -178,8 +183,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_vignette_params_v1_t;
 
     const dt_iop_vignette_params_v1_t *old = old_params;
-    dt_iop_vignette_params_v4_t *new =
-      (dt_iop_vignette_params_v4_t *)malloc(sizeof(dt_iop_vignette_params_v4_t));
+    dt_iop_vignette_params_v4_t *new = malloc(sizeof(dt_iop_vignette_params_v4_t));
     new->scale = old->scale;
     new->falloff_scale = old->falloff_scale;
     new->brightness = -(1.0 - MAX(old->bsratio, 0.0)) * old->strength / 100.0;
@@ -214,8 +218,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_vignette_params_v2_t;
 
     const dt_iop_vignette_params_v2_t *old = old_params;
-    dt_iop_vignette_params_v4_t *new =
-      (dt_iop_vignette_params_v4_t *)malloc(sizeof(dt_iop_vignette_params_v4_t));
+    dt_iop_vignette_params_v4_t *new = malloc(sizeof(dt_iop_vignette_params_v4_t));
     new->scale = old->scale;
     new->falloff_scale = old->falloff_scale;
     new->brightness = old->brightness;
@@ -249,8 +252,7 @@ int legacy_params(dt_iop_module_t *self,
     } dt_iop_vignette_params_v3_t;
 
     const dt_iop_vignette_params_v3_t *old = old_params;
-    dt_iop_vignette_params_v4_t *new =
-      (dt_iop_vignette_params_v4_t *)malloc(sizeof(dt_iop_vignette_params_v4_t));
+    dt_iop_vignette_params_v4_t *new = malloc(sizeof(dt_iop_vignette_params_v4_t));
     new->scale = old->scale;
     new->falloff_scale = old->falloff_scale;
     new->brightness = old->brightness;
@@ -272,21 +274,37 @@ int legacy_params(dt_iop_module_t *self,
   return 1;
 }
 
-static int get_grab(float pointerx, float pointery, float startx, float starty, float endx, float endy,
-                    float zoom_scale)
+static int _get_grab(const float pointerx,
+                     const float pointery,
+                     const float startx,
+                     const float starty,
+                     const float endx,
+                     const float endy,
+                     const float zoom_scale)
 {
   const float radius = 5.0 / zoom_scale;
 
-  if(powf(pointerx - startx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 2; // x size
-  if(powf(pointerx, 2) + powf(pointery - starty, 2) <= powf(radius, 2)) return 4; // y size
-  if(powf(pointerx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 1;          // center
-  if(powf(pointerx - endx, 2) + powf(pointery, 2) <= powf(radius, 2)) return 8;   // x falloff
-  if(powf(pointerx, 2) + powf(pointery - endy, 2) <= powf(radius, 2)) return 16;  // y falloff
+  if(powf(pointerx - startx, 2) + powf(pointery, 2) <= powf(radius, 2))
+    return 2; // x size
+  if(powf(pointerx, 2) + powf(pointery - starty, 2) <= powf(radius, 2))
+    return 4; // y size
+  if(powf(pointerx, 2) + powf(pointery, 2) <= powf(radius, 2))
+    return 1;          // center
+  if(powf(pointerx - endx, 2) + powf(pointery, 2) <= powf(radius, 2))
+    return 8;   // x falloff
+  if(powf(pointerx, 2) + powf(pointery - endy, 2) <= powf(radius, 2))
+    return 16;  // y falloff
 
   return 0;
 }
 
-static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int grab, float zoom_scale)
+static void draw_overlay(cairo_t *cr,
+                         const float x,
+                         const float y,
+                         const float fx,
+                         const float fy,
+                         const int grab,
+                         const float zoom_scale)
 {
   // half width/height of the crosshair
   const float crosshair_w = DT_PIXEL_APPLY_DPI(10.0) / zoom_scale;
@@ -329,7 +347,7 @@ static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int 
   cairo_restore(cr);
   cairo_stroke(cr);
 
-  if(dt_iop_color_picker_is_visible(darktable.develop))
+  if(dt_iop_canvas_not_sensitive(darktable.develop))
     return;
   // the handles
   const float radius_sel = DT_PIXEL_APPLY_DPI(6.0) / zoom_scale;
@@ -361,22 +379,19 @@ static void draw_overlay(cairo_t *cr, float x, float y, float fx, float fy, int 
   cairo_stroke(cr);
 }
 
-// FIXME: For portrait images the overlay is a bit off. The coordinates in mouse_moved seem to be ok though.
-// WTF?
+// FIXME: For portrait images the overlay is a bit off. The
+// coordinates in mouse_moved seem to be ok though.
 void gui_post_expose(dt_iop_module_t *self,
                      cairo_t *cr,
-                     const int32_t width,
-                     const int32_t height,
+                     const float wd,
+                     const float ht,
                      const float pzx,
                      const float pzy,
                      const float zoom_scale)
 {
-  dt_develop_t *dev = self->dev;
-  //   dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
-  dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
+  //   dt_iop_vignette_gui_data_t *g = self->gui_data;
+  dt_iop_vignette_params_t *p = self->params;
 
-  const float wd = dev->preview_pipe->backbuf_width;
-  const float ht = dev->preview_pipe->backbuf_height;
   float bigger_side, smaller_side;
   if(wd >= ht)
   {
@@ -438,10 +453,12 @@ void gui_post_expose(dt_iop_module_t *self,
     }
   }
 
-  int grab = get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
+  int grab = _get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y,
+                       vignette_w, -vignette_h, vignette_fx,
                       -vignette_fy, zoom_scale);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-  const double lwidth = (dt_iop_color_picker_is_visible(darktable.develop) ? 0.5 : 1.0) / zoom_scale;
+  const double lwidth =
+    (dt_iop_canvas_not_sensitive(darktable.develop) ? 0.5 : 1.0) / zoom_scale;
   cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(3.0) * lwidth);
   dt_draw_set_color_overlay(cr, FALSE, 0.8);
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
@@ -450,7 +467,8 @@ void gui_post_expose(dt_iop_module_t *self,
   draw_overlay(cr, vignette_w, vignette_h, vignette_fx, vignette_fy, grab, zoom_scale);
 }
 
-// FIXME: Pumping of the opposite direction when changing width/height. See two FIXMEs further down.
+// FIXME: Pumping of the opposite direction when changing
+// width/height. See two FIXMEs further down.
 int mouse_moved(dt_iop_module_t *self,
                 const float pzx,
                 const float pzy,
@@ -458,10 +476,10 @@ int mouse_moved(dt_iop_module_t *self,
                 const int which,
                 const float zoom_scale)
 {
-  dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
-  dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
-  const float wd = self->dev->preview_pipe->backbuf_width;
-  const float ht = self->dev->preview_pipe->backbuf_height;
+  dt_iop_vignette_gui_data_t *g = self->gui_data;
+  dt_iop_vignette_params_t *p = self->params;
+  float wd, ht;
+  dt_dev_get_preview_size(self->dev, &wd, &ht);
   float bigger_side, smaller_side;
   if(wd >= ht)
   {
@@ -523,9 +541,11 @@ int mouse_moved(dt_iop_module_t *self,
     }
   }
 
-  if(grab == 0 || !(darktable.control->button_down && darktable.control->button_down_which == 1))
+  if(grab == 0
+     || !(darktable.control->button_down && darktable.control->button_down_which == 1))
   {
-    grab = get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y, vignette_w, -vignette_h, vignette_fx,
+    grab = _get_grab(pzx * wd - vignette_x, pzy * ht - vignette_y,
+                     vignette_w, -vignette_h, vignette_fx,
                     -vignette_fy, zoom_scale);
   }
 
@@ -543,13 +563,15 @@ int mouse_moved(dt_iop_module_t *self,
     }
     else if(grab == 2) // change the width
     {
-      const float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
+      const float max = 0.5 * ((p->whratio <= 1.0)
+                               ? bigger_side * p->whratio
+                               : bigger_side);
       const float new_vignette_w = MIN(bigger_side, MAX(0.1, pzx * wd - vignette_x));
       const float ratio = new_vignette_w / vignette_h;
       const float new_scale = 100.0 * new_vignette_w / max;
-      // FIXME: When going over the 1.0 boundary from wide to narrow (>1.0 -> <=1.0) the height slightly
-      // changes, depending on speed.
-      //        I guess we have to split the computation.
+      // FIXME: When going over the 1.0 boundary from wide to narrow
+      // (>1.0 -> <=1.0) the height slightly changes, depending on
+      // speed.  I guess we have to split the computation.
       if(ratio <= 1.0)
       {
         if(dt_modifier_is(which, GDK_CONTROL_MASK))
@@ -576,10 +598,11 @@ int mouse_moved(dt_iop_module_t *self,
     {
       const float new_vignette_h = MIN(bigger_side, MAX(0.1, vignette_y - pzy * ht));
       const float ratio = new_vignette_h / vignette_w;
-      const float max = 0.5 * ((ratio <= 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
-      // FIXME: When going over the 1.0 boundary from narrow to wide (>1.0 -> <=1.0) the width slightly
-      // changes, depending on speed.
-      //        I guess we have to split the computation.
+      const float max = 0.5 * ((ratio <= 1.0)
+                               ? bigger_side * (2.0 - p->whratio) : bigger_side);
+      // FIXME: When going over the 1.0 boundary from narrow to wide
+      // (>1.0 -> <=1.0) the width slightly changes, depending on
+      // speed.  I guess we have to split the computation.
       if(ratio <= 1.0)
       {
         if(dt_modifier_is(which, GDK_CONTROL_MASK))
@@ -607,7 +630,8 @@ int mouse_moved(dt_iop_module_t *self,
     else if(grab == 8) // change the falloff on the right
     {
       const float new_vignette_fx = pzx * wd - vignette_x;
-      const float max = 0.5 * ((p->whratio <= 1.0) ? bigger_side * p->whratio : bigger_side);
+      const float max = 0.5 * ((p->whratio <= 1.0)
+                               ? bigger_side * p->whratio : bigger_side);
       const float delta_x = MIN(2.0f * max, MAX(0.0, new_vignette_fx - vignette_w));
       const float new_falloff = 100.0 * delta_x / max;
       dt_bauhaus_slider_set(g->falloff_scale, new_falloff);
@@ -615,7 +639,8 @@ int mouse_moved(dt_iop_module_t *self,
     else if(grab == 16) // change the falloff on the top
     {
       const float new_vignette_fy = vignette_y - pzy * ht;
-      const float max = 0.5 * ((p->whratio > 1.0) ? bigger_side * (2.0 - p->whratio) : bigger_side);
+      const float max = 0.5 * ((p->whratio > 1.0)
+                               ? bigger_side * (2.0 - p->whratio) : bigger_side);
       const float delta_y = MIN(2.0f * max, MAX(0.0, new_vignette_fy - vignette_h));
       const float new_falloff = 100.0 * delta_y / max;
       dt_bauhaus_slider_set(g->falloff_scale, new_falloff);
@@ -669,25 +694,32 @@ int button_released(dt_iop_module_t *self,
   return 0;
 }
 
-void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
-             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+void process(dt_iop_module_t *self,
+             dt_dev_pixelpipe_iop_t *piece,
+             const void *const ivoid,
+             void *const ovoid,
+             const dt_iop_roi_t *const roi_in,
+             const dt_iop_roi_t *const roi_out)
 {
-  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self, piece->colors,
+  if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/,
+                                        self, piece->colors,
                                         ivoid, ovoid, roi_in, roi_out))
     return;
 
-  const dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
+  const dt_iop_vignette_data_t *data = piece->data;
   const dt_iop_roi_t *buf_in = &piece->buf_in;
   const gboolean unbound = data->unbound;
 
   /* Center coordinates of buf_in, these should not consider buf_in->{x,y}! */
   const dt_iop_vector_2d_t buf_center = { buf_in->width * .5f, buf_in->height * .5f };
   /* Center coordinates of vignette center */
-  const dt_iop_vector_2d_t vignette_center = { buf_center.x + data->center.x * buf_in->width / 2.0,
-                                               buf_center.y + data->center.y * buf_in->height / 2.0 };
+  const dt_iop_vector_2d_t vignette_center =
+    { buf_center.x + data->center.x * buf_in->width / 2.0,
+      buf_center.y + data->center.y * buf_in->height / 2.0 };
   /* Coordinates of vignette_center in terms of roi_in */
   const dt_iop_vector_2d_t roi_center
-      = { vignette_center.x * roi_in->scale - roi_in->x, vignette_center.y * roi_in->scale - roi_in->y };
+      = { vignette_center.x * roi_in->scale - roi_in->x,
+          vignette_center.y * roi_in->scale - roi_in->y };
   float xscale;
   float yscale;
 
@@ -722,7 +754,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float exp1 = 2.0f / shape;
   const float exp2 = shape / 2.0f;
   // Pre-scale the center offset
-  const dt_iop_vector_2d_t roi_center_scaled = { roi_center.x * xscale, roi_center.y * yscale };
+  const dt_iop_vector_2d_t roi_center_scaled = { roi_center.x * xscale,
+                                                 roi_center.y * yscale };
 
   float dither = 0.0f;
 
@@ -743,31 +776,27 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float brightness = data->brightness;
   const float saturation = data->saturation;
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(dscale, exp1, exp2, fscale, xscale, yscale, dither, ivoid, ovoid, \
-                      roi_center_scaled, roi_out, tea_states, brightness, saturation, unbound) \
-  schedule(static)
-#endif
+  DT_OMP_FOR()
   for(int j = 0; j < roi_out->height; j++)
   {
     const size_t k = (size_t)4 * roi_out->width * j;
     const float *in = (const float *)ivoid + k;
     float *out = (float *)ovoid + k;
     unsigned int *tea_state = get_tea_state(tea_states,dt_get_thread_num());
-    tea_state[0] = j * roi_out->height; /* + dt_get_thread_num() -- do not include, makes results unreproducible */
+    tea_state[0] = j * roi_out->height;
     for(int i = 0; i < roi_out->width; i++)
     {
       // current pixel coord translated to local coord
       const dt_iop_vector_2d_t pv
           = { fabsf(i * xscale - roi_center_scaled.x), fabsf(j * yscale - roi_center_scaled.y) };
 
-      // Calculate the pixel weight in vignette
-      const float cplen = powf(powf(pv.x, exp1) + powf(pv.y, exp1), exp2); // Length from center to pv
+      // Calculate the pixel weight in vignette. Length from center to pv:
+      const float cplen = powf(powf(pv.x, exp1) + powf(pv.y, exp1), exp2);
       float weight = 0.f;
       float dith = 0.0f;
 
-      if(cplen >= dscale) // pixel is outside the inner vignette circle, lets calculate weight of vignette
+      // pixel is outside the inner vignette circle, lets calculate weight of vignette
+      if(cplen >= dscale)
       {
         weight = ((cplen - dscale) / fscale);
         if(weight >= 1.0f)
@@ -822,11 +851,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_in, cl_mem dev_out,
-               const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+int process_cl(dt_iop_module_t *self,
+               dt_dev_pixelpipe_iop_t *piece,
+               cl_mem dev_in, cl_mem dev_out,
+               const dt_iop_roi_t *const roi_in,
+               const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_vignette_data_t *data = (dt_iop_vignette_data_t *)piece->data;
-  dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)self->global_data;
+  dt_iop_vignette_data_t *data = piece->data;
+  dt_iop_vignette_global_data_t *gd = self->global_data;
 
   const int devid = piece->pipe->devid;
   const int width = roi_out->width;
@@ -837,11 +869,13 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   /* Center coordinates of buf_in, these should not consider buf_in->{x,y}! */
   const dt_iop_vector_2d_t buf_center = { buf_in->width * .5f, buf_in->height * .5f };
   /* Center coordinates of vignette center */
-  const dt_iop_vector_2d_t vignette_center = { buf_center.x + data->center.x * buf_in->width / 2.0,
-                                               buf_center.y + data->center.y * buf_in->height / 2.0 };
+  const dt_iop_vector_2d_t vignette_center =
+    { buf_center.x + data->center.x * buf_in->width / 2.0,
+      buf_center.y + data->center.y * buf_in->height / 2.0 };
   /* Coordinates of vignette_center in terms of roi_in */
-  const dt_iop_vector_2d_t roi_center
-      = { vignette_center.x * roi_in->scale - roi_in->x, vignette_center.y * roi_in->scale - roi_in->y };
+  const dt_iop_vector_2d_t roi_center =
+    { vignette_center.x * roi_in->scale - roi_in->x,
+      vignette_center.y * roi_in->scale - roi_in->y };
   float xscale;
   float yscale;
 
@@ -876,7 +910,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const float exp1 = 2.0 / shape;
   const float exp2 = shape / 2.0;
   // Pre-scale the center offset
-  const dt_iop_vector_2d_t roi_center_scaled = { roi_center.x * xscale, roi_center.y * yscale };
+  const dt_iop_vector_2d_t roi_center_scaled = { roi_center.x * xscale,
+                                                 roi_center.y * yscale };
 
   float dither = 0.0f;
 
@@ -901,45 +936,53 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const int unbound = data->unbound;
 
   return dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_vignette, width, height,
-    CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(scale), CLARG(roi_center_scaled_f),
-    CLARG(expt), CLARG(dscale), CLARG(fscale), CLARG(brightness), CLARG(saturation), CLARG(dither),
+                                          CLARG(dev_in), CLARG(dev_out),
+                                          CLARG(width), CLARG(height),
+                                          CLARG(scale),
+                                          CLARG(roi_center_scaled_f),
+                                          CLARG(expt),
+                                          CLARG(dscale), CLARG(fscale),
+                                          CLARG(brightness),
+                                          CLARG(saturation),
+                                          CLARG(dither),
     CLARG(unbound));
 }
 #endif
 
 
-void init_global(dt_iop_module_so_t *module)
+void init_global(dt_iop_module_so_t *self)
 {
   const int program = 8; // extended.cl from programs.conf
-  dt_iop_vignette_global_data_t *gd
-      = (dt_iop_vignette_global_data_t *)malloc(sizeof(dt_iop_vignette_global_data_t));
-  module->data = gd;
+  dt_iop_vignette_global_data_t *gd = malloc(sizeof(dt_iop_vignette_global_data_t));
+  self->data = gd;
   gd->kernel_vignette = dt_opencl_create_kernel(program, "vignette");
 }
 
 
-void cleanup_global(dt_iop_module_so_t *module)
+void cleanup_global(dt_iop_module_so_t *self)
 {
-  dt_iop_vignette_global_data_t *gd = (dt_iop_vignette_global_data_t *)module->data;
+  dt_iop_vignette_global_data_t *gd = self->data;
   dt_opencl_free_kernel(gd->kernel_vignette);
-  free(module->data);
-  module->data = NULL;
+  free(self->data);
+  self->data = NULL;
 }
 
 
 void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 {
-  dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
-  dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
+  dt_iop_vignette_gui_data_t *g = self->gui_data;
+  dt_iop_vignette_params_t *p = self->params;
 
   gtk_widget_set_sensitive(GTK_WIDGET(g->whratio), !p->autoratio);
 }
 
-void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+void commit_params(dt_iop_module_t *self,
+                   dt_iop_params_t *p1,
+                   dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
   dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)p1;
-  dt_iop_vignette_data_t *d = (dt_iop_vignette_data_t *)piece->data;
+  dt_iop_vignette_data_t *d = piece->data;
   d->scale = p->scale;
   d->falloff_scale = p->falloff_scale;
   d->brightness = p->brightness;
@@ -968,30 +1011,35 @@ void init_presets(dt_iop_module_so_t *self)
   p.dithering = 0;
   p.unbound = TRUE;
   dt_gui_presets_add_generic(_("lomo"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), 1,
+                             DEVELOP_BLEND_CS_RGB_DISPLAY);
   dt_database_release_transaction(darktable.db);
 }
 
-void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void init_pipe(dt_iop_module_t *self,
+               dt_dev_pixelpipe_t *pipe,
+               dt_dev_pixelpipe_iop_t *piece)
 {
   piece->data = malloc(sizeof(dt_iop_vignette_data_t));
 }
 
-void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
+void cleanup_pipe(dt_iop_module_t *self,
+                  dt_dev_pixelpipe_t *pipe,
+                  dt_dev_pixelpipe_iop_t *piece)
 {
   free(piece->data);
   piece->data = NULL;
 }
 
-void gui_update(struct dt_iop_module_t *self)
+void gui_update(dt_iop_module_t *self)
 {
-  dt_iop_vignette_gui_data_t *g = (dt_iop_vignette_gui_data_t *)self->gui_data;
-  dt_iop_vignette_params_t *p = (dt_iop_vignette_params_t *)self->params;
+  dt_iop_vignette_gui_data_t *g = self->gui_data;
+  dt_iop_vignette_params_t *p = self->params;
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->autoratio), p->autoratio);
   gtk_widget_set_sensitive(GTK_WIDGET(g->whratio), !p->autoratio);
 }
 
-void gui_init(struct dt_iop_module_t *self)
+void gui_init(dt_iop_module_t *self)
 {
   dt_iop_vignette_gui_data_t *g = IOP_GUI_ALLOC(vignette);
 
@@ -1001,7 +1049,8 @@ void gui_init(struct dt_iop_module_t *self)
   g->saturation = dt_bauhaus_slider_from_params(self, N_("saturation"));
 
   gtk_box_pack_start(GTK_BOX(self->widget),
-                     dt_ui_section_label_new(C_("section", "position / form")), FALSE, FALSE, 0);
+                     dt_ui_section_label_new(C_("section", "position / form")),
+                     FALSE, FALSE, 0);
 
   g->center_x = dt_bauhaus_slider_from_params(self, "center.x");
   g->center_y = dt_bauhaus_slider_from_params(self, "center.y");
@@ -1019,28 +1068,38 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_slider_set_format(g->scale, "%");
   dt_bauhaus_slider_set_format(g->falloff_scale, "%");
 
-  gtk_widget_set_tooltip_text(g->scale, _("the radii scale of vignette for start of fall-off"));
-  gtk_widget_set_tooltip_text(g->falloff_scale, _("the radii scale of vignette for end of fall-off"));
+  gtk_widget_set_tooltip_text
+    (g->scale, _("the radii scale of vignette for start of fall-off"));
+  gtk_widget_set_tooltip_text(g->falloff_scale,
+                              _("the radii scale of vignette for end of fall-off"));
   gtk_widget_set_tooltip_text(g->brightness, _("strength of effect on brightness"));
   gtk_widget_set_tooltip_text(g->saturation, _("strength of effect on saturation"));
   gtk_widget_set_tooltip_text(g->center_x, _("horizontal offset of center of the effect"));
   gtk_widget_set_tooltip_text(g->center_y, _("vertical offset of center of the effect"));
-  gtk_widget_set_tooltip_text(g->shape, _("shape factor\n0 produces a rectangle\n1 produces a circle or ellipse\n"
-                                          "2 produces a diamond"));
-  gtk_widget_set_tooltip_text(GTK_WIDGET(g->autoratio), _("enable to have the ratio automatically follow the image size"));
+  gtk_widget_set_tooltip_text
+    (g->shape,
+     _("shape factor\n0 produces a rectangle\n1 produces a circle or ellipse\n"
+       "2 produces a diamond"));
+  gtk_widget_set_tooltip_text
+    (GTK_WIDGET(g->autoratio),
+     _("enable to have the ratio automatically follow the image size"));
   gtk_widget_set_tooltip_text(g->whratio, _("width-to-height ratio"));
-  gtk_widget_set_tooltip_text(g->dithering, _("add some level of random noise to prevent banding"));
+  gtk_widget_set_tooltip_text(g->dithering,
+                              _("add some level of random noise to prevent banding"));
 }
 
-GSList *mouse_actions(struct dt_iop_module_t *self)
+GSList *mouse_actions(dt_iop_module_t *self)
 {
   GSList *lm = NULL;
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, 0,
-                                     _("[%s on node] change vignette/feather size"), self->name());
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
-                                     _("[%s on node] change vignette/feather size keeping ratio"), self->name());
-  lm = dt_mouse_action_create_format(lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
-                                     _("[%s on center] move vignette"), self->name());
+  lm = dt_mouse_action_create_format
+    (lm, DT_MOUSE_ACTION_LEFT_DRAG, 0,
+     _("[%s on node] change vignette/feather size"), self->name());
+  lm = dt_mouse_action_create_format
+    (lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
+     _("[%s on node] change vignette/feather size keeping ratio"), self->name());
+  lm = dt_mouse_action_create_format
+    (lm, DT_MOUSE_ACTION_LEFT_DRAG, GDK_CONTROL_MASK,
+     _("[%s on center] move vignette"), self->name());
   return lm;
 }
 

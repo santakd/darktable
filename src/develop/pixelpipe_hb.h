@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2023 darktable developers.
+    Copyright (C) 2009-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -55,19 +55,21 @@ typedef struct dt_dev_pixelpipe_iop_t
   dt_dev_histogram_stats_t histogram_stats; // stats of captured histogram
   uint32_t histogram_max[4];                // maximum levels in histogram, one per channel
 
-  float iscale;        // input actually just downscaled buffer? iscale*iwidth = actual width
-  int iwidth, iheight; // width and height of input buffer
-  uint64_t hash;       // hash of params and enabled.
-  int bpc;             // bits per channel, 32 means float
-  int colors;          // how many colors per pixel
-  dt_iop_roi_t buf_in,
-      buf_out;                // theoretical full buffer regions of interest, as passed through modify_roi_out
-  dt_iop_roi_t processed_roi_in, processed_roi_out; // the actual roi that was used for processing the piece
-  gboolean process_cl_ready;       // set this to FALSE in commit_params to temporarily disable the use of process_cl
-  gboolean process_tiling_ready;   // set this to FALSE in commit_params to temporarily disable tiling
+  float iscale;                   // input actually just downscaled buffer? iscale*iwidth = actual width
+  int iwidth, iheight;            // width and height of input buffer
+  dt_hash_t hash;                 // hash of params and enabled.
+  int bpc;                        // bits per channel, 32 means float
+  int colors;                     // how many colors per pixel
+  dt_iop_roi_t buf_in;            // theoretical full buffer regions of interest, as passed through modify_roi_out
+  dt_iop_roi_t buf_out;
+  dt_iop_roi_t processed_roi_in;  // the actual roi that was used for processing the piece
+  dt_iop_roi_t processed_roi_out;
+  gboolean process_cl_ready;      // set this to FALSE in commit_params to temporarily disable the use of process_cl
+  gboolean process_tiling_ready;  // set this to FALSE in commit_params to temporarily disable tiling
 
   // the following are used internally for caching:
-  dt_iop_buffer_dsc_t dsc_in, dsc_out;
+  dt_iop_buffer_dsc_t dsc_in;
+  dt_iop_buffer_dsc_t dsc_out;
 
   GHashTable *raster_masks;
 } dt_dev_pixelpipe_iop_t;
@@ -82,10 +84,18 @@ typedef enum dt_dev_pixelpipe_change_t
   DT_DEV_PIPE_ZOOMED = 1 << 3 // zoom event, preview pipe does not need changes
 } dt_dev_pixelpipe_change_t;
 
+typedef enum dt_dev_pixelpipe_status_t
+{
+  DT_DEV_PIXELPIPE_DIRTY = 0,   // history stack changed or image new
+  DT_DEV_PIXELPIPE_RUNNING = 1, // pixelpipe is running
+  DT_DEV_PIXELPIPE_VALID = 2,   // pixelpipe has finished; valid result
+  DT_DEV_PIXELPIPE_INVALID = 3  // pixelpipe has finished; invalid result
+} dt_dev_pixelpipe_status_t;
+
 typedef struct dt_dev_detail_mask_t
 {
   dt_iop_roi_t roi;
-  uint64_t hash;
+  dt_hash_t hash;
   float *data;
 } dt_dev_detail_mask_t;
 
@@ -126,17 +136,18 @@ typedef struct dt_dev_pixelpipe_t
   GList *nodes;
   // event flag
   dt_dev_pixelpipe_change_t changed;
+  // pipe status
+  dt_dev_pixelpipe_status_t status;
+  gboolean loading;
+  gboolean input_changed;
   // backbuffer (output)
   uint8_t *backbuf;
   size_t backbuf_size;
   int backbuf_width, backbuf_height;
   float backbuf_scale;
   float backbuf_zoom_x, backbuf_zoom_y;
-  uint64_t backbuf_hash;
-  dt_pthread_mutex_t backbuf_mutex, busy_mutex;
-  // output buffer (for display)
-  uint8_t *output_backbuf;
-  int output_backbuf_width, output_backbuf_height;
+  dt_hash_t backbuf_hash;
+  dt_pthread_mutex_t mutex, backbuf_mutex, busy_mutex;
   int final_width, final_height;
 
   // the data for the luminance mask are kept in a buffer written by demosaic or rawprepare
@@ -164,6 +175,7 @@ typedef struct dt_dev_pixelpipe_t
   gboolean bypass_blendif;
   // input data based on this timestamp:
   int input_timestamp;
+  uint32_t average_delay;
   dt_dev_pixelpipe_type_t type;
   // the final output pixel format this pixelpipe will be converted to
   dt_imageio_levels_t levels;
@@ -188,7 +200,7 @@ typedef struct dt_dev_pixelpipe_t
 struct dt_develop_t;
 
 // report pipe->type as textual string
-const char *dt_dev_pixelpipe_type_to_str(int pipe_type);
+const char *dt_dev_pixelpipe_type_to_str(dt_dev_pixelpipe_type_t pipe_type);
 
 // inits the pixelpipe with plain passthrough input/output and empty input and default caching settings.
 gboolean dt_dev_pixelpipe_init(dt_dev_pixelpipe_t *pipe);
@@ -219,6 +231,8 @@ gboolean dt_dev_pixelpipe_init_cached(dt_dev_pixelpipe_t *pipe,
                                       const size_t size,
                                       const int32_t entries,
                                       const size_t memlimit);
+// returns available memory for the pipe
+size_t dt_get_available_pipe_mem(const dt_dev_pixelpipe_t *pipe);
 // constructs a new input buffer from given RGB float array.
 void dt_dev_pixelpipe_set_input(dt_dev_pixelpipe_t *pipe,
                                 struct dt_develop_t *dev,
@@ -267,7 +281,8 @@ gboolean dt_dev_pixelpipe_process(dt_dev_pixelpipe_t *pipe,
                              const int y,
                              const int width,
                              const int height,
-                             const float scale);
+                             const float scale,
+                             const int devid);
 // convenience method that does not gamma-compress the image.
 gboolean dt_dev_pixelpipe_process_no_gamma(dt_dev_pixelpipe_t *pipe,
                                       struct dt_develop_t *dev,
@@ -283,7 +298,7 @@ void dt_dev_pixelpipe_disable_after(dt_dev_pixelpipe_t *pipe, const char *op);
 void dt_dev_pixelpipe_disable_before(dt_dev_pixelpipe_t *pipe, const char *op);
 
 // helper function to pass a raster mask through a (so far) processed pipe
-float *dt_dev_get_raster_mask(const struct dt_dev_pixelpipe_iop_t *piece,
+float *dt_dev_get_raster_mask(dt_dev_pixelpipe_iop_t *piece,
                               const struct dt_iop_module_t *raster_mask_source,
                               const dt_mask_id_t raster_mask_id,
                               const struct dt_iop_module_t *target_module,
@@ -292,27 +307,28 @@ float *dt_dev_get_raster_mask(const struct dt_dev_pixelpipe_iop_t *piece,
 void dt_dev_clear_scharr_mask(dt_dev_pixelpipe_t *pipe);
 
 gboolean dt_dev_write_scharr_mask(dt_dev_pixelpipe_iop_t *piece,
-                                     float *const rgb,
-                                     const dt_iop_roi_t *const roi_in,
-                                     const gboolean mode);
+                                  float *const rgb,
+                                  const dt_iop_roi_t *const roi_in,
+                                  const gboolean mode);
 #ifdef HAVE_OPENCL
-gboolean dt_dev_write_scharr_mask_cl(dt_dev_pixelpipe_iop_t *piece,
-                                        cl_mem in,
-                                        const dt_iop_roi_t *const roi_in,
-                                        const gboolean mode);
+int dt_dev_write_scharr_mask_cl(dt_dev_pixelpipe_iop_t *piece,
+                                cl_mem in,
+                                const dt_iop_roi_t *const roi_in,
+                                const gboolean mode);
 #endif
 
 /* specialized version of dt_print for pixelpipe debugging */
-void dt_print_pipe(dt_debug_thread_t thread,
-                   const char *title,
-                   const dt_dev_pixelpipe_t *pipe,
-                   const struct dt_iop_module_t *mod,
-                   const dt_iop_roi_t *roi_in,
-                   const dt_iop_roi_t *roi_out,
-                   const char *msg, ...);
+void dt_print_pipe_ext(const char *title,
+                       const dt_dev_pixelpipe_t *pipe,
+                       const struct dt_iop_module_t *mod,
+                       const int device,
+                       const dt_iop_roi_t *roi_in,
+                       const dt_iop_roi_t *roi_out,
+                       const char *msg, ...)
+  __attribute__((format(printf, 7, 8)));
 
 // helper function writing the pipe-processed ctmask data to dest
-float *dt_dev_distort_detail_mask(dt_dev_pixelpipe_t *pipe,
+float *dt_dev_distort_detail_mask(dt_dev_pixelpipe_iop_t *piece,
                                   float *src,
                                   const struct dt_iop_module_t *target_module);
 

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2022-2023 darktable developers.
+    Copyright (C) 2022-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,7 +28,7 @@
 #include "imageio/qoi.h"
 
 #include "common/image.h"
-#include "develop/imageop.h"
+#include "develop/imageop.h"         // for IOP_CS_RGB
 #include "imageio/imageio_common.h"
 
 dt_imageio_retval_t dt_imageio_open_qoi(dt_image_t *img,
@@ -38,58 +38,48 @@ dt_imageio_retval_t dt_imageio_open_qoi(dt_image_t *img,
   FILE *f = g_fopen(filename, "rb");
   if(!f)
   {
-    dt_print(DT_DEBUG_ALWAYS,"[qoi_open] cannot open file for read: %s\n", filename);
-    return DT_IMAGEIO_LOAD_FAILED;
+    dt_print(DT_DEBUG_ALWAYS,
+             "[qoi_open] cannot open file for read: %s",
+             filename);
+    return DT_IMAGEIO_FILE_NOT_FOUND;
   }
 
   fseek(f, 0, SEEK_END);
   size_t filesize = ftell(f);
-  fseek(f, 0, SEEK_SET);
+  rewind(f);
 
-  void *read_buffer = g_malloc(filesize);
-
-  // Let's check whether the entire content of the file should be read into the buffer.
-  // If we see that it's a non-QOI file, we'll save time by avoiding unnecessary reading
-  // of a potentially large file into the buffer.
-  if(fread(read_buffer, 1, 4, f) != 4)
+  void *read_buffer = g_try_malloc(filesize);
+  if(!read_buffer)
   {
     fclose(f);
-    g_free(read_buffer);
-    dt_print(DT_DEBUG_ALWAYS, "[qoi_open] failed to read from %s\n", filename);
-    // if we can't read even first 4 bytes, it's more like file disappeared
-    return DT_IMAGEIO_FILE_NOT_FOUND;
-  }
-  if(memcmp(read_buffer, "qoif", 4) != 0)
-  {
+    dt_print(DT_DEBUG_ALWAYS,
+             "[qoi_open] failed to allocate read buffer for %s",
+             filename);
     return DT_IMAGEIO_LOAD_FAILED;
   }
 
-  if(fread(read_buffer+4, 1, filesize-4, f) != filesize-4)
+  if(fread(read_buffer, 1, filesize, f) != filesize)
   {
     fclose(f);
     g_free(read_buffer);
     dt_print(DT_DEBUG_ALWAYS,
-             "[qoi_open] failed to read %zu bytes from %s\n",
+             "[qoi_open] failed to read entire file (%zu bytes) from %s",
              filesize, filename);
-    return DT_IMAGEIO_LOAD_FAILED;
+    return DT_IMAGEIO_IOERROR;
   }
   fclose(f);
 
-// void *qoi_decode(const void *data, int size, qoi_desc *desc, int channels);
   qoi_desc desc;
   uint8_t *int_RGBA_buf = qoi_decode(read_buffer, (int)filesize, &desc, 4);
 
-  char *ext = g_strrstr(filename, ".");
+  g_free(read_buffer);
 
   if(!int_RGBA_buf)
   {
-    g_free(read_buffer);
-    // Complain on failure only if the file extension matches the loader expectation
-    if(ext && (g_ascii_strcasecmp(ext, ".qoi") == 0))
-    {
-      dt_print(DT_DEBUG_ALWAYS,"[qoi_open] failed to decode file: %s\n", filename);
-    }
-    return DT_IMAGEIO_LOAD_FAILED;
+    dt_print(DT_DEBUG_ALWAYS,
+             "[qoi_open] failed to decode file: %s",
+             filename);
+    return DT_IMAGEIO_FILE_CORRUPTED;
   }
 
   img->width = desc.width;
@@ -100,25 +90,19 @@ dt_imageio_retval_t dt_imageio_open_qoi(dt_image_t *img,
   float *mipbuf = (float *)dt_mipmap_cache_alloc(mbuf, img);
   if(!mipbuf)
   {
-    g_free(read_buffer);
+    QOI_FREE(int_RGBA_buf);
     dt_print(DT_DEBUG_ALWAYS,
-             "[qoi_open] could not alloc full buffer for image: %s\n",
+             "[qoi_open] could not alloc full buffer for image: %s",
              img->filename);
     return DT_IMAGEIO_CACHE_FULL;
   }
 
-  uint8_t intval;
-  float floatval;
   const size_t npixels = (size_t)desc.width * desc.height;
 
-#ifdef _OPENMP
-#pragma omp parallel for private(intval, floatval)
-#endif
+  DT_OMP_FOR()
   for(size_t index = 0; index < npixels * 4; index++)
   {
-    intval = *(int_RGBA_buf + index);
-    floatval = intval / 255.f;
-    *(mipbuf + index) = floatval;
+    mipbuf[index] = int_RGBA_buf[index] / 255.f;
   }
 
   img->buf_dsc.cst = IOP_CS_RGB;

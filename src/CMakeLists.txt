@@ -13,85 +13,78 @@ FILE(GLOB SOURCE_FILES
   "common/atomic.c"
   "common/bilateral.c"
   "common/bilateralcl.c"
-  "common/box_filters.c"
+  "common/box_filters.cc"
   "common/cache.c"
   "common/calculator.c"
   "common/collection.c"
+  "common/color_harmony.c"
   "common/color_picker.c"
   "common/color_vocabulary.c"
   "common/colorlabels.c"
   "common/colorspaces.c"
+  "common/curl_tools.c"
   "common/curve_tools.c"
   "common/custom_primaries.c"
-  "common/splines.cpp"
-  "common/curl_tools.c"
   "common/darktable.c"
   "common/database.c"
   "common/datetime.c"
   "common/dbus.c"
+  "common/distance_transform.c"
+  "common/dlopencl.c"
+  "common/dng_opcode.c"
   "common/dtpthread.c"
+  "common/dwt.c"
+  "common/dynload.c"
   "common/eaw.c"
   "common/exif.cc"
-  "common/film.c"
   "common/file_location.c"
+  "common/film.c"
   "common/gaussian.c"
+  "common/gimp.c"
+  "common/gpx.c"
   "common/grouping.c"
   "common/guided_filter.c"
+  "common/heal.c"
+  "common/histogram.c"
   "common/history.c"
   "common/history_snapshot.c"
-  "common/gpx.c"
   "common/image.c"
   "common/image_cache.c"
-  "common/image_compression.c"
   "common/imagebuf.c"
-  "imageio/imageio.c"
-  "imageio/imageio_jpeg.c"
-  "imageio/imageio_png.c"
-  "imageio/imageio_module.c"
-  "imageio/imageio_pfm.c"
-  "imageio/imageio_pnm.c"
-  "imageio/imageio_rgbe.c"
-  "imageio/imageio_tiff.c"
-  "imageio/imageio_im.c"
-  "imageio/imageio_gm.c"
-  "imageio/imageio_qoi.c"
   "common/import_session.c"
   "common/interpolation.c"
+  "common/iop_group.c"
+  "common/iop_order.c"
+  "common/iop_profile.c"
+  "common/l10n.c"
   "common/locallaplacian.c"
   "common/locallaplaciancl.c"
-  "common/l10n.c"
+  "common/map_locations.c"
   "common/matrices.c"
   "common/metadata.c"
   "common/metadata_export.c"
   "common/mipmap_cache.c"
   "common/module.c"
-  "common/noiseprofiles.c"
   "common/nlmeans_core.c"
+  "common/noiseprofiles.c"
+  "common/opencl.c"
+  "common/overlay.c"
   "common/pdf.c"
   "common/presets.c"
-  "common/styles.c"
-  "common/selection.c"
-  "common/system_signal_handling.c"
-  "common/tags.c"
-  "common/map_locations.c"
-  "common/utility.c"
-  "common/variables.c"
   "common/pwstorage/backend_kwallet.c"
   "common/pwstorage/pwstorage.c"
-  "common/opencl.c"
-  "common/dynload.c"
-  "common/dlopencl.c"
   "common/ratings.c"
   "common/resource_limits.c"
-  "common/histogram.c"
+  "common/selection.c"
+  "common/splines.cpp"
+  "common/styles.c"
+  "common/system_signal_handling.c"
+  "common/tags.c"
   "common/undo.c"
   "common/usermanual_url.c"
-  "common/iop_group.c"
-  "common/iop_order.c"
-  "common/iop_profile.c"
-  "common/dng_opcode.c"
+  "common/utility.c"
+  "common/variables.c"
   "common/wb_presets.c"
-  "common/distance_transform.c"
   "control/conf.c"
   "control/control.c"
   "control/crawler.c"
@@ -100,31 +93,31 @@ FILE(GLOB SOURCE_FILES
   "control/jobs/develop_jobs.c"
   "control/jobs/film_jobs.c"
   "control/jobs/image_jobs.c"
+  "control/jobs/sidecar_jobs.c"
   "control/progress.c"
   "control/signal.c"
-  "develop/develop.c"
-  "develop/imageop.c"
-  "develop/imageop_math.c"
-  "develop/imageop_gui.c"
-  "develop/lightroom.c"
-  "develop/pixelpipe.c"
   "develop/blend.c"
   "develop/blend_gui.c"
   "develop/blends/blendif_lab.c"
   "develop/blends/blendif_raw.c"
   "develop/blends/blendif_rgb_hsl.c"
   "develop/blends/blendif_rgb_jzczhz.c"
-  "develop/tiling.c"
-  "common/dwt.c"
-  "common/heal.c"
+  "develop/borders_helper.c"
+  "develop/develop.c"
+  "develop/format.c"
+  "develop/imageop.c"
+  "develop/imageop_gui.c"
+  "develop/imageop_math.c"
+  "develop/lightroom.c"
   "develop/masks/brush.c"
   "develop/masks/circle.c"
-  "develop/masks/group.c"
   "develop/masks/ellipse.c"
   "develop/masks/gradient.c"
+  "develop/masks/group.c"
   "develop/masks/masks.c"
   "develop/masks/path.c"
-  "develop/format.c"
+  "develop/pixelpipe.c"
+  "develop/tiling.c"
   "dtgtk/button.c"
   "dtgtk/culling.c"
   "dtgtk/drawingarea.c"
@@ -135,29 +128,43 @@ FILE(GLOB SOURCE_FILES
   "dtgtk/range.c"
   "dtgtk/resetlabel.c"
   "dtgtk/sidepanel.c"
+  "dtgtk/stylemenu.c"
   "dtgtk/thumbnail.c"
   "dtgtk/thumbnail_btn.c"
   "dtgtk/thumbtable.c"
   "dtgtk/togglebutton.c"
   "gui/about.c"
   "gui/accelerators.c"
+  "gui/color_picker_proxy.c"
+  "gui/gtk.c"
   "gui/gtkentry.c"
   "gui/guides.c"
-  "gui/gtk.c"
   "gui/hist_dialog.c"
+  "gui/import_metadata.c"
   "gui/preferences.c"
   "gui/presets.c"
+  "gui/splash.c"
   "gui/styles_dialog.c"
-  "gui/color_picker_proxy.c"
-  "gui/import_metadata.c"
+  "imageio/imageio.c"
+  "imageio/imageio_jpeg.c"
+  "imageio/imageio_module.c"
+  "imageio/imageio_pfm.c"
+  "imageio/imageio_png.c"
+  "imageio/imageio_pnm.c"
+  "imageio/imageio_qoi.c"
+  "imageio/imageio_rgbe.c"
+  "imageio/imageio_tiff.c"
   "libs/lib.c"
   "views/view.c"
   )
+
 FILE(GLOB HEADER_FILES "*.h" "common/*.h" "external/OpenCL/CL/*.h" "control/*.h" "iop/*.h" "libs/*.h" "views/*.h")
 
 if(APPLE)
   list(APPEND SOURCE_FILES "osx/osx.mm")
   list(APPEND HEADER_FILES "osx/osx.h")
+  list(APPEND SOURCE_FILES "common/pwstorage/backend_apple_keychain.c")
+  list(APPEND HEADER_FILES "common/pwstorage/backend_apple_keychain.h")
   include(CheckLanguage)
   check_language(OBJCXX)
   if(CMAKE_OBJCXX_COMPILER)
@@ -190,6 +197,9 @@ if(WIN32)
 
   list(APPEND SOURCE_FILES "win/scandir.c")
   list(APPEND HEADER_FILES "win/scandir.h")
+
+  list(APPEND SOURCE_FILES "common/pwstorage/backend_windows_credentials.c")
+  list(APPEND HEADER_FILES "common/pwstorage/backend_windows_credentials.h")
 
   # Use mingw's sprintf instead of windows's
   ADD_DEFINITIONS( -D__USE_MINGW_ANSI_STDIO=1 )
@@ -358,13 +368,13 @@ if(USE_AVIF)
   # no version check in config mode because of major only match policy
   find_package(libavif CONFIG)
   if(TARGET avif)
-    if(libavif_VERSION VERSION_GREATER_EQUAL 0.9.2)
+    if(libavif_VERSION VERSION_GREATER_EQUAL 0.9.3)
       list(APPEND LIBS avif)
       add_definitions(-DHAVE_LIBAVIF=1)
       list(APPEND SOURCES "imageio/imageio_avif.c")
       set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
     else()
-      set(libavif_FOUND NOTFOUND)
+      set(libavif_FOUND NOTFOUND PARENT_SCOPE)
     endif()
   endif()
 endif()
@@ -380,7 +390,7 @@ if(USE_HEIF)
       list(APPEND LIBS heif)
       add_definitions(-DHAVE_LIBHEIF=1)
       list(APPEND SOURCES "imageio/imageio_heif.c")
-      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} heif heic hif CACHE INTERNAL "")
+      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} heif heic hif hej2 avci CACHE INTERNAL "")
       if(NOT libavif_FOUND)
         # libheif can handle avif, too
         set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} avif CACHE INTERNAL "")
@@ -414,26 +424,26 @@ find_package(LensFun REQUIRED)
 include_directories(SYSTEM ${LensFun_INCLUDE_DIRS})
 list(APPEND LIBS ${LensFun_LIBRARIES})
 
-find_package(Sqlite3 3.15 REQUIRED)
-if(NOT Sqlite3_VERSION VERSION_LESS 3.24)
-  add_definitions("-DHAVE_SQLITE_324_OR_NEWER")
-  message(STATUS "Sqlite3 version 3.24 or newer")
-else()
-  message(STATUS "Sqlite3 version older than 3.24, some features may be downgraded")
-endif()
-include_directories(SYSTEM ${Sqlite3_INCLUDE_DIR})
-list(APPEND LIBS ${Sqlite3_LIBRARIES})
-add_definitions(${Sqlite3_DEFINITIONS})
+find_package(SQLite3 3.26 REQUIRED)
+list(APPEND LIBS SQLite::SQLite3)
 
-foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 LibXml2 CURL PNG JPEG TIFF LCMS2 JsonGlib)
+foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 PNG JPEG TIFF LCMS2 JsonGlib)
   find_package(${lib} REQUIRED)
   include_directories(SYSTEM ${${lib}_INCLUDE_DIRS})
   list(APPEND LIBS ${${lib}_LIBRARIES})
   add_definitions(${${lib}_DEFINITIONS})
 endforeach(lib)
 
-# Require exiv2 >= 0.25 to make sure everything we need is available
-find_package(Exiv2 0.25 REQUIRED)
+if(PNG_VERSION_STRING VERSION_LESS 1.5)
+  message(FATAL_ERROR "libpng version 1.5 or newer is required")
+endif()
+
+# Use imported target for curl
+find_package(CURL 7.56 REQUIRED)
+list(APPEND LIBS CURL::libcurl)
+
+# Require exiv2 >= 0.27.2 to make sure everything we need is available
+find_package(Exiv2 0.27.2 REQUIRED)
 include_directories(SYSTEM ${Exiv2_INCLUDE_DIRS})
 list(APPEND LIBS ${Exiv2_LIBRARIES})
 add_definitions(${Exiv2_DEFINITIONS})
@@ -451,7 +461,6 @@ if (USE_ISOBMFF)
       "${Exiv2_INCLUDE_DIRS}/exiv2/exv_conf.h"
       HAVE_EXV_ENABLE_BMFF)
     if(HAVE_EXV_ENABLE_BMFF)
-      add_definitions(-DHAVE_LIBEXIV2_WITH_ISOBMFF=1)
       set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 CACHE INTERNAL "")
       message(STATUS "Exiv2 >= 0.27.4 found with ISOBMFF support (CR3, AVIF, HEIF)")
     else()
@@ -468,14 +477,13 @@ if(USE_PORTMIDI)
 endif(USE_PORTMIDI)
 
 if(USE_OPENJPEG)
-  find_package(OpenJPEG)
+  find_package(OpenJPEG CONFIG)
   if(OpenJPEG_FOUND)
     add_definitions("-DHAVE_OPENJPEG")
     list(APPEND SOURCES "imageio/imageio_j2k.c")
-
-    include_directories(SYSTEM ${OpenJPEG_INCLUDE_DIRS})
-    list(APPEND LIBS ${OpenJPEG_LIBRARIES})
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc CACHE INTERNAL "")
+    include_directories(SYSTEM ${OPENJPEG_INCLUDE_DIRS})
+    list(APPEND LIBS ${OPENJPEG_LIBRARIES})
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} j2c j2k jp2 jpc jpf jpx CACHE INTERNAL "")
   endif(OpenJPEG_FOUND)
 endif(USE_OPENJPEG)
 
@@ -512,6 +520,14 @@ if(USE_KWALLET)
   add_definitions("-DHAVE_KWALLET")
 endif(USE_KWALLET)
 
+if(APPLE)
+  add_definitions("-DHAVE_APPLE_KEYCHAIN")
+endif(APPLE)
+
+if(WIN32)
+  add_definitions("-DHAVE_WINDOWS_CREDENTIALS")
+endif(WIN32)
+
 if(USE_MAC_INTEGRATION)
   find_package(MacIntegration)
   if(MacIntegration_FOUND)
@@ -540,9 +556,10 @@ if(USE_GRAPHICSMAGICK)
   find_package(GraphicsMagick)
   if(GraphicsMagick_FOUND)
     add_definitions(-DHAVE_GRAPHICSMAGICK)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc miff mng pam webp jxl CACHE INTERNAL "")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
     include_directories(SYSTEM ${GraphicsMagick_INCLUDE_DIRS})
     list(APPEND LIBS ${GraphicsMagick_LIBRARIES})
+    list(APPEND SOURCES "imageio/imageio_gm.c")
   endif(GraphicsMagick_FOUND)
 endif(USE_GRAPHICSMAGICK)
 
@@ -551,6 +568,7 @@ if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
   find_package(PkgConfig)
   pkg_check_modules(ImageMagick MagickWand)
   if(ImageMagick_FOUND)
+    list(APPEND SOURCES "imageio/imageio_im.c")
     if(ImageMagick_VERSION VERSION_GREATER 7)
       add_definitions(-DHAVE_IMAGEMAGICK7)
       set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} qoi CACHE INTERNAL "")
@@ -562,7 +580,7 @@ if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
       list(APPEND LIBS ${ImageMagick_LIBRARY})
       unset(ImageMagick_LIBRARY CACHE)
     endforeach(lib)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc miff mng pam webp jxl CACHE INTERNAL "")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
   endif(ImageMagick_FOUND)
 endif(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
 
@@ -615,18 +633,6 @@ if(NOT HAVE_TLS)
 endif()
 
 
-if(WIN32)
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc -municode")
-  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
-
-  SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
-  SET(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
-
-  list(APPEND LIBS psapi) # Needed for GetProcessMemoryInfo()
-  list(APPEND LIBS exchndl) # Needed for exception handling and backtrace()
-endif(WIN32)
-
 if(NOT CUSTOM_CFLAGS)
   if(BUILD_SSE2_CODEPATHS)
     #we MUST always specify our required instruction set, native might not detect it
@@ -668,6 +674,18 @@ if(NOT CUSTOM_CFLAGS)
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0")
   endif()
 endif(NOT CUSTOM_CFLAGS)
+
+if(WIN32)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc -municode")
+  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--enable-runtime-pseudo-reloc")
+
+  SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
+  SET(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "-Wl,--no-undefined -static-libgcc -Wl,-O1 -Wl,--as-needed -Wl,--sort-common")
+
+  list(APPEND LIBS psapi) # Needed for GetProcessMemoryInfo()
+  list(APPEND LIBS exchndl) # Needed for exception handling and backtrace()
+endif(WIN32)
 
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_DEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
@@ -729,8 +747,8 @@ if(USE_LUA)
       "lua/styles.c"
       "lua/tags.c"
       "lua/types.c"
+      "lua/util.c"
       "lua/view.c"
-      "lua/widget/widget.c"
       "lua/widget/box.c"
       "lua/widget/button.c"
       "lua/widget/check_button.c"
@@ -744,6 +762,7 @@ if(USE_LUA)
       "lua/widget/slider.c"
       "lua/widget/stack.c"
       "lua/widget/text_view.c"
+      "lua/widget/widget.c"
       )
     set(SOURCES ${SOURCES} ${SOURCE_FILES_LUA})
   endif(USE_LUA)
@@ -753,7 +772,7 @@ endif(USE_LUA)
 
 if(USE_LUA)
   if(NOT Lua54_FOUND)
-    list(APPEND LIB_DEPS lua) # 2nd half of the uglyness :/
+    list(APPEND LIB_DEPS lua) # 2nd half of the ugliness :/
   endif(NOT Lua54_FOUND)
   # liblautoc for lua automated interface generation
   add_library(lautoc_static STATIC IMPORTED)
@@ -764,7 +783,7 @@ if(USE_LUA)
   list(APPEND STATIC_LIBS lautoc_static)
 endif(USE_LUA)
 
-find_package(Pugixml 1.2 REQUIRED)
+find_package(Pugixml 1.5 REQUIRED)
 include_directories(SYSTEM ${Pugixml_INCLUDE_DIRS})
 list(APPEND LIBS ${Pugixml_LIBRARIES})
 
@@ -849,13 +868,6 @@ if(BUILD_PRINT)
 else(BUILD_PRINT)
   message(STATUS "Print mode: disabled")
 endif(BUILD_PRINT)
-
-if(USE_GAME)
-  add_definitions("-DHAVE_GAME")
-  message(STATUS "Game: the good knight")
-else(USE_GAME)
-  message(STATUS "Game: no")
-endif(USE_GAME)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   if(HAVE_EXECINFO_H)
@@ -1013,7 +1025,7 @@ endif(BUILD_TESTING)
 add_executable(darktable ${SUBSYSTEM_MACOSX} ${SUBSYSTEM_WIN32} main.c ${RESOURCE_OBJECT})
 set_target_properties(darktable PROPERTIES LINKER_LANGUAGE C)
 if(APPLE)
-  set_target_properties(lib_darktable PROPERTIES LINK_FLAGS "-framework Carbon -framework AppKit")
+  set_target_properties(lib_darktable PROPERTIES LINK_FLAGS "-framework Carbon -framework AppKit -framework Security")
 endif(APPLE)
 target_link_libraries(darktable lib_darktable)
 

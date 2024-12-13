@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -87,7 +87,13 @@ typedef struct dt_variables_data_t
   float exif_exposure_bias;
   float exif_aperture;
   float exif_focal_length;
+  float exif_crop;
   float exif_focus_distance;
+  const char *exif_flash;
+  const char *exif_flash_icon;
+  const char *exif_exposure_program;
+  const char *exif_metering_mode;
+  const char *exif_whitebalance;
   double longitude;
   double latitude;
   double elevation;
@@ -133,15 +139,21 @@ static void _init_expansion(dt_variables_params_t *params, gboolean iterate)
   params->data->exif_exposure_bias = DT_EXIF_TAG_UNINITIALIZED;
   params->data->exif_aperture = 0.0f;
   params->data->exif_focal_length = 0.0f;
+  params->data->exif_crop = 0.0f;
   params->data->exif_focus_distance = 0.0f;
+  params->data->exif_flash = "";
+  params->data->exif_flash_icon = "";
+  params->data->exif_exposure_program = "";
+  params->data->exif_metering_mode = "";
+  params->data->exif_whitebalance = "";
   params->data->longitude = NAN;
   params->data->latitude = NAN;
   params->data->elevation = NAN;
   params->data->show_msec = dt_conf_get_bool("lighttable/ui/milliseconds");
+  params->data->camera_maker = NULL;
+  params->data->camera_alias = NULL;
   if(dt_is_valid_imgid(params->imgid))
   {
-    params->data->camera_maker = NULL;
-    params->data->camera_alias = NULL;
     const dt_image_t *img = params->img
       ? (dt_image_t *)params->img
       : dt_image_cache_get(darktable.image_cache, params->imgid, 'r');
@@ -162,11 +174,17 @@ static void _init_expansion(dt_variables_params_t *params, gboolean iterate)
     params->data->exif_exposure_bias = img->exif_exposure_bias;
     params->data->exif_aperture = img->exif_aperture;
     params->data->exif_focal_length = img->exif_focal_length;
+    params->data->exif_crop = img->exif_crop;
     if(!dt_isnan(img->exif_focus_distance) && fpclassify(img->exif_focus_distance) != FP_ZERO)
       params->data->exif_focus_distance = img->exif_focus_distance;
     params->data->longitude = img->geoloc.longitude;
     params->data->latitude = img->geoloc.latitude;
     params->data->elevation = img->geoloc.elevation;
+    params->data->exif_flash_icon = img->exif_flash[0] == 'Y' ? "⚡" : "";
+    params->data->exif_flash = img->exif_flash[0] == 'Y' ? _("yes") : (img->exif_flash[0] == 'N' ? _("no") : _("n/a"));
+    params->data->exif_exposure_program = img->exif_exposure_program;
+    params->data->exif_metering_mode = img->exif_metering_mode;
+    params->data->exif_whitebalance = img->exif_whitebalance;
 
     params->data->flags = img->flags;
 
@@ -203,8 +221,8 @@ static void _init_expansion(dt_variables_params_t *params, gboolean iterate)
     params->data->datetime = params->data->exif_time;
     if(params->data->datetime)
       params->data->have_exif_dt = TRUE;
-    params->data->camera_maker = params->data->exif_maker;
-    params->data->camera_alias = params->data->exif_model;
+    params->data->camera_maker = g_strdup(params->data->exif_maker);
+    params->data->camera_alias = g_strdup(params->data->exif_model);
   }
 }
 
@@ -218,10 +236,14 @@ static void _cleanup_expansion(dt_variables_params_t *params)
       params->data->datetime = NULL;
     }
     g_free(params->data->camera_maker);
+    params->data->camera_maker = NULL;
     g_free(params->data->camera_alias);
+    params->data->camera_alias = NULL;
   }
   g_free(params->data->homedir);
+  params->data->homedir = NULL;
   g_free(params->data->pictures_folder);
+  params->data->pictures_folder = NULL;
 }
 
 static inline gboolean _has_prefix(char **str, const char *prefix)
@@ -261,6 +283,81 @@ static char *_variables_get_latitude(dt_variables_params_t *params)
     const gchar NS = params->data->latitude < 0 ? 'S' : 'N';
     return g_strdup_printf("%c%09.6f", NS, fabs(params->data->latitude));
   }
+}
+
+static int _get_parameters(char **variable, char **parameters, size_t max_param)
+/*
+ * @param char **variable - The variable to read parameters from
+ * @param char **parameters - a pointer to where list of parameters are stored in
+ * @param size_t max_param - The maximum number of parameters to read
+ *                           (and parameters has space for pointers)
+ * @return The number of parameters, -1 if any error
+ *
+ * You should free the string in parameters with g_free() after usage unless
+ * returnvalue is 0 or -1;
+ */
+{
+  *parameters = NULL;
+  if(*variable[0] == '[')
+  {
+    (*variable) ++;
+    if(*variable[0] == ',')
+    {
+      return -1;
+    }
+    *parameters = g_strdup(*variable);
+    char *end = g_strstr_len(*parameters, -1, "]");
+    if(end)
+    {
+      end[0] = '\0';
+      (*variable) += strlen(*parameters) + 1;
+
+      size_t count = 0;
+      char *token = strtok(*parameters, ",");
+      while (token != NULL && count < max_param)
+      {
+        *parameters = token;
+        parameters++;
+        count++;
+        token = strtok(NULL, ",");
+      }
+      return count;
+    }
+  }
+  return -1;
+}
+
+static gboolean _is_number(char *str)
+{
+  if(*str == '-' || *str == '+')
+    str++;
+
+  if(!g_ascii_isdigit(*str))
+    return FALSE;  // don't take empty strings
+
+  while(*str)
+  {
+    if(!g_ascii_isdigit(*str))
+      return FALSE;
+    str++;
+  }
+  return TRUE;
+}
+
+static uint8_t _get_var_parameter(char **variable, const int default_value)
+{
+  uint8_t val = default_value;
+  if(*variable[0] == '[')
+  {
+    char *parameters[1] = { NULL };
+    const int num = _get_parameters(variable, parameters, 1);
+    if(num == 1 && _is_number(parameters[0]))
+    {
+      val = (uint8_t)strtol(parameters[0], NULL, 10);
+    }
+    g_free(parameters[0]);
+  }
+  return val;
 }
 
 static char *_get_base_value(dt_variables_params_t *params, char **variable)
@@ -380,12 +477,21 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "EXIF.ISO") || _has_prefix(variable, "EXIF_ISO"))
     result = g_strdup_printf("%d", params->data->exif_iso);
   else if(_has_prefix(variable, "NL") && g_strcmp0(params->jobcode, "infos") == 0)
-    result = g_strdup_printf("\n");
+  {
+    if (params->use_html_newline)
+      result = g_strdup_printf("&#13;");
+    else
+      result = g_strdup_printf("\n");
+  }
   else if(_has_prefix(variable, "EXIF.EXPOSURE.BIAS")
           || _has_prefix(variable, "EXIF_EXPOSURE_BIAS"))
   {
     if(params->data->exif_exposure_bias != DT_EXIF_TAG_UNINITIALIZED)
       result = g_strdup_printf("%+.2f", params->data->exif_exposure_bias);
+  }
+  else if(_has_prefix(variable, "EXIF.EXPOSURE.PROGRAM"))
+  {
+    result = g_strdup(params->data->exif_exposure_program);
   }
   else if(_has_prefix(variable, "EXIF.EXPOSURE")
           || _has_prefix(variable, "EXIF_EXPOSURE"))
@@ -403,6 +509,12 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
           || _has_prefix(variable, "EXIF_APERTURE"))
     result = g_strdup_printf("%.1f", params->data->exif_aperture);
 
+  else if(_has_prefix(variable, "EXIF.CROP_FACTOR"))
+    result = g_strdup_printf("%.1f", params->data->exif_crop);
+
+  else if(_has_prefix(variable, "EXIF.FOCAL.LENGTH.EQUIV"))
+    result = g_strdup_printf("%.1f", params->data->exif_focal_length * params->data->exif_crop);
+
   else if(_has_prefix(variable, "EXIF.FOCAL.LENGTH")
           || _has_prefix(variable, "EXIF_FOCAL_LENGTH"))
     result = g_strdup_printf("%.1f", params->data->exif_focal_length);
@@ -410,6 +522,18 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "EXIF.FOCUS.DISTANCE")
           || _has_prefix(variable, "EXIF_FOCUS_DISTANCE"))
     result = g_strdup_printf("%.2f", params->data->exif_focus_distance);
+
+  else if(_has_prefix(variable, "EXIF.FLASH.ICON"))
+    result = g_strdup(params->data->exif_flash_icon);
+
+  else if(_has_prefix(variable, "EXIF.FLASH"))
+    result = g_strdup(params->data->exif_flash);
+
+  else if(_has_prefix(variable, "EXIF.METERING"))
+    result = g_strdup(params->data->exif_metering_mode);
+
+  else if(_has_prefix(variable, "EXIF.WHITEBALANCE"))
+    result = g_strdup(params->data->exif_whitebalance);
 
   else if(_has_prefix(variable, "LONGITUDE")
           || _has_prefix(variable, "GPS.LONGITUDE"))
@@ -422,6 +546,11 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "ELEVATION")
           || _has_prefix(variable, "GPS.ELEVATION"))
     result = g_strdup_printf("%.2f", params->data->elevation);
+
+  else if(_has_prefix(variable, "GPS.LOCATION.ICON"))
+    // possible symbols: world map U+1F5FA 🗺, globe w/ meridians U+1F310 🌐
+    //   pushpin U+1F4CC 📌 round pushpin U+1F4CD 📍   black pushpin U+1F588 🖈
+    result = g_strdup((!isnan(params->data->latitude) && !isnan(params->data->longitude)) ? "📌" : "");
 
   // for watermark backward compatibility
   else if(_has_prefix(variable, "GPS.LOCATION"))
@@ -445,8 +574,30 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
     result = g_strdup(params->data->camera_alias);
   else if(_has_prefix(variable, "EXIF.LENS") || _has_prefix(variable, "LENS"))
     result = g_strdup(params->data->exif_lens);
+  else if(_has_prefix(variable, "IMAGE.ID.NEXT"))
+  {
+    dt_imgid_t highest_id = 0;
+    sqlite3_stmt *stmt;
+    // clang-format off
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "SELECT MAX(id) FROM main.images",
+                                -1, &stmt, NULL);
+    // clang-format on
+    if(sqlite3_step(stmt) == SQLITE_ROW)
+      highest_id = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    // determine how many zero-padded digits to use with an optional
+    // parameter: $(IMAGE.ID.NEXT[n]), default n=1
+    uint8_t nb_digit = _get_var_parameter(variable, 1);
+    result = g_strdup_printf("%0*u", nb_digit, highest_id + 1);
+  }
   else if(_has_prefix(variable, "ID") || _has_prefix(variable, "IMAGE.ID"))
-    result = g_strdup_printf("%u", params->imgid);
+  {
+    // determine how many zero-padded digits to use with an optional
+    // parameter: $(IMAGE.ID[n]), default n=1
+    uint8_t nb_digit = _get_var_parameter(variable, 1);
+    result = g_strdup_printf("%0*u", nb_digit, params->imgid);
+  }
   else if(_has_prefix(variable, "IMAGE.EXIF"))
   {
     gchar buffer[1024];
@@ -546,15 +697,36 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
   else if(_has_prefix(variable, "SEQUENCE"))
   {
     uint8_t nb_digit = 4;
+    guint shift = 1;
+    // old $(SEQUENCEn) syntax for backwards compatibility
     if(g_ascii_isdigit(*variable[0]))
     {
       nb_digit = (uint8_t)*variable[0] & 0b1111;
       (*variable) ++;
     }
+    // new $(SEQUENCE[n,m]) syntax
+    // allows \[[0-9]+,[0-9]+] (PCRE)
+    // everything else will be ignored
+    else if(*variable[0] == '[')
+    {
+      char *parameters[2] = {NULL};
+      const int num = _get_parameters(variable, parameters, 2);
+      if(num >= 1 && _is_number(parameters[0]))
+      {
+        nb_digit = (uint8_t) strtol(parameters[0], NULL, 10);
+        if(num == 2 && _is_number(parameters[1]))
+        {
+          shift = (gint) strtol(parameters[1], NULL, 10);
+        }
+      }
+      if(num == 2)
+        g_free(parameters[1]);
+      g_free(parameters[0]);
+    }
     result = g_strdup_printf("%.*u", nb_digit,
                              params->sequence >= 0
-                             ? params->sequence
-                             : params->data->sequence);
+                             ? params->sequence + shift - 1
+                             : params->data->sequence + shift - 1);
   }
   else if(_has_prefix(variable, "USERNAME"))
     result = g_strdup(g_get_user_name());
@@ -618,8 +790,8 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
     {
       const int dot_index = GPOINTER_TO_INT(res_iter->data);
       const GdkRGBA c = darktable.bauhaus->colorlabels[dot_index];
-      result = dt_util_dstrcat
-        (result,
+      dt_util_str_cat
+        (&result,
          "<span foreground='#%02x%02x%02x'>⬤ </span>",
          (guint)(c.red*255), (guint)(c.green*255), (guint)(c.blue*255));
     }
@@ -755,7 +927,8 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
       if(*variable[0] == '(')
       {
         char *category = g_strdup(*variable + 1);
-        char *end = g_strstr_len(category, -1, ")");
+        char *end = NULL;
+        end = g_strstr_len(category, -1, ")");
         if(end)
         {
           end[0] = '|';
@@ -771,6 +944,31 @@ static char *_get_base_value(dt_variables_params_t *params, char **variable)
         g_free(category);
       }
     }
+    // $(CATEGORY[n,category]) with category as above (new syntax)
+    else if(*variable[0] == '[')
+    {
+      char *parameters[2] = {NULL};
+      const int num = _get_parameters(variable, parameters, 2);
+      if(num == 2 && g_ascii_isdigit(*parameters[0]))
+      {
+        const uint8_t level = (uint8_t)*parameters[0] & 0b1111;
+        parameters[1][strlen(parameters[1]) + 1] = '\0';
+        parameters[1][strlen(parameters[1])] = '|';
+        char *tag = dt_tag_get_subtags(params->imgid, parameters[1], (int)level);
+        if(tag)
+        {
+          result = g_strdup(tag);
+          g_free(tag);
+        }
+      }
+      g_free(parameters[0]);
+    }
+  }
+  else if(_has_prefix(variable, "IMAGE.TAGS.HIERARCHY"))
+  {
+    GList *tags_list = dt_tag_get_hierarchical_export(params->imgid, params->data->tags_flags);
+    result = dt_util_glist_to_str(", ", tags_list);
+    g_list_free_full(tags_list, g_free);
   }
   else if(_has_prefix(variable, "TAGS") || _has_prefix(variable, "IMAGE.TAGS"))
   {
@@ -1192,7 +1390,6 @@ char *dt_variables_expand(dt_variables_params_t *params,
   char *result = _expand_source(params, &source, '\0');
 
   _cleanup_expansion(params);
-
   return result;
 }
 
@@ -1214,6 +1411,9 @@ void dt_variables_params_destroy(dt_variables_params_t *params)
     g_date_time_unref(params->data->exif_time);
   g_free(params->data->exif_maker);
   g_free(params->data->exif_model);
+  g_free(params->data->exif_lens);
+  g_free(params->data->camera_maker);
+  g_free(params->data->camera_alias);
   g_free(params->data);
   g_free(params);
 }

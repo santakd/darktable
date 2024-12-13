@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2023 darktable developers.
+    Copyright (C) 2011-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include "bauhaus/bauhaus.h"
 #include "common/debug.h"
 #include "common/file_location.h"
+#include "common/history_snapshot.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/develop.h"
@@ -34,38 +35,39 @@ DT_MODULE(1)
 #define HANDLE_SIZE 0.02
 #define MAX_SNAPSHOT 10
 
+// the snapshot offset in the memory table to use an area not used by the
+// undo/redo support.
+#define SNAPSHOT_ID_OFFSET 0xFFFFFF00
+
 /* a snapshot */
 typedef struct dt_lib_snapshot_t
 {
   GtkWidget *button;
+  GtkWidget *num;
+  GtkWidget *status;
   GtkWidget *name;
   GtkWidget *entry;
+  GtkWidget *restore_button;
+  GtkWidget *bbox;
   char *module;
   char *label;
   dt_view_context_t ctx;
   dt_imgid_t imgid;
   uint32_t history_end;
   uint32_t id;
-  /* snapshot cairo surface */
-  cairo_surface_t *surface;
-  uint32_t width, height;
+  uint8_t *buf;
+  float scale;
+  size_t width, height;
   float zoom_x, zoom_y;
 } dt_lib_snapshot_t;
-
-typedef struct dt_lib_snapshot_params_t
-{
-  uint8_t *buf;
-  size_t width, height;
-} dt_lib_snapshot_params_t;
 
 typedef struct dt_lib_snapshots_t
 {
   GtkWidget *snapshots_box;
 
   int selected;
-  dt_lib_snapshot_params_t params;
   gboolean snap_requested;
-  int expose_again_timeout_id;
+  guint expose_again_timeout_id;
 
   /* current active snapshots */
   uint32_t num_snapshots;
@@ -83,14 +85,24 @@ typedef struct dt_lib_snapshots_t
 
 /* callback for take snapshot */
 static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
-                                                       gpointer user_data);
+                                                       dt_lib_module_t *self);
 
 static void _lib_snapshots_toggled_callback(GtkToggleButton *widget,
-                                            gpointer user_data);
+                                            dt_lib_module_t *self);
+
+static void _lib_snapshots_restore_callback(GtkButton *widget,
+                                            dt_lib_module_t *self);
 
 const char *name(dt_lib_module_t *self)
 {
   return _("snapshots");
+}
+
+const char *description(dt_lib_module_t *self)
+{
+  return _("remember a specific edit state and\n"
+           "allow comparing it against another\n"
+           "or returning to that version");
 }
 
 dt_view_type_flags_t views(dt_lib_module_t *self)
@@ -159,6 +171,7 @@ static gboolean _snap_expose_again(gpointer user_data)
 {
   dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)user_data;
 
+  d->expose_again_timeout_id = 0;
   d->snap_requested = TRUE;
   dt_control_queue_redraw_center();
   return FALSE;
@@ -172,32 +185,30 @@ void gui_post_expose(dt_lib_module_t *self,
                      const int32_t pointerx,
                      const int32_t pointery)
 {
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   dt_develop_t *dev = darktable.develop;
 
   if(d->selected >= 0)
   {
     dt_lib_snapshot_t *snap = &d->snapshot[d->selected];
 
-    const dt_view_context_t ctx = dt_view_get_view_context();
+    const dt_view_context_t ctx = dt_view_get_context_hash();
 
     // if a new snapshot is needed, do this now
     if(d->snap_requested && snap->ctx == ctx)
     {
+      dt_free_align(snap->buf);
+      snap->buf = NULL;
+
       // export image with proper size
-      dt_dev_image_ext(snap->imgid, width, height, snap->history_end,
-                       &d->params.buf, &d->params.width, &d->params.height,
-                       &snap->zoom_x, &snap->zoom_y,
-                       dev->full.border_size, dev->iso_12646.enabled, snap->id);
-
-      if(snap->surface) cairo_surface_destroy(snap->surface);
-      snap->surface = dt_view_create_surface(d->params.buf,
-                                             d->params.width, d->params.height);
-
-      snap->width  = d->params.width;
-      snap->height = d->params.height;
+      dt_dev_image(snap->imgid, width, height,
+                   snap->history_end,
+                   &snap->buf, &snap->scale,
+                   &snap->width, &snap->height,
+                   &snap->zoom_x, &snap->zoom_y,
+                   snap->id, NULL, DT_DEVICE_NONE, FALSE);
       d->snap_requested = FALSE;
-      d->expose_again_timeout_id = -1;
+      d->expose_again_timeout_id = 0;
     }
 
     // if ctx has changed, get a new snapshot at the right zoom
@@ -205,7 +216,7 @@ void gui_post_expose(dt_lib_module_t *self,
     // create many snapshot while zooming (this is slow), so we wait
     // to the zoom level to be stabilized to create the new snapshot.
     if(snap->ctx != ctx
-       || !snap->surface)
+       || !snap->buf)
     {
       // request a new snapshot in the following conditions:
       //    1. we are not panning
@@ -213,8 +224,11 @@ void gui_post_expose(dt_lib_module_t *self,
       //    with the navigation module
 
       snap->ctx = ctx;
-      if(!d->panning && dev->darkroom_mouse_in_center_area) d->snap_requested = TRUE;
-      if(d->expose_again_timeout_id != -1) g_source_remove(d->expose_again_timeout_id);
+      if(!d->panning && dev->darkroom_mouse_in_center_area)
+        d->snap_requested = TRUE;
+      if(d->expose_again_timeout_id != 0)
+        g_source_remove(d->expose_again_timeout_id);
+
       d->expose_again_timeout_id = g_timeout_add(150, _snap_expose_again, d);
     }
 
@@ -251,12 +265,11 @@ void gui_post_expose(dt_lib_module_t *self,
     cairo_clip(cri);
     cairo_fill(cri);
 
-    if(snap->surface)
+    if(snap->buf)
     {
-      // display snapshot image surface
-      dt_view_paint_surface(cri, width, height,
-                            snap->surface, snap->width, snap->height, DT_WINDOW_MAIN,
-                            dev->full.pipe->backbuf_scale, snap->zoom_x, snap->zoom_y);
+      dt_view_paint_surface(cri, width, height, &dev->full, DT_WINDOW_MAIN,
+                            snap->buf, snap->scale, snap->width, snap->height,
+                            snap->zoom_x, snap->zoom_y);
     }
 
     cairo_reset_clip(cri);
@@ -342,7 +355,7 @@ int button_released(struct dt_lib_module_t *self,
                     const int which,
                     const uint32_t state)
 {
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
 
   if(d->panning)
   {
@@ -368,7 +381,7 @@ int button_pressed(struct dt_lib_module_t *self,
                    const int type,
                    const uint32_t state)
 {
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
 
   if(darktable.develop->darkroom_skip_mouse_events)
   {
@@ -431,7 +444,7 @@ int mouse_moved(dt_lib_module_t *self,
                 const double pressure,
                 const int which)
 {
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
 
   // if panning, do not handle here, let darkroom do the job
   if(d->panning) return 0;
@@ -466,9 +479,95 @@ static void _lib_snapshots_toggle_last(dt_action_t *action)
        !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->snapshot[index].button)));
 }
 
+static int _look_for_widget(dt_lib_module_t *self, GtkWidget *widget, gboolean entry)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  for(int k=0; k<MAX_SNAPSHOT; k++)
+  {
+    if((entry ? d->snapshot[k].entry : d->snapshot[k].button) == widget)
+      return k;
+  }
+
+  return 0;
+}
+
+static void _entry_activated_callback(GtkEntry *entry, dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  const int index = _look_for_widget(self, (GtkWidget *)entry, TRUE);
+
+  const char *txt = gtk_entry_get_text(GTK_ENTRY(d->snapshot[index].entry));
+
+  char *label = dt_history_get_name_label(d->snapshot[index].module, txt, TRUE);
+  gtk_label_set_markup(GTK_LABEL(d->snapshot[index].name), label);
+  g_free(label);
+
+  gtk_widget_hide(d->snapshot[index].entry);
+  gtk_widget_show(d->snapshot[index].name);
+  gtk_widget_grab_focus(d->snapshot[index].button);
+}
+
+static gboolean _lib_button_button_pressed_callback(GtkWidget *widget,
+                                                    GdkEventButton *event,
+                                                    dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  const int index = _look_for_widget(self, widget, FALSE);
+
+  if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
+  {
+    gtk_widget_hide(d->snapshot[index].name);
+    gtk_widget_show(d->snapshot[index].entry);
+    gtk_widget_grab_focus(d->snapshot[index].entry);
+  }
+
+  gtk_widget_set_focus_on_click(widget, FALSE);
+  return gtk_widget_has_focus(d->snapshot[index].entry);
+}
+
+static void _init_snapshot_entry(dt_lib_module_t *self, dt_lib_snapshot_t *s)
+{
+  /* create snapshot button */
+  s->button = gtk_toggle_button_new();
+  gtk_widget_set_name(s->button, "snapshot-button");
+  g_signal_connect(G_OBJECT(s->button), "toggled",
+                   G_CALLBACK(_lib_snapshots_toggled_callback), self);
+  g_signal_connect(G_OBJECT(s->button), "button-press-event",
+                   G_CALLBACK(_lib_button_button_pressed_callback), self);
+
+  s->num = gtk_label_new("");
+  gtk_widget_set_name(s->num, "history-number");
+  dt_gui_add_class(s->num, "dt_monospace");
+
+  s->status = gtk_label_new("");
+  dt_gui_add_class(s->status, "dt_monospace");
+
+  s->name = gtk_label_new("");
+  gtk_label_set_ellipsize(GTK_LABEL(s->name), PANGO_ELLIPSIZE_MIDDLE);
+  gtk_widget_set_halign(s->name, GTK_ALIGN_START);
+
+  s->entry = gtk_entry_new();
+  gtk_widget_set_halign(s->entry, GTK_ALIGN_START);
+  g_signal_connect(G_OBJECT(s->entry), "activate",
+                   G_CALLBACK(_entry_activated_callback), self);
+
+  s->restore_button = dtgtk_button_new(dtgtk_cairo_paint_snapshots_restore, CPF_NONE, NULL);
+  gtk_widget_set_name(s->restore_button, "non-flat");
+  gtk_widget_set_tooltip_text(s->restore_button,
+                              _("restore snapshot into current history"));
+  g_signal_connect(G_OBJECT(s->restore_button), "clicked",
+                   G_CALLBACK(_lib_snapshots_restore_callback), self);
+}
+
 static void _clear_snapshot_entry(dt_lib_snapshot_t *s)
 {
-  s->surface = NULL;
+  // delete corresponding entry from the database
+
+  dt_history_snapshot_clear(s->imgid, s->id);
+
   s->ctx = 0;
   s->imgid = NO_IMGID;
   s->history_end = -1;
@@ -478,53 +577,52 @@ static void _clear_snapshot_entry(dt_lib_snapshot_t *s)
     GtkWidget *lstatus = _lib_snapshot_button_get_item(s->button, _SNAPSHOT_BUTTON_STATUS);
     gtk_widget_set_tooltip_text(s->button, "");
     gtk_widget_set_tooltip_text(lstatus, "");
+    gtk_widget_hide(s->button);
+    gtk_widget_hide(s->restore_button);
   }
 
   g_free(s->module);
   g_free(s->label);
+  dt_free_align(s->buf);
   s->module = NULL;
   s->label = NULL;
+  s->buf = NULL;
 }
 
-static void _clear_snapshots(dt_lib_module_t *self, const dt_imgid_t imgid)
+static void _clear_snapshots(dt_lib_module_t *self)
 {
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   d->selected = -1;
+  darktable.lib->proxy.snapshots.enabled = FALSE;
   d->snap_requested = FALSE;
 
   for(uint32_t k = 0; k < d->num_snapshots; k++)
   {
     dt_lib_snapshot_t *s = &d->snapshot[k];
-
-    if(s->surface) cairo_surface_destroy(s->surface);
+    s->id = SNAPSHOT_ID_OFFSET | k;
     _clear_snapshot_entry(s);
-    gtk_widget_hide(s->button);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(s->button), FALSE);
   }
 
   d->num_snapshots = 0;
   gtk_widget_set_sensitive(d->take_button, TRUE);
 
-  DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db),
-                        "DELETE FROM memory.history_snapshot", NULL, NULL, NULL);
-
   dt_control_queue_redraw_center();
 }
 
 void gui_reset(dt_lib_module_t *self)
 {
-  _clear_snapshots(self, -1);
+  _clear_snapshots(self);
 }
 
 static void _signal_profile_changed(gpointer instance,
                                     const uint8_t profile_type,
-                                    gpointer user_data)
+                                    dt_lib_module_t *self)
 {
   // when the display profile is changed, make sure we recreate the snapshot
   if(profile_type == DT_COLORSPACES_PROFILE_TYPE_DISPLAY)
   {
-    dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-    dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+    dt_lib_snapshots_t *d = self->data;
 
     if(d->selected >= 0)
       d->snap_requested = TRUE;
@@ -533,10 +631,57 @@ static void _signal_profile_changed(gpointer instance,
   }
 }
 
-static void _signal_image_changed(gpointer instance, gpointer user_data)
+static void _remove_snapshot_entry(dt_lib_module_t *self, const uint32_t index)
 {
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
+
+  //  First clean the entry
+  _clear_snapshot_entry(&d->snapshot[index]);
+
+  //  Repack all entries
+  for(uint32_t k = index; k < MAX_SNAPSHOT-1; k++)
+  {
+    memcpy(&d->snapshot[k], &d->snapshot[k+1], sizeof(dt_lib_snapshot_t));
+  }
+
+  //  And finally clear last entry
+  _clear_snapshot_entry(&d->snapshot[MAX_SNAPSHOT-1]);
+  //  And dedup widgets by initializing the last entry
+  _init_snapshot_entry(self, &d->snapshot[MAX_SNAPSHOT-1]);
+
+  //  We have one less snapshot
+  d->num_snapshots--;
+
+  //  If the remove image snapshot was selected, unselect it
+  if(d->selected == index)
+    d->selected = -1;
+}
+
+static void _signal_image_removed(gpointer instance,
+                                  const dt_imgid_t imgid,
+                                  dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  uint32_t k = 0;
+
+  while(k < MAX_SNAPSHOT)
+  {
+    dt_lib_snapshot_t *s = &d->snapshot[k];
+
+    if(s->imgid == imgid)
+    {
+      _remove_snapshot_entry(self, k);
+      dt_control_log(_("snapshots for removed image have been deleted"));
+    }
+    else
+      k++;
+  }
+}
+
+static void _signal_image_changed(gpointer instance, dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
 
   const dt_imgid_t imgid = darktable.develop->image_storage.id;
 
@@ -579,61 +724,10 @@ static void _signal_image_changed(gpointer instance, gpointer user_data)
   dt_control_queue_redraw_center();
 }
 
-static int _look_for_widget(dt_lib_module_t *self, GtkWidget *widget, gboolean entry)
-{
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
-
-  for(int k=0; k<MAX_SNAPSHOT; k++)
-  {
-    if((entry ? d->snapshot[k].entry : d->snapshot[k].button) == widget)
-      return k;
-  }
-
-  return 0;
-}
-
-static void _entry_activated_callback(GtkEntry *entry, gpointer *user_data)
-{
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
-
-  const int index = _look_for_widget(self, (GtkWidget *)entry, TRUE);
-
-  const char *txt = gtk_entry_get_text(GTK_ENTRY(d->snapshot[index].entry));
-
-  char *label = dt_history_get_name_label(d->snapshot[index].module, txt, TRUE);
-  gtk_label_set_markup(GTK_LABEL(d->snapshot[index].name), label);
-  g_free(label);
-
-  gtk_widget_hide(d->snapshot[index].entry);
-  gtk_widget_show(d->snapshot[index].name);
-  gtk_widget_grab_focus(d->snapshot[index].button);
-}
-
-static gboolean _lib_button_button_pressed_callback(GtkWidget *widget,
-                                                    GdkEventButton *event,
-                                                    gpointer user_data)
-{
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
-
-  const int index = _look_for_widget(self, widget, FALSE);
-
-  if(dt_modifier_is(event->state, GDK_CONTROL_MASK))
-  {
-    gtk_widget_hide(d->snapshot[index].name);
-    gtk_widget_show(d->snapshot[index].entry);
-    gtk_widget_grab_focus(d->snapshot[index].entry);
-  }
-
-  gtk_widget_set_focus_on_click(widget, FALSE);
-  return gtk_widget_has_focus(d->snapshot[index].entry);
-}
-
 void gui_init(dt_lib_module_t *self)
 {
   /* initialize ui widgets */
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)g_malloc0(sizeof(dt_lib_snapshots_t));
+  dt_lib_snapshots_t *d = g_malloc0(sizeof(dt_lib_snapshots_t));
   self->data = (void *)d;
 
   /* initialize snapshot storages */
@@ -646,8 +740,9 @@ void gui_init(dt_lib_module_t *self)
   d->panning = FALSE;
   d->selected = -1;
   d->snap_requested = FALSE;
-  d->expose_again_timeout_id = -1;
+  d->expose_again_timeout_id = 0;
   d->num_snapshots = 0;
+  darktable.lib->proxy.snapshots.enabled = FALSE;
 
   /* initialize ui containers */
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -669,55 +764,39 @@ void gui_init(dt_lib_module_t *self)
 
   for(int k = 0; k < MAX_SNAPSHOT; k++)
   {
-    _clear_snapshot_entry(&d->snapshot[k]);
+    dt_lib_snapshot_t *s = &d->snapshot[k];
+    s->id = SNAPSHOT_ID_OFFSET | k;
 
-    /* create snapshot button */
-    d->snapshot[k].button = gtk_toggle_button_new();
-    gtk_widget_set_name(d->snapshot[k].button, "snapshot-button");
-
-    // 4 items inside, num, status, name, label
-    GtkWidget *num = gtk_label_new("");
-    gtk_widget_set_name(num, "history-number");
-    dt_gui_add_class(num, "dt_monospace");
-
-    GtkWidget *status = gtk_label_new("");
-    dt_gui_add_class(status, "dt_monospace");
-
-    GtkWidget *name = gtk_label_new("");
-    gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_MIDDLE);
-    gtk_widget_set_halign(name, GTK_ALIGN_START);
-    d->snapshot[k].name = name;
-
-    GtkWidget *entry = gtk_entry_new();
-    gtk_widget_set_halign(entry, GTK_ALIGN_START);
-    d->snapshot[k].entry = entry;
-    g_signal_connect(G_OBJECT(entry), "activate",
-                     G_CALLBACK(_entry_activated_callback), self);
+    _clear_snapshot_entry(s);
+    _init_snapshot_entry(self, s);
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
-    gtk_box_pack_start(GTK_BOX(box), num, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), status, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), name, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(box), entry, TRUE, TRUE, 0);
+    // 4 items inside box, num, status, name, label
+
+    gtk_box_pack_start(GTK_BOX(box), s->num, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), s->status, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), s->name, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), s->entry, TRUE, TRUE, 0);
 
     gtk_widget_show_all(box);
 
     // hide entry, will be used only when editing
-    gtk_widget_hide(entry);
+    gtk_widget_hide(s->entry);
 
-    gtk_container_add(GTK_CONTAINER(d->snapshot[k].button), box);
+    gtk_container_add(GTK_CONTAINER(s->button), box);
 
-    g_signal_connect(G_OBJECT(d->snapshot[k].button), "toggled",
-                     G_CALLBACK(_lib_snapshots_toggled_callback), self);
-    g_signal_connect(G_OBJECT(d->snapshot[k].button), "button-press-event",
-                     G_CALLBACK(_lib_button_button_pressed_callback), self);
+    // add snap button and restore button
+    s->bbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_box_pack_start(GTK_BOX(s->bbox), s->button, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(s->bbox), s->restore_button, FALSE, FALSE, 0);
 
     /* add button to snapshot box */
-    gtk_box_pack_end(GTK_BOX(d->snapshots_box), d->snapshot[k].button, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(d->snapshots_box), s->bbox, FALSE, FALSE, 0);
 
     /* prevent widget to show on external show all */
-    gtk_widget_set_no_show_all(d->snapshot[k].button, TRUE);
+    gtk_widget_set_no_show_all(s->button, TRUE);
+    gtk_widget_set_no_show_all(s->restore_button, TRUE);
   }
 
   /* add snapshot box and take snapshot button to widget ui*/
@@ -730,30 +809,33 @@ void gui_init(dt_lib_module_t *self)
   dt_action_register(DT_ACTION(self), N_("toggle last snapshot"),
                      _lib_snapshots_toggle_last, 0, 0);
 
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED,
-                                  G_CALLBACK(_signal_profile_changed), self);
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_IMAGE_CHANGED,
-                                  G_CALLBACK(_signal_image_changed), self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED, _signal_profile_changed, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_IMAGE_CHANGED, _signal_image_changed, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_IMAGE_REMOVED, _signal_image_removed, self);
 }
 
 void gui_cleanup(dt_lib_module_t *self)
 {
-  _clear_snapshots(self, -1);
+  _clear_snapshots(self);
 
   g_free(self->data);
   self->data = NULL;
 }
 
 static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
-                                                       gpointer user_data)
+                                                       dt_lib_module_t *self)
 {
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
 
   // first make sure the current history is properly written
   dt_dev_write_history(darktable.develop);
 
   dt_lib_snapshot_t *s = &d->snapshot[d->num_snapshots];
+
+  // set new snapshot_id, to not clash with the undo snapshot make the snapshot
+  // id at a specific offset.
+  s->id = SNAPSHOT_ID_OFFSET | d->num_snapshots;
+
   _clear_snapshot_entry(s);
 
   if(darktable.develop->history_end > 0)
@@ -780,27 +862,7 @@ static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
   s->history_end = darktable.develop->history_end;
   s->imgid = darktable.develop->image_storage.id;
 
-  // set new snapshot_id
-
-  s->id = d->num_snapshots;
-
-  sqlite3_stmt *stmt;
-
-  DT_DEBUG_SQLITE3_PREPARE_V2
-    (dt_database_get(darktable.db),
-     "INSERT INTO memory.history_snapshot"
-     " SELECT ?1, num, module, operation, op_params,"
-     "        enabled, blendop_params, blendop_version, multi_priority,"
-     "        multi_name, multi_name_hand_edited"
-     " FROM main.history"
-     " WHERE imgid = ?2 AND num < ?3",
-     -1, &stmt, NULL);
-
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, s->id);
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, s->imgid);
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, s->history_end);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  dt_history_snapshot_create(s->imgid, s->id, s->history_end);
 
   GtkLabel *lnum =
     (GtkLabel *)_lib_snapshot_button_get_item(s->button, _SNAPSHOT_BUTTON_NUM);
@@ -822,7 +884,6 @@ static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
 
   gtk_entry_set_text(lentry, s->label ? s->label : "");
 
-
   gtk_widget_grab_focus(s->button);
 
   g_free(txt);
@@ -832,16 +893,30 @@ static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
 
   /* show active snapshot slots */
   for(uint32_t k = 0; k < d->num_snapshots; k++)
+  {
     gtk_widget_show(d->snapshot[k].button);
+    gtk_widget_show(d->snapshot[k].restore_button);
+  }
 
   if(d->num_snapshots == MAX_SNAPSHOT)
     gtk_widget_set_sensitive(d->take_button, FALSE);
 }
 
-static void _lib_snapshots_toggled_callback(GtkToggleButton *widget, gpointer user_data)
+static int _lib_snapshots_get_activated(dt_lib_module_t *self, GtkWidget *widget)
 {
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
+
+  for(uint32_t k = 0; k < d->num_snapshots; k++)
+    if(widget == d->snapshot[k].button
+       || widget == d->snapshot[k].restore_button)
+      return k;
+
+  return -1;
+}
+
+static void _lib_snapshots_toggled_callback(GtkToggleButton *widget, dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
 
   if(darktable.gui->reset) return;
 
@@ -852,18 +927,49 @@ static void _lib_snapshots_toggled_callback(GtkToggleButton *widget, gpointer us
   /* check if snapshot is activated */
   if(gtk_toggle_button_get_active(widget))
   {
+    d->selected = _lib_snapshots_get_activated(self, GTK_WIDGET(widget));
+
     /* lets deactivate all togglebuttons except for self */
     for(uint32_t k = 0; k < d->num_snapshots; k++)
-      if(GTK_WIDGET(widget) == d->snapshot[k].button)
-        d->selected = k;
-      else
+      if(d->selected != k)
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->snapshot[k].button), FALSE);
   }
+  darktable.lib->proxy.snapshots.enabled = d->selected >= 0;
 
   --darktable.gui->reset;
 
   /* redraw center view */
   dt_control_queue_redraw_center();
+}
+
+static void _lib_snapshots_restore_callback(GtkButton *widget, dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  const int restore_idx = _lib_snapshots_get_activated(self, GTK_WIDGET(widget));
+
+  dt_lib_snapshot_t *s = &d->snapshot[restore_idx];
+
+  const dt_imgid_t imgid = s->imgid;
+
+  dt_history_snapshot_restore(imgid, s->id, s->history_end);
+
+  dt_dev_undo_start_record(darktable.develop);
+
+  // reload history and set back snapshot history end
+  dt_dev_reload_history_items(darktable.develop);
+
+  dt_dev_pixelpipe_rebuild(darktable.develop);
+  darktable.develop->history_end = s->history_end;
+  dt_dev_pop_history_items(darktable.develop, darktable.develop->history_end);
+  dt_ioppr_resync_modules_order(darktable.develop);
+  dt_dev_modulegroups_set(darktable.develop,
+                          dt_dev_modulegroups_get(darktable.develop));
+  dt_image_update_final_size(imgid);
+  dt_dev_write_history(darktable.develop);
+
+  /* signal history changed */
+  dt_dev_undo_end_record(darktable.develop);
 }
 
 #ifdef USE_LUA
@@ -878,7 +984,7 @@ typedef enum
 static int direction_member(lua_State *L)
 {
   dt_lib_module_t *self = *(dt_lib_module_t **)lua_touserdata(L, 1);
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   if(lua_gettop(L) != 3)
   {
     snapshot_direction_t result;
@@ -933,7 +1039,7 @@ static int direction_member(lua_State *L)
 static int ratio_member(lua_State *L)
 {
   dt_lib_module_t *self = *(dt_lib_module_t **)lua_touserdata(L, 1);
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   if(lua_gettop(L) != 3)
   {
     if(!d->vertical && !d->inverted)
@@ -990,7 +1096,7 @@ static int max_snapshot_member(lua_State *L)
 static int lua_take_snapshot(lua_State *L)
 {
   dt_lib_module_t *self = lua_touserdata(L, lua_upvalueindex(1));
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   _lib_snapshots_add_button_clicked_callback(d->take_button, self);
   return 0;
 }
@@ -1006,7 +1112,7 @@ typedef int dt_lua_snapshot_t;
 static int selected_member(lua_State *L)
 {
   dt_lib_module_t *self = *(dt_lib_module_t **)lua_touserdata(L, 1);
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   for(int i = 0; i < d->num_snapshots; i++)
   {
     GtkWidget *widget = d->snapshot[i].button;
@@ -1023,7 +1129,7 @@ static int selected_member(lua_State *L)
 static int snapshots_length(lua_State *L)
 {
   dt_lib_module_t *self = *(dt_lib_module_t **)lua_touserdata(L, 1);
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   lua_pushinteger(L, d->num_snapshots);
   return 1;
 }
@@ -1031,7 +1137,7 @@ static int snapshots_length(lua_State *L)
 static int number_member(lua_State *L)
 {
   dt_lib_module_t *self = *(dt_lib_module_t **)lua_touserdata(L, 1);
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)self->data;
+  dt_lib_snapshots_t *d = self->data;
   int index = luaL_checkinteger(L, 2);
   if( index < 1)
   {
@@ -1050,7 +1156,7 @@ static int name_member(lua_State *L)
   dt_lua_snapshot_t index;
   luaA_to(L, dt_lua_snapshot_t, &index, 1);
   dt_lib_module_t *module = lua_touserdata(L, lua_upvalueindex(1));
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)module->data;
+  dt_lib_snapshots_t *d = module->data;
   if(index >= d->num_snapshots || index < 0)
   {
     return luaL_error(L, "Accessing a non-existent snapshot");
@@ -1078,7 +1184,7 @@ static int lua_select(lua_State *L)
   dt_lua_snapshot_t index;
   luaA_to(L, dt_lua_snapshot_t, &index, 1);
   dt_lib_module_t *module = lua_touserdata(L, lua_upvalueindex(1));
-  dt_lib_snapshots_t *d = (dt_lib_snapshots_t *)module->data;
+  dt_lib_snapshots_t *d = module->data;
   if(index >= d->num_snapshots || index < 0)
   {
     return luaL_error(L, "Accessing a non-existent snapshot");

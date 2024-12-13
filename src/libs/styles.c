@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include "common/collection.h"
 #include "common/styles.h"
 #include "common/darktable.h"
+#include "common/utility.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "control/jobs.h"
@@ -54,9 +55,15 @@ const char *name(dt_lib_module_t *self)
   return _("styles");
 }
 
+const char *description(dt_lib_module_t *self)
+{
+  return _("apply styles to the currently selected\n"
+           "images or manage your styles");
+}
+
 dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  return DT_VIEW_LIGHTTABLE;
+  return DT_VIEW_LIGHTTABLE | DT_VIEW_MULTI;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -128,7 +135,7 @@ gboolean _styles_tooltip_callback(GtkWidget* self,
                                   gint y,
                                   gboolean keyboard_mode,
                                   GtkTooltip* tooltip,
-                                  gpointer user_data)
+                                  dt_lib_styles_t *d)
 {
   GtkTreeModel* model;
   GtkTreePath* path;
@@ -175,14 +182,14 @@ static void _gui_styles_update_view(dt_lib_styles_t *d)
   {
     for(const GList *res_iter = result; res_iter; res_iter = g_list_next(res_iter))
     {
-      dt_style_t *style = (dt_style_t *)res_iter->data;
+      dt_style_t *style = res_iter->data;
 
       gchar **split = g_strsplit(style->name, "|", 0);
       int k = 0;
 
       while(split[k])
       {
-        const gchar *s = split[k];
+        const gchar *s = dt_util_localize_string(split[k]);
         const gboolean node_found = _get_node_for_name(model, k==0, &iter, s);
 
         if(!node_found)
@@ -215,11 +222,9 @@ static void _gui_styles_update_view(dt_lib_styles_t *d)
 static void _styles_row_activated_callback(GtkTreeView *view,
                                            GtkTreePath *path,
                                            GtkTreeViewColumn *col,
-                                           gpointer user_data)
+                                           dt_lib_styles_t *d)
 {
   // This works on double click, so it's for single style
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
-
   GtkTreeModel *model;
   GtkTreeIter iter;
   model = gtk_tree_view_get_model(d->tree);
@@ -229,13 +234,18 @@ static void _styles_row_activated_callback(GtkTreeView *view,
   gchar *name;
   gtk_tree_model_get(model, &iter, DT_STYLES_COL_FULLNAME, &name, -1);
 
-  GList *list = dt_act_on_get_images(TRUE, TRUE, FALSE);
   if(name)
   {
-    dt_styles_apply_to_list(name, list, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate)));
-    g_free(name);
+    GList *imgs = dt_act_on_get_images(TRUE, TRUE, FALSE);
+    if(imgs)
+    {
+      GList *styles = g_list_prepend(NULL, g_strdup(name));
+      gboolean duplicate = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate));
+      dt_control_apply_styles(imgs, styles, duplicate);
+    }
+    else
+      dt_control_log(_("no images selected"));
   }
-  g_list_free(list);
 }
 
 // get list of style names from selection
@@ -256,9 +266,8 @@ GList* _get_selected_style_names(GList* selected_styles, GtkTreeModel *model)
   return g_list_reverse(style_names); // list was built in reverse order, so un-reverse it
 }
 
-static void _apply_clicked(GtkWidget *w, gpointer user_data)
+static void _apply_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
 
   if(gtk_tree_selection_count_selected_rows(selection) == 0) return;
@@ -270,27 +279,26 @@ static void _apply_clicked(GtkWidget *w, gpointer user_data)
 
   if(style_names == NULL) return;
 
-  GList *list = dt_act_on_get_images(TRUE, TRUE, FALSE);
-
-  if(list) dt_multiple_styles_apply_to_list(style_names, list, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate)));
-
-  g_list_free_full(style_names, g_free);
-  g_list_free(list);
+  GList *imgs = dt_act_on_get_images(TRUE, TRUE, FALSE);
+  if(!g_list_is_empty(imgs))
+  {
+    gboolean duplicate = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate));
+    dt_control_apply_styles(imgs, style_names, duplicate);
+  }
+  else
+    g_list_free_full(style_names, g_free);
 }
 
-static void _create_clicked(GtkWidget *w, gpointer user_data)
+static void _create_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
-
   GList *list = dt_act_on_get_images(TRUE, TRUE, FALSE);
   dt_styles_create_from_list(list);
   g_list_free(list);
   _gui_styles_update_view(d);
 }
 
-static void _edit_clicked(GtkWidget *w, gpointer user_data)
+static void _edit_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
 
   if(gtk_tree_selection_count_selected_rows(selection) == 0) return;
@@ -299,6 +307,8 @@ static void _edit_clicked(GtkWidget *w, gpointer user_data)
   GtkTreeModel *model= gtk_tree_view_get_model(d->tree);
 
   GList *styles = gtk_tree_selection_get_selected_rows(selection, &model);
+  GList *new_name_list = NULL;
+
   for(const GList *style = styles; style; style = g_list_next(style))
   {
     char *name = NULL;
@@ -311,27 +321,60 @@ static void _edit_clicked(GtkWidget *w, gpointer user_data)
 
     if(name)
     {
-      dt_gui_styles_dialog_edit(name);
+      char *new_name = NULL;
+      // update view is necessary as we may have changed the style name
+      dt_gui_styles_dialog_edit(name, &new_name);
+      new_name_list = g_list_prepend(new_name_list, new_name);
       _gui_styles_update_view(d);
       g_free(name);
     }
   }
-  g_list_free_full (styles, (GDestroyNotify) gtk_tree_path_free);
+
+  // we need to iterate over all styles
+  if(new_name_list)
+  {
+    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
+    for(; valid; valid = gtk_tree_model_iter_next(model, &iter))
+    {
+      char *name = NULL;
+      GValue value = {0,};
+      gtk_tree_model_get_value(model, &iter, DT_STYLES_COL_FULLNAME, &value);
+      if(G_VALUE_HOLDS_STRING(&value))
+        name = g_strdup(g_value_get_string(&value));
+      g_value_unset(&value);
+
+      if(name)
+      {
+        // and select back all the previously selected paths
+        for(const GList *sname = new_name_list; sname; sname = g_list_next(sname))
+        {
+          const char *newname = (char *)sname->data;
+          if(newname && !strcmp(name, newname))
+          {
+            gtk_tree_selection_select_iter(selection, &iter);
+            break;
+          }
+        }
+        g_free(name);
+      }
+    }
+  }
+  g_list_free_full(new_name_list, g_free);
+  g_list_free_full(styles, (GDestroyNotify) gtk_tree_path_free);
 }
 
 gboolean _ask_before_delete_style(const gint style_cnt)
 {
-return !dt_conf_get_bool("plugins/lighttable/style/ask_before_delete_style")
-       || dt_gui_show_yes_no_dialog(
-            ngettext("remove style?", "remove styles?", style_cnt),
-            ngettext("do you really want to remove %d style?", "do you really want to remove %d styles?", style_cnt),
-            style_cnt);
+  return !dt_conf_get_bool("plugins/lighttable/style/ask_before_delete_style")
+    || dt_gui_show_yes_no_dialog(
+      ngettext("remove style?", "remove styles?", style_cnt),
+      ngettext("do you really want to remove %d style?",
+               "do you really want to remove %d styles?", style_cnt),
+      style_cnt);
 }
 
-static void _delete_clicked(GtkWidget *w, gpointer user_data)
+static void _delete_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
-
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
 
   if(gtk_tree_selection_count_selected_rows(selection) == 0) return;
@@ -360,17 +403,15 @@ static void _delete_clicked(GtkWidget *w, gpointer user_data)
     if(!single_raise) {
       // raise signal at the end of processing all styles if we have more than 1 to delete
       // this also calls _gui_styles_update_view
-      DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+      DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_STYLE_CHANGED);
     }
     dt_database_release_transaction(darktable.db);
   }
   g_list_free_full(style_names, g_free);
 }
 
-static void _export_clicked(GtkWidget *w, gpointer user_data)
+static void _export_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
-
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
 
   if(gtk_tree_selection_count_selected_rows(selection) == 0) return;
@@ -434,18 +475,22 @@ static void _export_clicked(GtkWidget *w, gpointer user_data)
 
           if(dt_conf_get_bool("plugins/lighttable/style/ask_before_delete_style"))
           {
-            GtkWidget *dialog_overwrite_export = gtk_dialog_new_with_buttons(_("overwrite style?"), GTK_WINDOW(win),
-                                                                             GTK_DIALOG_DESTROY_WITH_PARENT,
-                                                                             _("_cancel"), GTK_RESPONSE_CANCEL,
-                                                                             _("_skip"), GTK_RESPONSE_NONE,
-                                                                             _("_overwrite"), GTK_RESPONSE_ACCEPT, NULL);
-            gtk_dialog_set_default_response(GTK_DIALOG(dialog_overwrite_export), GTK_RESPONSE_CANCEL);
+            GtkWidget *dialog_overwrite_export =
+              gtk_dialog_new_with_buttons(_("overwrite style?"), GTK_WINDOW(win),
+                                          GTK_DIALOG_DESTROY_WITH_PARENT,
+                                          _("_cancel"), GTK_RESPONSE_CANCEL,
+                                          _("_skip"), GTK_RESPONSE_NONE,
+                                          _("_overwrite"), GTK_RESPONSE_ACCEPT, NULL);
+            gtk_dialog_set_default_response(GTK_DIALOG(dialog_overwrite_export),
+                                            GTK_RESPONSE_CANCEL);
 
             // contents for dialog
-            GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog_overwrite_export));
+            GtkWidget *content_area =
+              gtk_dialog_get_content_area(GTK_DIALOG(dialog_overwrite_export));
             sprintf(overwrite_str, _("style `%s' already exists.\ndo you want to overwrite existing style?\n"), stylename);
             GtkWidget *label = gtk_label_new(overwrite_str);
-            GtkWidget *overwrite_dialog_check_button = gtk_check_button_new_with_label(_("apply this option to all existing styles"));
+            GtkWidget *overwrite_dialog_check_button =
+              gtk_check_button_new_with_label(_("apply this option to all existing styles"));
 
             gtk_container_add(GTK_CONTAINER(content_area), label);
             gtk_container_add(GTK_CONTAINER(content_area), overwrite_dialog_check_button);
@@ -517,7 +562,7 @@ static void _export_clicked(GtkWidget *w, gpointer user_data)
   g_list_free_full(style_names, g_free);
 }
 
-static void _import_clicked(GtkWidget *w, gpointer user_data)
+static void _import_clicked(GtkWidget *w, dt_lib_styles_t *d)
 {
   /* variables for overwrite dialog */
   gint overwrite_check_button = 0;
@@ -551,41 +596,9 @@ static void _import_clicked(GtkWidget *w, gpointer user_data)
     for(const GSList *filename = filenames; filename; filename = g_slist_next(filename))
     {
       /* extract name from xml file */
-      gchar *bname = NULL;
-      xmlDoc *document = xmlReadFile((char*)filename->data, NULL, XML_PARSE_NOBLANKS);
-      xmlNode *root = NULL;
-      if(document != NULL)
-        root = xmlDocGetRootElement(document);
-
-      if(document == NULL || root == NULL || xmlStrcmp(root->name, BAD_CAST "darktable_style"))
-      {
-        dt_print(DT_DEBUG_CONTROL,
-                 "[styles] file %s is not a style file\n", (char*)filename->data);
-        if(document)
-          xmlFreeDoc(document);
+      gchar *bname = dt_get_style_name(filename->data);
+      if (!bname)
         continue;
-      }
-
-      for(xmlNode *node = root->children->children; node; node = node->next)
-      {
-        if(node->type == XML_ELEMENT_NODE)
-        {
-          if(strcmp((char*)node->name, "name") == 0)
-          {
-            bname = g_strdup((char*)xmlNodeGetContent(node));
-            break;
-          }
-        }
-      }
-
-      // xml doc is not necessary after this point
-      xmlFreeDoc(document);
-
-      if(!bname){
-        dt_print(DT_DEBUG_CONTROL,
-                 "[styles] file %s is malformed style file\n", (char*)filename->data);
-        continue;
-      }
 
       // check if style exists
       if(dt_styles_exists(bname))
@@ -637,7 +650,7 @@ static void _import_clicked(GtkWidget *w, gpointer user_data)
             gtk_widget_show_all(dialog_overwrite_import);
 
             // disable check button and skip button when dealing with one style
-            if(g_slist_length(filenames) == 1)
+            if(g_list_is_singleton(filenames))
             {
               gtk_widget_set_sensitive(overwrite_dialog_check_button, FALSE);
               gtk_dialog_set_response_sensitive(GTK_DIALOG(dialog_overwrite_import), GTK_RESPONSE_NONE, FALSE);
@@ -699,36 +712,37 @@ static void _import_clicked(GtkWidget *w, gpointer user_data)
     }
     g_slist_free_full(filenames, g_free);
 
-    dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
     _gui_styles_update_view(d);
     dt_conf_set_folder_from_file_chooser("ui_last/import_path", GTK_FILE_CHOOSER(filechooser));
   }
   g_object_unref(filechooser);
 }
 
-static gboolean _entry_callback(GtkEntry *entry, gpointer user_data)
+static gboolean _entry_callback(GtkEntry *entry, dt_lib_styles_t *d)
 {
-  _gui_styles_update_view(user_data);
+  _gui_styles_update_view(d);
   return FALSE;
 }
 
-static gboolean _entry_activated(GtkEntry *entry, gpointer user_data)
+static gboolean _entry_activated(GtkEntry *entry, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
   const gchar *name = gtk_entry_get_text(d->entry);
   if(name)
   {
     GList *imgs = dt_act_on_get_images(TRUE, TRUE, FALSE);
-    dt_styles_apply_to_list(name, imgs, gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate)));
-    g_list_free(imgs);
+    if(imgs)
+    {
+      GList *styles = g_list_prepend(NULL, g_strdup(name));
+      gboolean duplicate = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate));
+      dt_control_apply_styles(imgs, styles, duplicate);
+    }
   }
 
   return FALSE;
 }
 
-static gboolean _duplicate_callback(GtkEntry *entry, gpointer user_data)
+static gboolean _duplicate_callback(GtkEntry *entry, dt_lib_styles_t *d)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)user_data;
   dt_conf_set_bool("ui_last/styles_create_duplicate",
                    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(d->duplicate)));
   return FALSE;
@@ -742,27 +756,26 @@ static void _applymode_combobox_changed(GtkWidget *widget, gpointer user_data)
 
 void gui_update(dt_lib_module_t *self)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)self->data;
+  dt_lib_styles_t *d = self->data;
 
-  const gboolean has_act_on = (dt_act_on_get_images_nb(TRUE, FALSE) > 0);
+  const gboolean has_act_on = dt_act_on_get_images_nb(TRUE, FALSE) > 0;
 
   GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(d->tree));
-  const gint sel_styles_cnt = gtk_tree_selection_count_selected_rows(selection);
+  const gboolean any_style = gtk_tree_selection_count_selected_rows(selection) > 0;
 
   gtk_widget_set_sensitive(GTK_WIDGET(d->create_button), has_act_on);
-  gtk_widget_set_sensitive(GTK_WIDGET(d->edit_button), sel_styles_cnt > 0);
-  gtk_widget_set_sensitive(GTK_WIDGET(d->delete_button), sel_styles_cnt > 0);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->edit_button), any_style);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->delete_button), any_style);
 
   //import is ALWAYS enabled.
-  gtk_widget_set_sensitive(GTK_WIDGET(d->export_button), sel_styles_cnt > 0);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->export_button), any_style);
 
-  gtk_widget_set_sensitive(GTK_WIDGET(d->apply_button), has_act_on && sel_styles_cnt > 0);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->apply_button), has_act_on && any_style);
 }
 
-static void _styles_changed_callback(gpointer instance, gpointer user_data)
+static void _styles_changed_callback(gpointer instance, dt_lib_module_t *self)
 {
-  dt_lib_module_t *self = (dt_lib_module_t *)user_data;
-  dt_lib_styles_t *d = (dt_lib_styles_t *)self->data;
+  dt_lib_styles_t *d = self->data;
   _gui_styles_update_view(d);
   dt_lib_gui_queue_update(self);
 }
@@ -794,7 +807,7 @@ static void _tree_selection_changed(GtkTreeSelection *treeselection, gpointer da
 
 void gui_init(dt_lib_module_t *self)
 {
-  dt_lib_styles_t *d = (dt_lib_styles_t *)malloc(sizeof(dt_lib_styles_t));
+  dt_lib_styles_t *d = malloc(sizeof(dt_lib_styles_t));
   self->data = (void *)d;
   d->edit_button = NULL;
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -823,11 +836,10 @@ void gui_init(dt_lib_module_t *self)
                    G_CALLBACK(_tree_selection_changed), self);
 
   /* filter entry */
-  w = gtk_entry_new();
+  w = dt_ui_entry_new(0);
   d->entry = GTK_ENTRY(w);
   gtk_entry_set_placeholder_text(GTK_ENTRY(d->entry), _("filter style names"));
   gtk_widget_set_tooltip_text(w, _("filter style names"));
-  gtk_entry_set_width_chars(GTK_ENTRY(w), 0);
   g_signal_connect(d->entry, "changed", G_CALLBACK(_entry_callback), d);
   g_signal_connect(d->entry, "activate", G_CALLBACK(_entry_activated), d);
 
@@ -839,6 +851,8 @@ void gui_init(dt_lib_module_t *self)
                      FALSE, FALSE, 0);
 
   d->duplicate = gtk_check_button_new_with_label(_("create duplicate"));
+  dt_action_define(DT_ACTION(self), NULL, N_("create duplicate"),
+                   d->duplicate, &dt_action_def_toggle);
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->duplicate))), PANGO_ELLIPSIZE_START);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(d->duplicate), TRUE, FALSE, 0);
   g_signal_connect(d->duplicate, "toggled", G_CALLBACK(_duplicate_callback), d);
@@ -914,27 +928,19 @@ void gui_init(dt_lib_module_t *self)
   /* update filtered list */
   _gui_styles_update_view(d);
 
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_STYLE_CHANGED,
-                                  G_CALLBACK(_styles_changed_callback), self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_STYLE_CHANGED, _styles_changed_callback, self);
 
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_SELECTION_CHANGED,
-                            G_CALLBACK(_image_selection_changed_callback), self);
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE,
-                            G_CALLBACK(_mouse_over_image_callback), self);
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED,
-                            G_CALLBACK(_collection_updated_callback), self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_SELECTION_CHANGED, _image_selection_changed_callback, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE, _mouse_over_image_callback, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_COLLECTION_CHANGED, _collection_updated_callback, self);
 }
 
 void gui_cleanup(dt_lib_module_t *self)
 {
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_styles_changed_callback), self);
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_image_selection_changed_callback), self);
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_mouse_over_image_callback), self);
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_collection_updated_callback), self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_styles_changed_callback, self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_image_selection_changed_callback, self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_mouse_over_image_callback, self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_collection_updated_callback, self);
 
   free(self->data);
   self->data = NULL;
@@ -959,10 +965,10 @@ void gui_reset(dt_lib_module_t *self)
   {
     for(const GList *result = all_styles; result; result = g_list_next(result))
     {
-      dt_style_t *style = (dt_style_t *)result->data;
+      dt_style_t *style = result->data;
       dt_styles_delete_by_name_adv((char*)style->name, FALSE);
     }
-    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_STYLE_CHANGED);
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_STYLE_CHANGED);
   }
   g_list_free_full(all_styles, dt_style_free);
   dt_database_release_transaction(darktable.db);

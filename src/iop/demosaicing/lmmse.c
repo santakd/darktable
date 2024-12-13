@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2021-2023 darktable developers.
+    Copyright (C) 2021-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -83,12 +83,10 @@ static void _init_lmmse_gamma()
   if(!lmmse_gamma_in || !lmmse_gamma_out)
   {
     _cleanup_lmmse_gamma();
-    dt_print(DT_DEBUG_ALWAYS, "[demosaic lmmse] Can't allocate gamma memory\n");
+    dt_print(DT_DEBUG_ALWAYS, "[demosaic lmmse] Can't allocate gamma memory");
     return;
   }
-#ifdef _OPENMP
-    #pragma omp for
-#endif
+  DT_OMP_PRAGMA(for)
   for(int j = 0; j < 65536; j++)
   {
     const double x = (double)j / 65535.0;
@@ -118,23 +116,19 @@ static inline float _calc_gamma(float val, float *table)
   return (p1 + p2 * diff);
 }
 
-#ifdef _OPENMP
-  #pragma omp declare simd aligned(in, out)
-#endif
-static void lmmse_demosaic(
-        dt_dev_pixelpipe_iop_t *piece,
-        float *const restrict out,
-        const float *const restrict in,
-        dt_iop_roi_t *const roi_out,
-        const dt_iop_roi_t *const roi_in,
-        const uint32_t filters,
-        const uint32_t mode)
+DT_OMP_DECLARE_SIMD(aligned(in, out : 64))
+static void lmmse_demosaic(dt_dev_pixelpipe_iop_t *piece,
+                           float *const restrict out,
+                           const float *const restrict in,
+                           const dt_iop_roi_t *const roi_in,
+                           const uint32_t filters,
+                           const dt_iop_demosaic_lmmse_t mode)
 {
   const int width = roi_in->width;
   const int height = roi_in->height;
 
   rcd_ppg_border(out, in, width, height, filters, BORDER_AROUND);
-  if((width < 2 * BORDER_AROUND) || (height < 2 * BORDER_AROUND))
+  if(width < 2 * BORDER_AROUND || height < 2 * BORDER_AROUND)
     return;
 
   if(!lmmse_gamma_in) _init_lmmse_gamma();
@@ -152,22 +146,16 @@ static void lmmse_demosaic(
   h4 /= hs;
 
   // median filter iterations
-  const int medians = (mode < 2) ? mode : 3;
+  const int medians = (mode < DT_LMMSE_REFINE_2) ? mode : 3;
   // refinement steps
-  const int refine = (mode > 2) ? mode - 2 : 0;
+  const int refine = (mode > DT_LMMSE_REFINE_2) ? mode - 2 : 0;
 
-  const float scaler = fmaxf(1.0f,
-                             fmaxf(piece->pipe->dsc.processed_maximum[0],
-                                   fmaxf(piece->pipe->dsc.processed_maximum[1],
-                                         piece->pipe->dsc.processed_maximum[2])));
+  const float scaler = dt_iop_get_processed_maximum(piece);
   const float revscaler = 1.0f / scaler;
 
   const int num_vertical =   1 + (height - 2 * LMMSE_OVERLAP -1) / LMMSE_TILEVALID;
   const int num_horizontal = 1 + (width  - 2 * LMMSE_OVERLAP -1) / LMMSE_TILEVALID;
-#ifdef _OPENMP
-  #pragma omp parallel \
-  dt_omp_firstprivate(width, height, out, in, scaler, revscaler, filters)
-#endif
+  DT_OMP_PRAGMA(parallel firstprivate(width, height, out, in, scaler, revscaler, filters))
   {
     float *qix[6];
     float *buffer = dt_alloc_align_float(DT_LMMSE_TILESIZE * DT_LMMSE_TILESIZE * 6);
@@ -179,9 +167,7 @@ static void lmmse_demosaic(
     }
     memset(buffer, 0, sizeof(float) * DT_LMMSE_TILESIZE * DT_LMMSE_TILESIZE * 6);
 
-#ifdef _OPENMP
-  #pragma omp for schedule(simd:static) collapse(2)
-#endif
+    DT_OMP_PRAGMA(for schedule(simd:static) collapse(2))
     for(int tile_vertical = 0; tile_vertical < num_vertical; tile_vertical++)
     {
       for(int tile_horizontal = 0; tile_horizontal < num_horizontal; tile_horizontal++)
@@ -395,7 +381,8 @@ static void lmmse_demosaic(
                 float *colc = qix[c] + rr * DT_LMMSE_TILESIZE + cc;
                 float *col1 = qix[1] + rr * DT_LMMSE_TILESIZE + cc;
                 // Assign 3x3 differential color values
-                const float p[9] = {colc[-w1-1] - col1[-w1-1],
+                const float p[9] __attribute__((aligned(16))) =
+                                  { colc[-w1-1] - col1[-w1-1],
                                     colc[-w1  ] - col1[-w1  ],
                                     colc[-w1+1] - col1[-w1+1],
                                     colc[   -1] - col1[   -1],

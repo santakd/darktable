@@ -209,7 +209,7 @@ for filename in sys.argv[1:]:
             eprint("Warning: Fuji does not seem to produce any sensible data for finetuning! If all finetuned values are identical, use one with no finetuning (0)")
             finetune = int(values[3]) / 20 # Fuji has -180..180 but steps are every 20
             gm_skew = gm_skew or (int(values[1].replace(',','')) != 0)
-        elif tag == "White Balance Fine Tune" and maker == "SONY" and preset == "Cool White Fluorescent":
+        elif tag == "White Balance Fine Tune" and maker == "SONY" and preset == "Cool White Fluorescent" and int(values[0]) != 0:
             # Sony's Fluorescent Fun
             if values[0] == "-1":
                 preset = "Warm White Fluorescent"
@@ -234,10 +234,8 @@ for filename in sys.argv[1:]:
         eprint('WARNING: {0} has finetuning over GM axis! Data is skewed!'.format(filename))
 
     # adjust the maker/model we found with the map we generated before
-    if exif_name_map[maker,model]:
-        enm = exif_name_map[maker,model]
-        maker = enm[0]
-        model = enm[1]
+    if exif_name_map.get(maker,model) is not None:
+        maker,model = exif_name_map[maker,model]
     else:
         eprint("WARNING: Couldn't find model in cameras.xml ('{0}', '{1}')".format(maker, model))
 

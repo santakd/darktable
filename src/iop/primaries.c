@@ -41,7 +41,7 @@
 
 DT_MODULE_INTROSPECTION(1, dt_iop_primaries_params_t)
 
-static const float RAD_TO_DEG = 180.f / DT_M_PI_F;
+static const float RAD_TO_DEG = 180.f / M_PI_F;
 
 typedef struct dt_iop_primaries_params_t
 {
@@ -74,7 +74,7 @@ const char *name()
   return _("rgb primaries");
 }
 
-const char **description(struct dt_iop_module_t *self)
+const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description(self, _("adjustment of the RGB color primaries for color grading"),
                                       _("corrective or creative"),
@@ -125,14 +125,14 @@ static void _calculate_adjustment_matrix
   dt_colormatrix_mul(matrix, RGB_TO_XYZ, pipe_work_profile->matrix_out_transposed);
 }
 
-void process(struct dt_iop_module_t *self,
+void process(dt_iop_module_t *self,
              dt_dev_pixelpipe_iop_t *piece,
              const void *const ivoid,
              void *const ovoid,
              const dt_iop_roi_t *const roi_in,
              const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_primaries_params_t *params = (dt_iop_primaries_params_t *)piece->data;
+  dt_iop_primaries_params_t *params = piece->data;
 
   if(!dt_iop_have_required_input_format(4 /*we need full-color pixels*/, self,
                                         piece->colors, ivoid, ovoid, roi_in,
@@ -144,9 +144,7 @@ void process(struct dt_iop_module_t *self,
   dt_colormatrix_t matrix;
   _calculate_adjustment_matrix(params, pipe_work_profile, matrix);
 
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(matrix) dt_omp_firstprivate(ivoid, ovoid, roi_out)
-#endif
+  DT_OMP_FOR(shared(matrix))
   for(size_t k = 0; k < 4 * roi_out->width * roi_out->height; k += 4)
   {
     const float *const restrict in = ((const float *)ivoid) + k;
@@ -158,15 +156,15 @@ void process(struct dt_iop_module_t *self,
 }
 
 #ifdef HAVE_OPENCL
-int process_cl(struct dt_iop_module_t *self,
+int process_cl(dt_iop_module_t *self,
                dt_dev_pixelpipe_iop_t *piece,
                cl_mem dev_in,
                cl_mem dev_out,
                const dt_iop_roi_t *const roi_in,
                const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_primaries_params_t *params = (dt_iop_primaries_params_t *)piece->data;
-  dt_iop_primaries_global_data_t *gd = (dt_iop_primaries_global_data_t *)self->global_data;
+  dt_iop_primaries_params_t *params = piece->data;
+  dt_iop_primaries_global_data_t *gd = self->global_data;
 
   const int devid = piece->pipe->devid;
   const int width = roi_in->width;
@@ -181,7 +179,7 @@ int process_cl(struct dt_iop_module_t *self,
   cl_mem dev_matrix = dt_opencl_copy_host_to_device_constant(devid, sizeof(matrix), matrix);
   if(dev_matrix == NULL)
   {
-    dt_print(DT_DEBUG_OPENCL, "[opencl_primaries] couldn't allocate memory!\n");
+    dt_print(DT_DEBUG_OPENCL, "[opencl_primaries] couldn't allocate memory!");
     return DT_OPENCL_DEFAULT_ERROR;
   }
 
@@ -267,18 +265,31 @@ static void _paint_purity_slider(const dt_iop_order_iccprofile_info_t *work_prof
                                  const dt_iop_order_iccprofile_info_t *display_profile,
                                  const dt_iop_order_iccprofile_info_t *sRGB_profile,
                                  const size_t primary_index,
+                                 const float saturation,
                                  GtkWidget *hue_slider,
                                  GtkWidget *purity_slider)
 {
   const float angle = dt_bauhaus_slider_get(hue_slider);
   dt_aligned_pixel_t linear_RGB, RGB;
+  // Map the chosen primary from the full purity to fit the display gamut.
   _rotated_primary_to_display_RGB(work_profile, display_profile, sRGB_profile,
-                                  primary_index, angle, 0.4f,
+                                  primary_index, angle, 0.0f,
                                   linear_RGB);
-  const float luminance = scalar_product(linear_RGB, display_profile->matrix_in[1]);
-  _apply_trc_if_nonlinear(display_profile, linear_RGB, RGB);
-  dt_bauhaus_slider_set_stop(purity_slider, 0.0, luminance, luminance, luminance);
-  dt_bauhaus_slider_set_stop(purity_slider, 1.f, RGB[0], RGB[1], RGB[2]);
+  const float hard_min = dt_bauhaus_slider_get_hard_min(purity_slider);
+  const float hard_max = dt_bauhaus_slider_get_hard_max(purity_slider);
+  const float range = hard_max - hard_min;
+  for(int i = 0; i < DT_BAUHAUS_SLIDER_MAX_STOPS; i++)
+  {
+    const float stop = (float)i / (float)(DT_BAUHAUS_SLIDER_MAX_STOPS - 1);
+    const float t = MIN(hard_min + stop * saturation * range, 1.f);
+    dt_aligned_pixel_t stop_RGB = { 0.f };
+    // Interpolate between white (1, 1, 1) and the chosen
+    // primary. Not super accurate (since the display can't represent the Rec.2020 primaries)
+    // but gives an idea of the effect of the purity adjustment.
+    for_each_channel(c) stop_RGB[c] = 1.f - t + t * linear_RGB[c];
+    _apply_trc_if_nonlinear(display_profile, stop_RGB, RGB);
+    dt_bauhaus_slider_set_stop(purity_slider, stop, RGB[0], RGB[1], RGB[2]);
+  }
   gtk_widget_queue_draw(GTK_WIDGET(purity_slider));
 }
 
@@ -286,7 +297,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 {
   if(!self->dev || !self->dev->full.pipe) return;
 
-  dt_iop_primaries_gui_data_t *g = (dt_iop_primaries_gui_data_t *)self->gui_data;
+  dt_iop_primaries_gui_data_t *g = self->gui_data;
 
   const dt_iop_order_iccprofile_info_t *work_profile =
     dt_ioppr_get_pipe_current_profile_info(self, self->dev->full.pipe);
@@ -320,31 +331,29 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 
   if(repaint_all_sliders || w == g->red_hue)
     _paint_purity_slider(work_profile, display_profile, sRGB_profile,
-                         0, g->red_hue, g->red_purity);
+                         0, 1.f, g->red_hue, g->red_purity);
   if(repaint_all_sliders || w == g->green_hue)
     _paint_purity_slider(work_profile, display_profile, sRGB_profile,
-                         1, g->green_hue, g->green_purity);
+                         1, 1.f, g->green_hue, g->green_purity);
   if(repaint_all_sliders || w == g->blue_hue)
     _paint_purity_slider(work_profile, display_profile, sRGB_profile,
-                         2, g->blue_hue, g->blue_purity);
+                         2, 1.f, g->blue_hue, g->blue_purity);
   if(repaint_all_sliders || w == g->achromatic_tint_hue)
     _paint_purity_slider(work_profile, display_profile, sRGB_profile,
-                         0, g->achromatic_tint_hue,
+                         0, 5.f, g->achromatic_tint_hue,
                          g->achromatic_tint_purity);
 }
 
 static void _signal_profile_user_changed(gpointer instance,
                                          const uint8_t profile_type,
-                                         gpointer user_data)
+                                         dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   gui_changed(self, NULL, NULL);
 }
 
 static void _signal_profile_changed(gpointer instance,
-                                    gpointer user_data)
+                                    dt_iop_module_t *self)
 {
-  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   gui_changed(self, NULL, NULL);
 }
 
@@ -379,11 +388,11 @@ void gui_init(dt_iop_module_t *self)
 {
   dt_iop_primaries_gui_data_t *g = IOP_GUI_ALLOC(primaries);
 
-  g->red_hue = _setup_hue_slider(self, "red_hue", _("red primary hue"));
+  g->red_hue = _setup_hue_slider(self, "red_hue", _("shift red towards yellow or magenta"));
   g->red_purity = _setup_purity_slider(self, "red_purity", _("red primary purity"));
-  g->green_hue = _setup_hue_slider(self, "green_hue", _("green primary hue"));
+  g->green_hue = _setup_hue_slider(self, "green_hue", _("shift green towards cyan or yellow"));
   g->green_purity = _setup_purity_slider(self, "green_purity", _("green primary purity"));
-  g->blue_hue = _setup_hue_slider(self, "blue_hue", _("blue primary hue"));
+  g->blue_hue = _setup_hue_slider(self, "blue_hue", _("shift blue towards magenta or cyan"));
   g->blue_purity = _setup_purity_slider(self, "blue_purity", _("blue primary purity"));
 
   g->achromatic_tint_hue = dt_bauhaus_slider_from_params(self, "achromatic_tint_hue");
@@ -402,39 +411,33 @@ void gui_init(dt_iop_module_t *self)
   g->painted_work_profile = NULL;
   g->painted_display_profile = NULL;
 
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED,
-                                  G_CALLBACK(_signal_profile_user_changed), self);
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_CONTROL_PROFILE_CHANGED,
-                                  G_CALLBACK(_signal_profile_changed), self);
-  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED,
-                                  G_CALLBACK(_signal_profile_changed), self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED, _signal_profile_user_changed, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_CHANGED, _signal_profile_changed, self);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED, _signal_profile_changed, self);
 }
 
-void gui_cleanup(struct dt_iop_module_t *self)
+void gui_cleanup(dt_iop_module_t *self)
 {
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_signal_profile_user_changed), self);
-  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
-                                     G_CALLBACK(_signal_profile_changed), self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_signal_profile_user_changed, self);
+  DT_CONTROL_SIGNAL_DISCONNECT(_signal_profile_changed, self);
 
   IOP_GUI_FREE;
 }
 
-void init_global(dt_iop_module_so_t *module)
+void init_global(dt_iop_module_so_t *self)
 {
   const int program = 8; // extended.cl, from programs.conf
-  dt_iop_primaries_global_data_t *gd =
-    (dt_iop_primaries_global_data_t *)malloc(sizeof(dt_iop_primaries_global_data_t));
-  module->data = gd;
+  dt_iop_primaries_global_data_t *gd = malloc(sizeof(dt_iop_primaries_global_data_t));
+  self->data = gd;
   gd->kernel_primaries = dt_opencl_create_kernel(program, "primaries");
 }
 
-void cleanup_global(dt_iop_module_so_t *module)
+void cleanup_global(dt_iop_module_so_t *self)
 {
-  dt_iop_primaries_global_data_t *gd = (dt_iop_primaries_global_data_t *)module->data;
+  dt_iop_primaries_global_data_t *gd = self->data;
   dt_opencl_free_kernel(gd->kernel_primaries);
-  free(module->data);
-  module->data = NULL;
+  free(self->data);
+  self->data = NULL;
 }
 
 // clang-format off

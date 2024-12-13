@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2021 darktable developers.
+    Copyright (C) 2009-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -91,14 +91,6 @@ typedef enum dt_dev_transform_direction_t
   DT_DEV_TRANSFORM_DIR_BACK_EXCL = 4
 } dt_dev_transform_direction_t;
 
-typedef enum dt_dev_pixelpipe_status_t
-{
-  DT_DEV_PIXELPIPE_DIRTY = 0,   // history stack changed or image new
-  DT_DEV_PIXELPIPE_RUNNING = 1, // pixelpipe is running
-  DT_DEV_PIXELPIPE_VALID = 2,   // pixelpipe has finished; valid result
-  DT_DEV_PIXELPIPE_INVALID = 3  // pixelpipe has finished; invalid result
-} dt_dev_pixelpipe_status_t;
-
 typedef enum dt_clipping_preview_mode_t
 {
   DT_CLIPPING_PREVIEW_GAMUT = 0,
@@ -110,10 +102,9 @@ typedef enum dt_clipping_preview_mode_t
 typedef struct dt_dev_proxy_exposure_t
 {
   struct dt_iop_module_t *module;
-  void (*set_exposure)(struct dt_iop_module_t *exp, const float exposure);
   float (*get_exposure)(struct dt_iop_module_t *exp);
-  void (*set_black)(struct dt_iop_module_t *exp, const float black);
   float (*get_black)(struct dt_iop_module_t *exp);
+  void (*handle_event)(GdkEvent *event, gboolean blackwhite);
 } dt_dev_proxy_exposure_t;
 
 struct dt_dev_pixelpipe_t;
@@ -127,6 +118,8 @@ typedef struct dt_dev_viewport_t
   int32_t border_size;
   double dpi, dpi_factor, ppd;
 
+  gboolean iso_12646;
+
   dt_dev_zoom_t zoom;
   int closeup;
   float zoom_x, zoom_y;
@@ -134,16 +127,34 @@ typedef struct dt_dev_viewport_t
 
   // image processing pipeline with caching
   struct dt_dev_pixelpipe_t *pipe;
-  dt_dev_pixelpipe_status_t status;
-
-  // these are locked while the pipes are still in use:
-  dt_pthread_mutex_t pipe_mutex;
-
-  uint32_t average_delay;
-  gboolean loading;
-  gboolean input_changed;
 } dt_dev_viewport_t;
 
+/* keep track on what and where we do chromatic adaptation, used
+  a)  to display warnings in GUI of modules that should probably not be doing
+      white balance
+  b)  missing required white balance
+  c)  allow late correction of as-shot or modified coeffs to D65 in color-input
+      but keep processing until then with more reliable (at least for highlights,
+      raw chromatic aberrations and more.
+  d)  avoids keeping of fixed data in temperature gui data
+  e)  we have 3 coefficients kept here
+      - the currently used wb_coeffs in temperature module
+      - D65coeffs and as_shot are read from exif data
+  f)  - late_correction set by temperature if we want to process data as following
+      If we use the new DT_IOP_TEMP_D65_LATE mode in temperature.c and don#t have
+      any temp parameters changes later we can calc correction coeffs to modify
+      as_shot rgb data to D65
+*/
+typedef struct dt_dev_chroma_t
+{
+  struct dt_iop_module_t *temperature;  // always available for GUI reports
+  struct dt_iop_module_t *adaptation;   // set if one module is processing this without blending
+
+  double wb_coeffs[4];                  // data actually used by the pipe
+  double D65coeffs[4];                  // both read from exif data or "best guess"
+  double as_shot[4];
+  gboolean late_correction;
+} dt_dev_chroma_t;
 
 typedef struct dt_develop_t
 {
@@ -157,19 +168,16 @@ typedef struct dt_develop_t
   double   gui_previous_pipe_time; // time pipe finished after last widget was changed.
 
   gboolean focus_hash;   // determines whether to start a new history item or to merge down.
-  gboolean preview_loading, history_updating, image_force_reload, first_load;
-  gboolean preview_input_changed;
+  gboolean history_updating, image_force_reload, first_load;
   gboolean autosaving;
-  dt_dev_pixelpipe_status_t preview_status;
+  double autosave_time;
   int32_t image_invalid_cnt;
   uint32_t timestamp;
   uint32_t preview_average_delay;
   struct dt_iop_module_t *gui_module; // this module claims gui expose/event callbacks.
-  float preview_downsampling;         // < 1.0: optionally downsample preview
 
   // image processing pipeline with caching
   struct dt_dev_pixelpipe_t *preview_pipe;
-  dt_pthread_mutex_t preview_pipe_mutex;
 
   // image under consideration, which
   // is copied each time an image is changed. this means we have some information
@@ -179,12 +187,16 @@ typedef struct dt_develop_t
   // by the iop through the copy their respective pixelpipe holds, for thread-safety.
   dt_image_t image_storage;
   dt_imgid_t requested_id;
+  int32_t snapshot_id; /* for the darkroom snapshots */
 
   // history stack
   dt_pthread_mutex_t history_mutex;
   int32_t history_end;
   GList *history;
+  // some modules don't want to add new history items while active
   gboolean history_postpone_invalidate;
+  // avoid checking for latest added module into history via list traversal
+  struct dt_iop_module_t *history_last_module;
 
   // operations pipeline
   int32_t iop_instance;
@@ -273,25 +285,15 @@ typedef struct dt_develop_t
                                struct dt_iop_module_t *module,
                                const dt_mask_id_t selectid);
     } masks;
-
-    // what is the ID of the module currently doing pipeline chromatic
-    // adaptation ?  this is to prevent multiple modules/instances
-    // from doing white balance globally.  only used to display
-    // warnings in GUI of modules that should probably not be doing
-    // white balance
-    struct dt_iop_module_t *chroma_adaptation;
-
-    // is the WB module using D65 illuminant and not doing full chromatic adaptation ?
-    gboolean wb_is_D65;
-    dt_aligned_pixel_t wb_coeffs;
   } proxy;
+
+  dt_dev_chroma_t chroma;
 
   // for exposing the crop
   struct
   {
     // set by dt_dev_pixelpipe_synch() if an enabled crop module is included in history
     struct dt_iop_module_t *exposer;
-    struct dt_iop_module_t *requester;
   } cropping;
 
   // for the overexposure indicator
@@ -323,8 +325,14 @@ typedef struct dt_develop_t
   struct
   {
     GtkWidget *button; // yes, ugliness is the norm. what did you expect ?
-    gboolean enabled;
   } iso_12646;
+
+  // late scaling down from full roi
+  struct
+  {
+    GtkWidget *button;
+    gboolean enabled;
+  } late_scaling;
 
   // the display profile related things (softproof, gamut check, profiles ...)
   struct
@@ -340,15 +348,19 @@ typedef struct dt_develop_t
   int mask_form_selected_id; // select a mask inside an iop
   gboolean darkroom_skip_mouse_events; // skip mouse events for masks
   gboolean darkroom_mouse_in_center_area; // TRUE if the mouse cursor is in center area
+
+  GList *module_filter_out;
 } dt_develop_t;
 
 void dt_dev_init(dt_develop_t *dev, gboolean gui_attached);
 void dt_dev_cleanup(dt_develop_t *dev);
 
 float dt_dev_get_preview_downsampling();
-void dt_dev_process_image_job(dt_develop_t *dev);
-void dt_dev_process_preview_job(dt_develop_t *dev);
-void dt_dev_process_preview2_job(dt_develop_t *dev);
+void dt_dev_process_image_job(dt_develop_t *dev,
+                              dt_dev_viewport_t *port,
+                              struct dt_dev_pixelpipe_t *pipe,
+                              dt_signal_t signal,
+                              const int devid);
 // launch jobs above
 void dt_dev_process_image(dt_develop_t *dev);
 void dt_dev_process_preview(dt_develop_t *dev);
@@ -359,7 +371,7 @@ void dt_dev_load_image(dt_develop_t *dev,
 void dt_dev_reload_image(dt_develop_t *dev,
                          const dt_imgid_t imgid);
 /** checks if provided imgid is the image currently in develop */
-gboolean dt_dev_is_current_image(dt_develop_t *dev,
+gboolean dt_dev_is_current_image(const dt_develop_t *dev,
                                  const dt_imgid_t imgid);
 const dt_dev_history_item_t *dt_dev_get_history_item(dt_develop_t *dev,
                                                      const char *op);
@@ -391,8 +403,7 @@ void dt_dev_write_history_ext(dt_develop_t *dev, const dt_imgid_t imgid);
 void dt_dev_write_history(dt_develop_t *dev);
 void dt_dev_read_history_ext(dt_develop_t *dev,
                              const dt_imgid_t imgid,
-                             const gboolean no_image,
-                             const gboolean snapshot);
+                             const gboolean no_image);
 void dt_dev_read_history(dt_develop_t *dev);
 void dt_dev_free_history_item(gpointer data);
 void dt_dev_invalidate_history_module(GList *list,
@@ -407,16 +418,17 @@ void dt_dev_reprocess_all(dt_develop_t *dev);
 void dt_dev_reprocess_center(dt_develop_t *dev);
 void dt_dev_reprocess_preview(dt_develop_t *dev);
 
+gboolean dt_dev_get_preview_size(const dt_develop_t *dev,
+                                 float *wd,
+                                 float *ht);
 void dt_dev_get_processed_size(dt_dev_viewport_t *port,
                                int *procw,
                                int *proch);
-void dt_dev_check_zoom_bounds(dt_dev_viewport_t *port,
-                              float *zoom_x,
-                              float *zoom_y,
-                              dt_dev_zoom_t zoom,
-                              const int closeup,
-                              float *boxw,
-                              float *boxh);
+gboolean dt_dev_get_zoom_bounds(dt_dev_viewport_t *port,
+                                float *zoom_x,
+                                float *zoom_y,
+                                float *boxww,
+                                float *boxhh);
 void dt_dev_zoom_move(dt_dev_viewport_t *port,
                       dt_dev_zoom_t zoom,
                       float scale,
@@ -441,37 +453,15 @@ void dt_dev_get_viewport_params(dt_dev_viewport_t *port,
                                 int *closeup,
                                 float *x,
                                 float *y);
-void dt_dev_set_viewport_params(dt_dev_viewport_t *port,
-                                dt_dev_zoom_t zoom,
-                                int closeup,
-                                float x,
-                                float y);
 
-void dt_dev_configure(dt_develop_t *dev,
-                      int wd,
-                      int ht);
-void dt_dev_second_window_configure(dt_develop_t *dev,
-                                    int wd,
-                                    int ht);
+void dt_dev_configure(dt_dev_viewport_t *port);
 
-/*
- * exposure plugin hook, set the exposure and the black level
- */
-
-/** check if exposure iop hooks are available */
-gboolean dt_dev_exposure_hooks_available(dt_develop_t *dev);
-/** reset exposure to defaults */
-void dt_dev_exposure_reset_defaults(dt_develop_t *dev);
-/** set exposure */
-void dt_dev_exposure_set_exposure(dt_develop_t *dev,
-                                  const float exposure);
-/** get exposure */
+/** get exposure level */
 float dt_dev_exposure_get_exposure(dt_develop_t *dev);
-/** set exposure black level */
-void dt_dev_exposure_set_black(dt_develop_t *dev,
-                               const float black);
 /** get exposure black level */
 float dt_dev_exposure_get_black(dt_develop_t *dev);
+
+void dt_dev_exposure_handle_event(GdkEvent *event, gboolean blackwhite);
 
 /*
  * modulegroups plugin hooks
@@ -487,6 +477,8 @@ void dt_dev_modulegroups_set(dt_develop_t *dev, uint32_t group);
 uint32_t dt_dev_modulegroups_get(dt_develop_t *dev);
 /** get the activated modulegroup */
 uint32_t dt_dev_modulegroups_get_activated(dt_develop_t *dev);
+/** tests for a proper modulgroup being activated */
+gboolean dt_dev_modulegroups_test_activated(dt_develop_t *dev);
 /** test if iop group flags matches modulegroup */
 gboolean dt_dev_modulegroups_test(dt_develop_t *dev,
                                   const uint32_t group,
@@ -500,9 +492,6 @@ gboolean dt_dev_modulegroups_is_visible(dt_develop_t *dev,
 int dt_dev_modulegroups_basics_module_toggle(dt_develop_t *dev,
                                              GtkWidget *widget,
                                              const gboolean doit);
-
-/** update gliding average for pixelpipe delay */
-void dt_dev_average_delay_update(const dt_times_t *start, uint32_t *average_delay);
 
 /*
  * masks plugin hooks
@@ -535,44 +524,32 @@ gchar *dt_history_item_get_name(const struct dt_iop_module_t *module);
  * distort functions
  */
 /** apply all transforms to the specified points (in preview pipe space) */
-int dt_dev_distort_transform(dt_develop_t *dev,
-                             float *points,
-                             const size_t points_count);
+gboolean dt_dev_distort_transform
+  (dt_develop_t *dev,
+   float *points,
+   const size_t points_count);
 /** reverse apply all transforms to the specified points (in preview pipe space) */
-int dt_dev_distort_backtransform(dt_develop_t *dev,
-                                 float *points,
-                                 const size_t points_count);
+gboolean dt_dev_distort_backtransform
+  (dt_develop_t *dev,
+   float *points,
+   const size_t points_count);
 /** same fct, but we can specify iop with priority between pmin and pmax */
-int dt_dev_distort_transform_plus(dt_develop_t *dev,
-                                  struct dt_dev_pixelpipe_t *pipe,
-                                  const double iop_order,
-                                  const int transf_direction,
-                                  float *points,
-                                  const size_t points_count);
-/** same fct, but can only be called from a distort_transform function
- * called by dt_dev_distort_transform_plus */
-int dt_dev_distort_transform_locked(dt_develop_t *dev,
-                                    struct dt_dev_pixelpipe_t *pipe,
-                                    const double iop_order,
-                                    const int transf_direction,
-                                    float *points,
-                                    const size_t points_count);
+gboolean dt_dev_distort_transform_plus
+  (dt_develop_t *dev,
+   struct dt_dev_pixelpipe_t *pipe,
+   const double iop_order,
+   const dt_dev_transform_direction_t transf_direction,
+   float *points,
+   const size_t points_count);
 /** same fct as dt_dev_distort_backtransform, but we can specify iop
  * with priority between pmin and pmax */
-int dt_dev_distort_backtransform_plus(dt_develop_t *dev,
-                                      struct dt_dev_pixelpipe_t *pipe,
-                                      const double iop_order,
-                                      const int transf_direction,
-                                      float *points,
-                                      const size_t points_count);
-/** same fct, but can only be called from a distort_backtransform
- * function called by dt_dev_distort_backtransform_plus */
-int dt_dev_distort_backtransform_locked(dt_develop_t *dev,
-                                        struct dt_dev_pixelpipe_t *pipe,
-                                        const double iop_order,
-                                        const int transf_direction,
-                                        float *points,
-                                        const size_t points_count);
+gboolean dt_dev_distort_backtransform_plus
+  (dt_develop_t *dev,
+   struct dt_dev_pixelpipe_t *pipe,
+   const double iop_order,
+   const dt_dev_transform_direction_t transf_direction,
+   float *points,
+   const size_t points_count);
 
 /** get the iop_pixelpipe instance corresponding to the iop in the given pipe */
 struct dt_dev_pixelpipe_iop_t *dt_dev_distort_get_iop_pipe(dt_develop_t *dev,
@@ -581,51 +558,27 @@ struct dt_dev_pixelpipe_iop_t *dt_dev_distort_get_iop_pipe(dt_develop_t *dev,
 /*
  * hash functions
  */
-/** generate hash value out of all module settings of pixelpipe */
-uint64_t dt_dev_hash(dt_develop_t *dev);
-/** same function, but we can specify iop with priority between pmin and pmax */
-uint64_t dt_dev_hash_plus(dt_develop_t *dev,
+/** generate hash value out of all module settings of pixelpipe.
+    We specify iop with priority either up to iop_order or above iop_order depending on
+    transfer direction */
+dt_hash_t dt_dev_hash_plus(dt_develop_t *dev,
                           struct dt_dev_pixelpipe_t *pipe,
                           const double iop_order,
-                          const int transf_direction);
-/** wait until hash value found in hash matches hash value defined by
- * dev/pipe/pmin/pmax with timeout */
-int dt_dev_wait_hash(dt_develop_t *dev,
-                     struct dt_dev_pixelpipe_t *pipe,
-                     const double iop_order,
-                     const int transf_direction,
-                     dt_pthread_mutex_t *lock,
-                     const volatile uint64_t *const hash);
+                          const dt_dev_transform_direction_t transf_direction);
 /** synchronize pixelpipe by means hash values by waiting with timeout
  * and potential reprocessing */
-int dt_dev_sync_pixelpipe_hash(dt_develop_t *dev,
+gboolean dt_dev_sync_pixelpipe_hash(dt_develop_t *dev,
                                struct dt_dev_pixelpipe_t *pipe,
                                const double iop_order,
-                               const int transf_direction,
+                               const dt_dev_transform_direction_t transf_direction,
                                dt_pthread_mutex_t *lock,
-                               const volatile uint64_t *const hash);
-/** generate hash value out of module settings of all distorting modules of pixelpipe */
-uint64_t dt_dev_hash_distort(dt_develop_t *dev);
-/** same function, but we can specify iop with priority between pmin and pmax */
-uint64_t dt_dev_hash_distort_plus(dt_develop_t *dev,
+                               const volatile dt_hash_t *const hash);
+/** generate hash value out of module settings of all distorting modules of pixelpipe
+    We can specify iop with priority between pmin and pmax */
+dt_hash_t dt_dev_hash_distort_plus(dt_develop_t *dev,
                                   struct dt_dev_pixelpipe_t *pipe,
                                   const double iop_order,
-                                  const int transf_direction);
-/** same as dt_dev_wait_hash but only for distorting modules */
-int dt_dev_wait_hash_distort(dt_develop_t *dev,
-                             struct dt_dev_pixelpipe_t *pipe,
-                             const double iop_order,
-                             const int transf_direction,
-                             dt_pthread_mutex_t *lock,
-                             const volatile uint64_t *const hash);
-/** same as dt_dev_sync_pixelpipe_hash but only for distorting modules */
-int dt_dev_sync_pixelpipe_hash_distort (dt_develop_t *dev,
-                                        struct dt_dev_pixelpipe_t *pipe,
-                                        const double iop_order,
-                                        const int transf_direction,
-                                        dt_pthread_mutex_t *lock,
-                                        const volatile uint64_t *const hash);
-
+                                  const dt_dev_transform_direction_t transf_direction);
 /*
  *   history undo support helpers for darkroom
  */
@@ -638,28 +591,33 @@ void dt_dev_undo_end_record(dt_develop_t *dev);
  * develop an image and returns the buf and processed width / height.
  * this is done as in the context of the darkroom, meaning that the
  * final processed sizes will align perfectly on the darkroom view.
- *
+ * if called with a valid CL devid that device is used without locking/unlocking as the caller is doing that
  */
 void dt_dev_image(const dt_imgid_t imgid,
                   const size_t width,
                   const size_t height,
                   const int history_end,
                   uint8_t **buf,
-                  size_t *processed_width,
-                  size_t *processed_height);
+                  float *scale,
+                  size_t *buf_width,
+                  size_t *buf_height,
+                  float *zoom_x,
+                  float *zoom_y,
+                  const int32_t snapshot_id,
+                  GList *module_filter_out,
+                  const int devid,
+                  const gboolean finalscale);
 
-void dt_dev_image_ext(const dt_imgid_t imgid,
-                      const size_t width,
-                      const size_t height,
-                      const int history_end,
-                      uint8_t **buf,
-                      size_t *processed_width,
-                      size_t *processed_height,
-                      float *zoom_x,
-                      float *zoom_y,
-                      const int border_size,
-                      const gboolean iso_12646,
-                      const int32_t snapshot_id);
+
+gboolean dt_dev_equal_chroma(const float *f, const double *d);
+gboolean dt_dev_is_D65_chroma(const dt_develop_t *dev);
+void dt_dev_reset_chroma(dt_develop_t *dev);
+void dt_dev_init_chroma(dt_develop_t *dev);
+void dt_dev_clear_chroma_troubles(dt_develop_t *dev);
+static inline struct dt_iop_module_t *dt_dev_gui_module(void)
+{
+  return darktable.develop ? darktable.develop->gui_module : NULL;
+}
 
 #ifdef __cplusplus
 } // extern "C"
