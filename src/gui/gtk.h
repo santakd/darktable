@@ -112,7 +112,7 @@ typedef struct dt_gui_gtk_t
 
   dt_gui_scrollbars_t scrollbars;
 
-  cairo_surface_t *surface;
+  gboolean drawing_snapshot;
 
   char *last_preset;
 
@@ -372,6 +372,7 @@ gboolean dt_ui_panel_ancestor(struct dt_ui_t *ui,
 /** \brief get the center drawable widget */
 GtkWidget *dt_ui_center(struct dt_ui_t *ui);
 GtkWidget *dt_ui_center_base(struct dt_ui_t *ui);
+GtkWidget *dt_ui_snapshot(struct dt_ui_t *ui);
 /** \brief get the main window widget */
 GtkWidget *dt_ui_main_window(struct dt_ui_t *ui);
 /** \brief get the thumb table */
@@ -405,9 +406,7 @@ static inline GtkWidget *dt_ui_section_label_new(const gchar *str)
 static inline GtkWidget *dt_ui_label_new(const gchar *str)
 {
   GtkWidget *label = gtk_label_new(str);
-  gtk_widget_set_halign(label, GTK_ALIGN_START);
-  gtk_label_set_xalign (GTK_LABEL(label), 0.0f);
-  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+  g_object_set(label, "halign", GTK_ALIGN_START, "xalign", 0.0f, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
   return label;
 };
 
@@ -534,8 +533,8 @@ void dt_gui_update_collapsible_section(dt_gui_collapsible_section_t *cs);
 void dt_gui_hide_collapsible_section(dt_gui_collapsible_section_t *cs);
 
 // is delay between first and second click/press longer than double-click time?
-gboolean dt_gui_long_click(const int second,
-                           const int first);
+gboolean dt_gui_long_click(const guint second,
+                           const guint first);
 
 // control whether the mouse pointer displays as a "busy" cursor, e.g. watch or timer
 // the calls may be nested, but must be matched
@@ -546,6 +545,23 @@ void dt_gui_cursor_clear_busy();
 // should be called after making Gtk calls if we won't resume the main event loop for a while
 // (i.e. the current function will do a lot of work before returning)
 void dt_gui_process_events();
+
+GtkWidget *(dt_gui_box_add)(const char *file, const int line, const char *function, GtkBox *box, gpointer list[]);
+#define dt_gui_box_add(box, ...) dt_gui_box_add(__FILE__, __LINE__, __FUNCTION__, GTK_BOX(box), (gpointer[]){ __VA_ARGS__, (gpointer)-1 })
+#define dt_gui_hbox(...) dt_gui_box_add(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), __VA_ARGS__)
+#define dt_gui_vbox(...) dt_gui_box_add(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0), __VA_ARGS__)
+
+static inline GtkWidget *dt_gui_expand(GtkWidget *widget)
+{
+  gtk_widget_set_hexpand(widget, TRUE);
+  return widget;
+}
+
+static inline GtkWidget *dt_gui_align_right(GtkWidget *widget)
+{
+  gtk_widget_set_halign(widget, GTK_ALIGN_END);
+  return dt_gui_expand(widget);
+}
 
 // Simulate a mouse button event (button is 1, 2, 3 - mouse button) sent to a Widget
 void dt_gui_simulate_button_event(GtkWidget *widget,

@@ -221,10 +221,21 @@ static void button_clicked(GtkWidget *widget,
     gchar *dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(filechooser));
     char *composed = g_build_filename(dir, filename, NULL);
 
-    // composed can now contain '\': on Windows it's the path separator,
-    // on other platforms it can be part of a regular folder name.
-    // This would later clash with variable substitution, so we have to escape them
+#ifdef _WIN32
+    // Windows does not support forward slashes in filename,
+    // but they can also be used as path separators.
+    // To keep it consistent with Unix, we can just replace backslashes
+    // with forward slashes.
+    // This also means that we do not have problems with variable substitution.
+    // TODO: Of course it would be better if we supported "natural"
+    // Windows style path names.
+    gchar *escaped = dt_util_str_replace(composed, "\\", "/");
+#else
+    // On Unix, the backslash _can_ be part of a regular folder name.
+    // So it has to be escaped, because it would clash with variable
+    // substitution.
     gchar *escaped = dt_util_str_replace(composed, "\\", "\\\\");
+#endif
 
     gtk_entry_set_text(GTK_ENTRY(d->entry), escaped);
     // the signal handler will write this to conf
@@ -255,10 +266,6 @@ void gui_init(dt_imageio_module_storage_t *self)
 {
   disk_t *d = malloc(sizeof(disk_t));
   self->gui_data = (void *)d;
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(hbox), TRUE, FALSE, 0);
 
   d->entry =
     GTK_ENTRY(dt_action_entry_new
@@ -269,12 +276,10 @@ void gui_init(dt_imageio_module_storage_t *self)
                dt_conf_get_string_const("plugins/imageio/storage/disk/file_directory")));
   dt_gtkentry_setup_completion(d->entry, dt_gtkentry_get_default_path_compl_list());
   gtk_editable_set_position(GTK_EDITABLE(d->entry), -1);
-  gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(d->entry), TRUE, TRUE, 0);
 
   GtkWidget *widget = dtgtk_button_new(dtgtk_cairo_paint_directory, CPF_NONE, NULL);
   gtk_widget_set_name(widget, "non-flat");
   gtk_widget_set_tooltip_text(widget, _("select directory"));
-  gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(widget), "clicked", G_CALLBACK(button_clicked), self);
 
   DT_BAUHAUS_COMBOBOX_NEW_FULL(d->onsave_action, self, NULL, N_("on conflict"), NULL,
@@ -284,7 +289,8 @@ void gui_init(dt_imageio_module_storage_t *self)
                                N_("overwrite"),
                                N_("overwrite if changed"),
                                N_("skip"));
-  gtk_box_pack_start(GTK_BOX(self->widget), d->onsave_action, TRUE, TRUE, 0);
+
+  self->widget = dt_gui_vbox(dt_gui_hbox(d->entry, widget), d->onsave_action);
 }
 
 void gui_cleanup(dt_imageio_module_storage_t *self)

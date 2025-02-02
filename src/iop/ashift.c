@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  Copyright (C) 2016-2024 darktable developers.
+  Copyright (C) 2016-2025 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -1205,7 +1205,7 @@ void modify_roi_out(struct dt_iop_module_t *self,
   if(roi_out->width < 4 || roi_out->height < 4)
   {
     dt_print_pipe(DT_DEBUG_PIPE,
-                  "safety check", piece->pipe, self, DT_DEVICE_NONE, roi_in, roi_out);
+                  "insane data", piece->pipe, self, DT_DEVICE_NONE, roi_in, roi_out);
 
     roi_out->width = roi_in->width;
     roi_out->height = roi_in->height;
@@ -4054,13 +4054,6 @@ error:
   return FALSE;
 }
 
-// does this gui have focus?
-static gboolean _gui_has_focus(dt_iop_module_t *self)
-{
-  return (self->dev->gui_module == self
-          && dt_dev_modulegroups_test_activated(darktable.develop));
-}
-
 /* this function replaces this sentence, it calls distort_transform()
    for this module on the pipe
    if(!dt_dev_distort_transform_plus(self->dev, self->dev->preview_pipe,
@@ -4154,7 +4147,7 @@ void gui_post_expose(dt_iop_module_t *self,
 
   // we draw the cropping area; we need x_off/y_off/width/height which is only available
   // after g->buf has been processed
-  if(g->buf && self->enabled && _gui_has_focus(self))
+  if(g->buf && self->enabled && dt_iop_has_focus(self))
   {
     // roi data of the preview pipe input buffer
 
@@ -4354,7 +4347,7 @@ void gui_post_expose(dt_iop_module_t *self,
   if(g->fitting) return;
 
   // no structural data or visibility switched off? -> stop here
-  if(g->lines == NULL || !_gui_has_focus(self)) return;
+  if(g->lines == NULL || !dt_iop_has_focus(self)) return;
 
   // get hash value that reflects distortions from here to the end of the pixelpipe
   const dt_hash_t hash = dt_dev_hash_distort_plus(dev,
@@ -4585,6 +4578,9 @@ int mouse_moved(dt_iop_module_t *self,
     dt_control_queue_redraw_center();
     return TRUE;
   }
+
+  if(!self->enabled)
+    return FALSE;
 
   gboolean handled = FALSE;
 
@@ -5630,7 +5626,7 @@ void commit_params(dt_iop_module_t *self,
   d->orthocorr = (p->mode == ASHIFT_MODE_GENERIC) ? 0.0f : p->orthocorr;
   d->aspect = (p->mode == ASHIFT_MODE_GENERIC) ? 1.0f : p->aspect;
 
-  if(_gui_has_focus(self)
+  if(dt_iop_has_focus(self)
      || dt_isnan(p->cl)
      || dt_isnan(p->cr)
      || dt_isnan(p->ct)
@@ -6041,8 +6037,7 @@ void gui_init(dt_iop_module_t *self)
 
   self->widget = main_box;
 
-  GtkWidget *helpers = dt_ui_section_label_new(C_("section", "perspective"));
-  gtk_box_pack_start(GTK_BOX(self->widget), helpers, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "perspective")));
 
   GtkGrid *auto_grid = GTK_GRID(gtk_grid_new());
   gtk_grid_set_row_spacing(auto_grid, 2 * DT_BAUHAUS_SPACE);
@@ -6077,9 +6072,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_grid_attach(auto_grid, g->fit_both, 3, 1, 1, 1);
 
   gtk_widget_show_all(GTK_WIDGET(auto_grid));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(auto_grid), TRUE, TRUE, 0);
-
-  self->widget = main_box;
+  dt_gui_box_add(self->widget, auto_grid);
 
   gtk_widget_set_tooltip_text
     (g->rotation,
@@ -6165,7 +6158,7 @@ void gui_init(dt_iop_module_t *self)
                        N_("auto"), g->structure_auto, &dt_action_def_toggle);
 
   /* add signal handler for preview pipe finish to redraw the overlay */
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _event_process_after_preview_callback, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _event_process_after_preview_callback);
 
   darktable.develop->proxy.rotate = self;
 }
@@ -6175,15 +6168,11 @@ void gui_cleanup(dt_iop_module_t *self)
   if(darktable.develop->proxy.rotate == self)
     darktable.develop->proxy.rotate = NULL;
 
-  DT_CONTROL_SIGNAL_DISCONNECT(_event_process_after_preview_callback, self);
-
   dt_iop_ashift_gui_data_t *g = self->gui_data;
   if(g->lines) free(g->lines);
   dt_free_align(g->buf);
   if(g->points) free(g->points);
   if(g->points_idx) free(g->points_idx);
-
-  IOP_GUI_FREE;
 }
 
 GSList *mouse_actions(dt_iop_module_t *self)

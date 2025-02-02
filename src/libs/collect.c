@@ -707,6 +707,22 @@ static dt_lib_collect_t *get_collect(dt_lib_collect_rule_t *r)
   return d;
 }
 
+static void _scroll_to_position(GtkTreeView *treeview,
+                                GtkTreePath *path,
+                                GtkTreeViewColumn *column,
+                                gboolean use_align,
+                                float row_align,
+                                float col_align)
+{
+  gtk_tree_view_scroll_to_cell(treeview, path, column, use_align, row_align, col_align);
+
+  // Force value refresh of the vertical scrollbar.
+  // This is a workaround for a (possible) GTK bug. When returning from darkroom
+  // the treeview is not scrolled to the previous position.
+  g_signal_emit_by_name(gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(treeview)),
+                                                       "value-changed");
+}
+
 static gboolean list_select(GtkTreeModel *model,
                             GtkTreePath *path,
                             GtkTreeIter *iter,
@@ -724,7 +740,7 @@ static gboolean list_select(GtkTreeModel *model,
   if(strcmp(haystack, needle) == 0)
   {
     gtk_tree_selection_select_path(gtk_tree_view_get_selection(d->view), path);
-    gtk_tree_view_scroll_to_cell(d->view, path, NULL, FALSE, 0.2, 0);
+    _scroll_to_position(d->view, path, NULL, FALSE, 0.2, 0);
   }
 
   g_free(haystack);
@@ -1312,7 +1328,7 @@ static void _expand_select_tree_path(GtkTreePath *path1,
       p3 = gtk_tree_model_get_path(d->treefilter, &parent);
   }
   gtk_tree_view_expand_to_path(d->view, p3 ? p3 : p1);
-  gtk_tree_view_scroll_to_cell(d->view, p1, NULL, TRUE, 0.5, 0.5);
+  _scroll_to_position(d->view, p1, NULL, TRUE, 0.5, 0.5);
 
   if(path2)
     gtk_tree_selection_select_range(gtk_tree_view_get_selection(d->view), p1, p2);
@@ -3646,6 +3662,7 @@ GtkWidget *gui_tool_box(dt_lib_module_t *self)
                                             ? CPF_DIRECTION_DOWN
                                             : CPF_DIRECTION_UP,
                                             NULL);
+  gtk_widget_set_tooltip_text(sortb, _("toggle collection sort order ascending/descending"));                                            
   dt_gui_add_class(sortb, "dt_ignore_fg_state");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sortb), sort_descend);
   g_signal_connect(G_OBJECT(sortb),
@@ -3805,15 +3822,15 @@ void gui_init(dt_lib_module_t *self)
                                DT_COLLECTION_CHANGE_RELOAD,
                                DT_COLLECTION_PROP_MODULE, NULL);
 
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_COLLECTION_CHANGED, collection_updated, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_FILMROLLS_CHANGED, filmrolls_updated, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_PREFERENCES_CHANGE, preferences_changed, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_FILMROLLS_IMPORTED, filmrolls_imported, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_FILMROLLS_REMOVED, filmrolls_removed, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_TAG_CHANGED, tag_changed, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_GEOTAG_CHANGED, _geotag_changed, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_METADATA_CHANGED, metadata_changed, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_PREFERENCES_CHANGE, view_set_click, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_COLLECTION_CHANGED, collection_updated);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_FILMROLLS_CHANGED, filmrolls_updated);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_PREFERENCES_CHANGE, preferences_changed);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_FILMROLLS_IMPORTED, filmrolls_imported);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_FILMROLLS_REMOVED, filmrolls_removed);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_TAG_CHANGED, tag_changed);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_GEOTAG_CHANGED, _geotag_changed);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_METADATA_CHANGED, metadata_changed);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_PREFERENCES_CHANGE, view_set_click);
 
   dt_action_register(DT_ACTION(self), N_("jump back to previous collection"),
                      _history_previous, GDK_KEY_k,
@@ -3824,14 +3841,6 @@ void gui_cleanup(dt_lib_module_t *self)
 {
   dt_lib_collect_t *d = self->data;
 
-  DT_CONTROL_SIGNAL_DISCONNECT(collection_updated, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(filmrolls_updated, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(filmrolls_imported, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(preferences_changed, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(filmrolls_removed, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(tag_changed, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(_geotag_changed, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(view_set_click, self);
   darktable.view_manager->proxy.module_collect.module = NULL;
   free(d->params);
 

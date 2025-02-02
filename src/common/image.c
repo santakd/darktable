@@ -862,9 +862,9 @@ void dt_image_update_final_size(const dt_imgid_t imgid)
       dt_image_cache_write_release(darktable.image_cache, imgtmp, DT_IMAGE_CACHE_RELAXED);
       DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_METADATA_UPDATE);
       DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_IMAGE_CHANGED);
+      dt_print(DT_DEBUG_PIPE, "updated final size for ID=%i to %ix%i", imgid, ww, hh);
     }
   }
-  dt_print(DT_DEBUG_PIPE, "[dt_image_update_final_size] for ID=%i, updated to %ix%i", imgid, ww, hh);
 }
 
 gboolean dt_image_get_final_size(const dt_imgid_t imgid, int *width, int *height)
@@ -2876,7 +2876,7 @@ gboolean dt_image_write_sidecar_file(const dt_imgid_t imgid)
   if((xmp_mode == DT_WRITE_XMP_ALWAYS)
      || ((xmp_mode == DT_WRITE_XMP_LAZY) && _any_altered_data(imgid)))
   {
-    error = dt_exif_xmp_write(imgid, filename, TRUE);
+    error = dt_exif_xmp_write(imgid, filename, FALSE);
   }
   else if(xmp_mode == DT_WRITE_XMP_LAZY)
   {

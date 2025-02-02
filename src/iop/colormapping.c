@@ -992,22 +992,13 @@ void gui_init(dt_iop_module_t *self)
   g->xform = cmsCreateTransform(hLab, TYPE_Lab_DBL, hsRGB, TYPE_RGB_DBL, INTENT_PERCEPTUAL, 0);
   g->buffer = NULL;
 
-  self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE));
-
-  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("source clusters:")), TRUE, TRUE, 0);
-
   g->source_area = dtgtk_drawing_area_new_with_aspect_ratio(1.0 / 3.0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->source_area, TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->source_area), "draw", G_CALLBACK(cluster_preview_draw), self);
 
-  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("target clusters:")), TRUE, TRUE, 0);
-
   g->target_area = dtgtk_drawing_area_new_with_aspect_ratio(1.0 / 3.0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->target_area, TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->target_area), "draw", G_CALLBACK(cluster_preview_draw), self);
 
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-  gtk_box_pack_start(GTK_BOX(self->widget), box, TRUE, TRUE, 0);
 
   g->acquire_source_button = dt_iop_button_new(self, N_("acquire as source"),
                                                G_CALLBACK(acquire_source_button_pressed), FALSE, 0, 0,
@@ -1020,6 +1011,9 @@ void gui_init(dt_iop_module_t *self)
                                                NULL, 0, box);
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(g->acquire_target_button))), PANGO_ELLIPSIZE_START);
   gtk_widget_set_tooltip_text(g->acquire_target_button, _("analyze this image as a target image"));
+
+  self->widget = dt_gui_vbox(dt_ui_label_new(_("source clusters:")), g->source_area,
+                             dt_ui_label_new(_("target clusters:")), g->target_area, box);
 
   g->clusters = dt_bauhaus_slider_from_params(self, "n");
   gtk_widget_set_tooltip_text(g->clusters, _("number of clusters to find in image. value change resets all clusters"));
@@ -1034,7 +1028,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_set_format(g->equalization, "%");
 
   /* add signal handler for preview pipe finished: process clusters if requested */
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, process_clusters, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, process_clusters);
 
   FILE *f = g_fopen("/tmp/dt_colormapping_loaded", "rb");
   if(f)
@@ -1048,12 +1042,8 @@ void gui_cleanup(dt_iop_module_t *self)
 {
   dt_iop_colormapping_gui_data_t *g = self->gui_data;
 
-  DT_CONTROL_SIGNAL_DISCONNECT(process_clusters, self);
-
   cmsDeleteTransform(g->xform);
   dt_free_align(g->buffer);
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

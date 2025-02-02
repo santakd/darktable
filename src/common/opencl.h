@@ -129,6 +129,7 @@ typedef struct dt_opencl_device_t
   const char *fullname;
   const char *cname;
   const char *options;
+  const char *cflags;
   cl_int summary;
   size_t memory_in_use;
   size_t peak_memory;
@@ -634,7 +635,7 @@ int dt_opencl_local_buffer_opt(const int devid,
 void dt_opencl_write_device_config(const int devid);
 gboolean dt_opencl_read_device_config(const int devid);
 gboolean dt_opencl_avoid_atomics(const int devid);
-int dt_opencl_micro_nap(const int devid);
+void dt_opencl_micro_nap(const int devid);
 gboolean dt_opencl_use_pinned_memory(const int devid);
 
 G_END_DECLS
@@ -750,10 +751,6 @@ static inline gboolean dt_opencl_image_fits_device(const int devid,
 static inline size_t dt_opencl_get_device_available(const int devid)
 {
   return 0;
-}
-static inline void dt_opencl_check_tuning(const int devid)
-{
-  return;
 }
 static inline size_t dt_opencl_get_device_memalloc(const int devid)
 {

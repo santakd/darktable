@@ -387,7 +387,7 @@ int process_cl(dt_iop_module_t *self,
   dt_iop_atrous_global_data_t *gd = self->global_data;
 
   const int devid = piece->pipe->devid;
-  cl_int err = DT_OPENCL_DEFAULT_ERROR;
+  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
   cl_mem dev_filter = NULL;
   cl_mem dev_tmp = NULL;
   cl_mem dev_tmp2 = NULL;
@@ -447,7 +447,7 @@ int process_cl(dt_iop_module_t *self,
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(darktable.opencl->micro_nap);
+    dt_opencl_micro_nap(devid);
 
     // now immediately run the synthesis for the current scale, accumulating the details into dev_out
     dt_opencl_set_kernel_args(devid, gd->kernel_synthesize, 0,
@@ -462,7 +462,7 @@ int process_cl(dt_iop_module_t *self,
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(darktable.opencl->micro_nap);
+    dt_opencl_micro_nap(devid);
 
     // swap scratch buffers
     if(scale == 0) dev_buf1 = dev_tmp2;
@@ -577,7 +577,7 @@ int process_cl(dt_iop_module_t *self,
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(dt_opencl_micro_nap(devid));
+    dt_opencl_micro_nap(devid);
   }
 
   /* now synthesize again */
@@ -606,7 +606,7 @@ int process_cl(dt_iop_module_t *self,
     if(err != CL_SUCCESS) goto error;
 
     // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(dt_opencl_micro_nap(devid));
+    dt_opencl_micro_nap(devid);
   }
 
   dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
@@ -1782,8 +1782,6 @@ void gui_init(dt_iop_module_t *self)
   g->mouse_radius = 1.0 / BANDS;
   g->in_curve = FALSE;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-
   static struct dt_action_def_t notebook_def = { };
   g->channel_tabs = dt_ui_notebook_new(&notebook_def);
   dt_action_define_iop(self, NULL, N_("channel"),
@@ -1799,14 +1797,12 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_show(gtk_notebook_get_nth_page(g->channel_tabs, g->channel));
   gtk_notebook_set_current_page(g->channel_tabs, g->channel);
   g_signal_connect(G_OBJECT(g->channel_tabs), "switch_page", G_CALLBACK(tab_switch), self);
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->channel_tabs), FALSE, FALSE, 0);
 
   // graph
   g->area = GTK_DRAWING_AREA(dt_ui_resize_wrap
                              (NULL,
                               0,
                               "plugins/darkroom/atrous/graphheight"));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->area), TRUE, TRUE, 0);
 
   g_object_set_data(G_OBJECT(g->area), "iop-instance", self);
   dt_action_define_iop(self, NULL, N_("graph"),
@@ -1825,6 +1821,8 @@ void gui_init(dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->area), "scroll-event",
                    G_CALLBACK(area_scrolled), self);
 
+  self->widget = dt_gui_vbox(g->channel_tabs, g->area);
+
   // mix slider
   g->mix = dt_bauhaus_slider_from_params(self, N_("mix"));
   gtk_widget_set_tooltip_text(g->mix, _("make effect stronger or weaker"));
@@ -1836,8 +1834,6 @@ void gui_cleanup(dt_iop_module_t *self)
   dt_iop_atrous_gui_data_t *g = self->gui_data;
   dt_conf_set_int("plugins/darkroom/atrous/gui_channel", g->channel);
   dt_draw_curve_destroy(g->minmax_curve);
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

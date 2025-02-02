@@ -379,7 +379,7 @@ int legacy_params(dt_iop_module_t *self,
   return 1;
 }
 
-static int rt_get_index_from_formid(dt_iop_retouch_params_t *p, const dt_mask_id_t formid)
+static int rt_get_index_from_formid(const dt_iop_retouch_params_t *p, const dt_mask_id_t formid)
 {
   int index = -1;
   if(dt_is_valid_maskid(formid))
@@ -401,7 +401,7 @@ static dt_mask_id_t rt_get_selected_shape_id()
 }
 
 static dt_masks_point_group_t *rt_get_mask_point_group(dt_iop_module_t *self,
-                                                       dt_mask_id_t formid)
+                                                       const dt_mask_id_t formid)
 {
   dt_masks_point_group_t *form_point_group = NULL;
 
@@ -428,12 +428,8 @@ static dt_masks_point_group_t *rt_get_mask_point_group(dt_iop_module_t *self,
 static float rt_get_shape_opacity(dt_iop_module_t *self,
                                   const dt_mask_id_t formid)
 {
-  float opacity = 0.f;
-
   dt_masks_point_group_t *grpt = rt_get_mask_point_group(self, formid);
-  if(grpt) opacity = grpt->opacity;
-
-  return opacity;
+  return (grpt) ? grpt->opacity : 0.0f;
 }
 
 static void rt_display_selected_fill_color(dt_iop_retouch_gui_data_t *g,
@@ -2734,46 +2730,16 @@ void gui_init(dt_iop_module_t *self)
                    G_CALLBACK(rt_mask_opacity_callback), self);
 
   // start building top level widget
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-  GtkWidget *lbl_rt_tools = dt_ui_section_label_new(C_("section", "retouch tools"));
-  gtk_box_pack_start(GTK_BOX(self->widget), lbl_rt_tools, FALSE, TRUE, 0);
-
-  // shapes toolbar
-  gtk_box_pack_start(GTK_BOX(self->widget), hbox_shapes, TRUE, TRUE, 0);
-  // algorithms toolbar
-  gtk_box_pack_start(GTK_BOX(self->widget), hbox_algo, TRUE, TRUE, 0);
-
-  // wavelet decompose
-  GtkWidget *lbl_wd = dt_ui_section_label_new(C_("section", "wavelet decompose"));
-  gtk_box_pack_start(GTK_BOX(self->widget), lbl_wd, FALSE, TRUE, 0);
-
-  // wavelet decompose bar & labels
-  gtk_box_pack_start(GTK_BOX(self->widget), grid_wd_labels, TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->wd_bar, TRUE, TRUE, DT_PIXEL_APPLY_DPI(3));
-
-  // preview scale & cut/paste scale
-  gtk_box_pack_start(GTK_BOX(self->widget), hbox_scale, TRUE, TRUE, 0);
-
-  // preview single scale
-  gtk_box_pack_start(GTK_BOX(self->widget), g->vbox_preview_scale, TRUE, TRUE, 0);
-
-  // shapes
-  GtkWidget *lbl_shapes = dt_ui_section_label_new(C_("section", "shapes"));
-  gtk_box_pack_start(GTK_BOX(self->widget), lbl_shapes, FALSE, TRUE, 0);
-
-  // shape selected
-  gtk_box_pack_start(GTK_BOX(self->widget), hbox_shape_sel, TRUE, TRUE, 0);
-  // blur radius
-  gtk_box_pack_start(GTK_BOX(self->widget), g->vbox_blur, TRUE, TRUE, 0);
-  // fill color
-  gtk_box_pack_start(GTK_BOX(self->widget), g->vbox_fill, TRUE, TRUE, 0);
-  // mask (shape) opacity
-  gtk_box_pack_start(GTK_BOX(self->widget), g->sl_mask_opacity, TRUE, TRUE, 0);
+  self->widget = dt_gui_vbox
+    (dt_ui_section_label_new(C_("section", "retouch tools")),
+     hbox_shapes, hbox_algo,
+     dt_ui_section_label_new(C_("section", "wavelet decompose")),
+     grid_wd_labels, g->wd_bar, hbox_scale, g->vbox_preview_scale,
+     dt_ui_section_label_new(C_("section", "shapes")),
+     hbox_shape_sel, g->vbox_blur, g->vbox_fill, g->sl_mask_opacity);
 
   /* add signal handler for preview pipe finish to redraw the preview */
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED,
-                            rt_develop_ui_pipe_finished_callback, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_UI_PIPE_FINISHED, rt_develop_ui_pipe_finished_callback);
 }
 
 void gui_reset(dt_iop_module_t *self)
@@ -2790,13 +2756,6 @@ void reload_defaults(dt_iop_module_t *self)
   // set the algo to the default one
   dt_iop_retouch_params_t *p = self->default_params;
   p->algorithm = dt_conf_get_int("plugins/darkroom/retouch/default_algo");
-}
-
-void gui_cleanup(dt_iop_module_t *self)
-{
-  DT_CONTROL_SIGNAL_DISCONNECT(rt_develop_ui_pipe_finished_callback, self);
-
-  IOP_GUI_FREE;
 }
 
 static void rt_compute_roi_in(dt_iop_module_t *self,
@@ -3170,7 +3129,7 @@ static void rt_process_stats(dt_iop_module_t *self,
                              const int ch,
                              float levels[3])
 {
-  const int size = width * height * ch;
+  const size_t size = (size_t)width * height * ch;
   float l_max = -FLT_MAX;
   float l_min = FLT_MAX;
   float l_sum = 0.f;
@@ -3347,7 +3306,8 @@ static void rt_copy_in_to_out(const float *const in,
   }
 }
 
-static void rt_build_scaled_mask(float *const mask,
+// Return TRUE in case of an error
+static gboolean rt_build_scaled_mask(float *const mask,
                                  dt_iop_roi_t *const roi_mask,
                                  float **mask_scaled,
                                  dt_iop_roi_t *roi_mask_scaled,
@@ -3359,7 +3319,7 @@ static void rt_build_scaled_mask(float *const mask,
   float *mask_tmp = NULL;
 
   const int padding = (algo == DT_IOP_RETOUCH_HEAL) ? 1 : 0;
-
+  gboolean error = FALSE;
   *roi_mask_scaled = *roi_mask;
 
   roi_mask_scaled->x = roi_mask->x * roi_in->scale;
@@ -3378,6 +3338,7 @@ static void rt_build_scaled_mask(float *const mask,
   mask_tmp = dt_alloc_align_float((size_t)roi_mask_scaled->width * roi_mask_scaled->height);
   if(mask_tmp == NULL)
   {
+    error = TRUE;
     dt_print(DT_DEBUG_ALWAYS, "[retouch] rt_build_scaled_mask: error allocating memory");
     goto cleanup;
   }
@@ -3405,6 +3366,7 @@ static void rt_build_scaled_mask(float *const mask,
 
 cleanup:
   *mask_scaled = mask_tmp;
+  return error;
 }
 
 // img_src and mask_scaled must have the same roi
@@ -3861,9 +3823,7 @@ void process(dt_iop_module_t *self,
   retouch_user_data_t usr_data = { 0 };
   dwt_params_t *dwt_p = NULL;
 
-  const int gui_active = (self->dev) ? (self == self->dev->gui_module) : 0;
-  const gboolean display_wavelet_scale =
-    (g && gui_active) ? g->display_wavelet_scale : FALSE;
+  const gboolean display_wavelet_scale = g && dt_iop_has_focus(self) ? g->display_wavelet_scale : FALSE;
 
   // we will do all the clone, heal, etc on the input image,
   // this way the source for one algorithm can be the destination from a previous one
@@ -3882,8 +3842,7 @@ void process(dt_iop_module_t *self,
   usr_data.mask_display = FALSE;
   usr_data.suppress_mask = (g
                             && g->suppress_mask
-                            && self->dev->gui_attached
-                            && (self == self->dev->gui_module)
+                            && dt_iop_has_focus(self)
                             && (piece->pipe == self->dev->full.pipe));
   usr_data.display_scale = p->curr_scale;
 
@@ -3899,8 +3858,8 @@ void process(dt_iop_module_t *self,
 
   // check if this module should expose mask.
   if((piece->pipe->type & DT_DEV_PIXELPIPE_FULL) && g
-     && (g->mask_display || display_wavelet_scale) && self->dev->gui_attached
-     && (self == self->dev->gui_module) && (piece->pipe == self->dev->full.pipe))
+     && (g->mask_display || display_wavelet_scale)
+     && dt_iop_has_focus(self) && (piece->pipe == self->dev->full.pipe))
   {
     for(size_t j = 0; j < (size_t)roi_rt->width * roi_rt->height * 4; j += 4)
       in_retouch[j + 3] = 0.f;
@@ -3914,7 +3873,7 @@ void process(dt_iop_module_t *self,
   if(piece->pipe->type & DT_DEV_PIXELPIPE_FULL)
   {
     // check if the image support this number of scales
-    if(gui_active)
+    if(dt_iop_has_focus(self))
     {
       const int max_scales = dwt_get_max_scale(dwt_p);
       if(dwt_p->scales > max_scales)
@@ -4116,10 +4075,9 @@ static cl_int rt_build_scaled_mask_cl(const int devid,
                                       const int dy,
                                       const int algo)
 {
-  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+  cl_int err = rt_build_scaled_mask(mask, roi_mask, mask_scaled, roi_mask_scaled, roi_in, dx, dy, algo)
+                ? CL_MEM_OBJECT_ALLOCATION_FAILURE : CL_SUCCESS;
 
-  rt_build_scaled_mask(mask, roi_mask, mask_scaled,
-                       roi_mask_scaled, roi_in, dx, dy, algo);
   if(*mask_scaled == NULL)
     goto cleanup;
 
@@ -4673,8 +4631,7 @@ int process_cl(dt_iop_module_t *self,
   retouch_user_data_t usr_data = { 0 };
   dwt_params_cl_t *dwt_p = NULL;
 
-  const gboolean gui_active = (self->dev) ? (self == self->dev->gui_module) : FALSE;
-  const gboolean display_wavelet_scale = g && gui_active ? g->display_wavelet_scale : FALSE;
+  const gboolean display_wavelet_scale = g && dt_iop_has_focus(self) ? g->display_wavelet_scale : FALSE;
 
   // we will do all the clone, heal, etc on the input image, this way
   // the source for one algorithm can be the destination from a
@@ -4698,8 +4655,7 @@ int process_cl(dt_iop_module_t *self,
   usr_data.mask_display = FALSE;
   usr_data.suppress_mask = (g
                             && g->suppress_mask
-                            && self->dev->gui_attached
-                            && (self == self->dev->gui_module)
+                            && dt_iop_has_focus(self)
                             && (piece->pipe == self->dev->full.pipe));
   usr_data.display_scale = p->curr_scale;
 
@@ -4720,8 +4676,7 @@ int process_cl(dt_iop_module_t *self,
   // check if this module should expose mask.
   if((piece->pipe->type & DT_DEV_PIXELPIPE_FULL)
      && g && g->mask_display
-     && self->dev->gui_attached
-     && (self == self->dev->gui_module)
+     && dt_iop_has_focus(self)
      && (piece->pipe == self->dev->full.pipe))
   {
     const int kernel = gd->kernel_retouch_clear_alpha;
@@ -4740,7 +4695,7 @@ int process_cl(dt_iop_module_t *self,
   if(piece->pipe->type & DT_DEV_PIXELPIPE_FULL)
   {
     // check if the image support this number of scales
-    if(gui_active)
+    if(dt_iop_has_focus(self))
     {
       const int max_scales = dwt_get_max_scale_cl(dwt_p);
       if(dwt_p->scales > max_scales)

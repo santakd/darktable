@@ -268,7 +268,7 @@ static void _setup_overlay(dt_iop_module_t *self,
   dt_iop_overlay_gui_data_t *g = self->gui_data;
   dt_iop_overlay_data_t *data = piece->data;
 
-  const dt_imgid_t imgid = data->imgid;
+  dt_imgid_t imgid = data->imgid;
 
   if(!p || !dt_is_valid_imgid(imgid))
     return;
@@ -286,6 +286,7 @@ static void _setup_overlay(dt_iop_module_t *self,
     {
       image_exists = TRUE;
       p->imgid = new_imgid;
+      imgid = new_imgid;
       dt_dev_add_history_item(dev, self, TRUE);
       if(g)
         gtk_widget_queue_draw(GTK_WIDGET(g->area));
@@ -1164,17 +1165,9 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->scale, _("the scale of the overlay"));
   gtk_widget_set_tooltip_text(g->rotate, _("the rotation of the overlay"));
 
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_MODULE_REMOVE, _module_remove_callback, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_MODULE_REMOVE, _module_remove_callback);
 
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_IMAGE_CHANGED, _signal_image_changed, self);
-}
-
-void gui_cleanup(dt_iop_module_t *self)
-{
-  IOP_GUI_FREE;
-
-  DT_CONTROL_SIGNAL_DISCONNECT(_module_remove_callback, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(_signal_image_changed, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_IMAGE_CHANGED, _signal_image_changed);
 }
 
 // clang-format off

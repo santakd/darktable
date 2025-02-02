@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -65,6 +65,10 @@
 #ifdef GDK_WINDOWING_QUARTZ
 #include "osx/osx.h"
 #endif
+#ifdef _WIN32
+#include <dwmapi.h>
+#include <gdk/gdkwin32.h>
+#endif
 #include <pthread.h>
 
 /*
@@ -98,6 +102,7 @@ typedef struct dt_ui_t
   /* center widget */
   GtkWidget *center;
   GtkWidget *center_base;
+  GtkWidget *snapshot;
 
   /* main widget */
   GtkWidget *main_window;
@@ -707,12 +712,11 @@ static gboolean _draw(GtkWidget *da,
                       cairo_t *cr,
                       gpointer user_data)
 {
-  dt_control_expose(NULL);
-  if(darktable.gui->surface)
-  {
-    cairo_set_source_surface(cr, darktable.gui->surface, 0, 0);
-    cairo_paint(cr);
-  }
+  GtkWidget *ss = dt_ui_snapshot(darktable.gui->ui);
+  darktable.gui->drawing_snapshot = da == ss;
+  if(!darktable.gui->drawing_snapshot) gtk_widget_queue_draw(ss);
+
+  dt_control_expose(da, cr);
 
   return TRUE;
 }
@@ -771,8 +775,8 @@ int dt_gui_gtk_load_config()
   const gint x = MAX(0, dt_conf_get_int("ui_last/window_x"));
   const gint y = MAX(0, dt_conf_get_int("ui_last/window_y"));
 
-  gtk_window_move(GTK_WINDOW(widget), x, y);
   gtk_window_resize(GTK_WINDOW(widget), width, height);
+  gtk_window_move(GTK_WINDOW(widget), x, y);
   const gboolean fullscreen = dt_conf_get_bool("ui_last/fullscreen");
 
   if(fullscreen)
@@ -880,7 +884,10 @@ static gboolean _gui_quit_callback(GtkWidget *widget,
       dt_dev_write_history(darktable.develop);
 
     if(dt_check_gimpmode_ok("file"))
+    {
       darktable.gimp.error = !dt_export_gimp_file(darktable.gimp.imgid);
+      dt_image_write_sidecar_file(darktable.gimp.imgid);
+    }
 
     dt_control_quit();
   }
@@ -905,7 +912,10 @@ static void _quit_callback(dt_action_t *action)
   {
     dt_dev_write_history(darktable.develop);
     if(dt_check_gimpmode_ok("file"))
+    {
       darktable.gimp.error = !dt_export_gimp_file(darktable.gimp.imgid);
+      dt_image_write_sidecar_file(darktable.gimp.imgid);
+    }
   }
 
   dt_control_quit();
@@ -941,35 +951,6 @@ static gboolean _configure(GtkWidget *da,
                            GdkEventConfigure *event,
                            gpointer user_data)
 {
-  static int oldw = 0;
-  static int oldh = 0;
-  // make our selves a properly sized pixmap if our window has been resized
-  if(oldw != event->width || oldh != event->height)
-  {
-    // create our new pixmap with the correct size.
-    cairo_surface_t *tmpsurface
-        = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32, event->width, event->height);
-    // copy the contents of the old pixmap to the new pixmap.  This keeps ugly uninitialized
-    // pixmaps from being painted upon resize
-    //     int minw = oldw, minh = oldh;
-    //     if(event->width  < minw) minw = event->width;
-    //     if(event->height < minh) minh = event->height;
-
-    cairo_t *cr = cairo_create(tmpsurface);
-    cairo_set_source_surface(cr, darktable.gui->surface, 0, 0);
-    cairo_paint(cr);
-    cairo_destroy(cr);
-
-    // we're done with our old pixmap, so we can get rid of it and
-    // replace it with our properly-sized one.
-    cairo_surface_destroy(darktable.gui->surface);
-    darktable.gui->surface = tmpsurface;
-    dt_colorspaces_set_display_profile(
-        DT_COLORSPACE_DISPLAY); // maybe we are on another screen now with > 50% of the area
-  }
-  oldw = event->width;
-  oldh = event->height;
-
 #ifndef GDK_WINDOWING_QUARTZ
   dt_configure_ppd_dpi((dt_gui_gtk_t *) user_data);
 #endif
@@ -1157,6 +1138,60 @@ static void _open_url(GtkWidget *widget, gpointer url)
 }
 #endif
 
+// This is based on GIMP's implementation:
+// https://gitlab.gnome.org/GNOME/gimp/-/blob/master/app/widgets/gimpwidgets-utils.c#L2655
+// Set win32 title bar color based on theme (background color).
+#ifdef _WIN32
+static void _window_set_titlebar_color_callback(GtkWidget *widget)
+{
+  GdkWindow *window = gtk_widget_get_window(widget);
+  if(window)
+  {
+    GtkStyleContext *style = gtk_widget_get_style_context(widget);
+    if(style)
+    {
+      GdkRGBA *bg_color = NULL;
+      gtk_style_context_get(style, GTK_STATE_FLAG_NORMAL,
+                            GTK_STYLE_PROPERTY_BACKGROUND_COLOR, &bg_color, NULL);
+      if(bg_color)
+      {
+        HWND hwnd = (HWND)gdk_win32_window_get_handle(window);
+        if(hwnd)
+        {
+          // attempt to set the title bar color to theme's background color.
+          // this is supported starting with Windows 11 Build 22000
+          COLORREF titlebar_color = RGB((BYTE)(bg_color->red * 255),
+                                        (BYTE)(bg_color->green * 255),
+                                        (BYTE)(bg_color->blue * 255));
+
+          HRESULT hr = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR,
+                                             &titlebar_color, sizeof(titlebar_color));
+          if(FAILED(hr))
+          {
+            // if setting title bar color failed,
+            // attempt to set it light/dark depending to theme's background color.
+            // this is supported starting with Windows 10 version 1809.
+            //
+            // if the background color is below the threshold (currently 0.5),
+            // then we're likely in dark mode
+            gboolean use_dark_mode = (bg_color->red   * bg_color->alpha < 0.5 &&
+                                      bg_color->green * bg_color->alpha < 0.5 &&
+                                      bg_color->blue  * bg_color->alpha < 0.5);
+
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                  &use_dark_mode, sizeof(use_dark_mode));
+          }
+        }
+
+        gdk_rgba_free(bg_color);
+      }
+    }
+  }
+
+  g_signal_chain_from_overridden_handler(widget);
+}
+#endif
+
 int dt_gui_theme_init(dt_gui_gtk_t *gui)
 {
   if(gui->gtkrc[0] != '\0')
@@ -1210,20 +1245,20 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   gtk_widget_show(view_root_menu);
 
   GtkWidget *view_menu = gtk_menu_new();
-  _osx_add_view_menu_item(view_menu, C_("menu", "lighttable"), "lighttable");
-  _osx_add_view_menu_item(view_menu, C_("menu", "darkroom"), "darkroom");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Lighttable"), "lighttable");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Darkroom"), "darkroom");
 
   GtkWidget *sep = gtk_separator_menu_item_new();
   gtk_menu_shell_append(GTK_MENU_SHELL (view_menu), sep);
   gtk_widget_show(sep);
 
-  _osx_add_view_menu_item(view_menu, C_("menu", "slideshow"), "slideshow");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Slideshow"), "slideshow");
 #ifdef HAVE_MAP
-  _osx_add_view_menu_item(view_menu, C_("menu", "map"), "map");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Map"), "map");
 #endif
-  _osx_add_view_menu_item(view_menu, C_("menu", "print"), "print");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Print"), "print");
 #ifdef HAVE_GPHOTO2
-  _osx_add_view_menu_item(view_menu, C_("menu", "tethering"), "tethering");
+  _osx_add_view_menu_item(view_menu, C_("menu", "Tethering"), "tethering");
 #endif
 
   gtk_menu_item_set_submenu(GTK_MENU_ITEM (view_root_menu), view_menu);
@@ -1277,10 +1312,17 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
                    G_CALLBACK(_osx_openfile_callback), NULL);
 #endif
 
+#ifdef _WIN32
+  // set win32 title bar color based on theme (background color)
+  g_signal_override_class_handler("map", gtk_window_get_type(),
+                                  G_CALLBACK(_window_set_titlebar_color_callback));
+  g_signal_override_class_handler("style-updated", gtk_window_get_type(),
+                                  G_CALLBACK(_window_set_titlebar_color_callback));
+#endif
+
   GtkWidget *widget;
   if(!gui->ui)
     gui->ui = g_malloc0(sizeof(dt_ui_t));
-  gui->surface = NULL;
   gui->hide_tooltips = dt_conf_get_bool("ui/hide_tooltips") ? 1 : 0;
   gui->grouping = dt_conf_get_bool("ui_last/grouping");
   gui->expanded_group_id = NO_IMGID;
@@ -1316,23 +1358,30 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   _init_widgets(gui);
 
   widget = dt_ui_center(darktable.gui->ui);
-
   g_signal_connect(G_OBJECT(widget), "configure-event",
-                   G_CALLBACK(_configure), gui);
-  g_signal_connect(G_OBJECT(widget), "draw",
-                   G_CALLBACK(_draw), NULL);
-  g_signal_connect(G_OBJECT(widget), "motion-notify-event",
-                   G_CALLBACK(_mouse_moved), gui);
-  g_signal_connect(G_OBJECT(widget), "leave-notify-event",
-                   G_CALLBACK(_center_leave), NULL);
-  g_signal_connect(G_OBJECT(widget), "enter-notify-event",
-                   G_CALLBACK(_center_enter), NULL);
-  g_signal_connect(G_OBJECT(widget), "button-press-event",
-                   G_CALLBACK(_button_pressed), NULL);
-  g_signal_connect(G_OBJECT(widget), "button-release-event",
-                   G_CALLBACK(_button_released), NULL);
-  g_signal_connect(G_OBJECT(widget), "scroll-event",
-                   G_CALLBACK(_scrolled), NULL);
+                  G_CALLBACK(_configure), gui);
+  for(int i = 2; i; i--, widget = dt_ui_snapshot(darktable.gui->ui))
+  {
+    gtk_widget_add_events(widget,
+                          GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK
+                          | GDK_BUTTON_RELEASE_MASK | GDK_ENTER_NOTIFY_MASK
+                          | GDK_LEAVE_NOTIFY_MASK | darktable.gui->scroll_mask);
+
+    g_signal_connect(G_OBJECT(widget), "draw",
+                    G_CALLBACK(_draw), NULL);
+    g_signal_connect(G_OBJECT(widget), "motion-notify-event",
+                    G_CALLBACK(_mouse_moved), gui);
+    g_signal_connect(G_OBJECT(widget), "leave-notify-event",
+                    G_CALLBACK(_center_leave), NULL);
+    g_signal_connect(G_OBJECT(widget), "enter-notify-event",
+                    G_CALLBACK(_center_enter), NULL);
+    g_signal_connect(G_OBJECT(widget), "button-press-event",
+                    G_CALLBACK(_button_pressed), NULL);
+    g_signal_connect(G_OBJECT(widget), "button-release-event",
+                    G_CALLBACK(_button_released), NULL);
+    g_signal_connect(G_OBJECT(widget), "scroll-event",
+                    G_CALLBACK(_scrolled), NULL);
+  }
 
   // TODO: left, right, top, bottom:
   // leave-notify-event
@@ -1377,7 +1426,6 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
                                                 widgets.right_scrolled_window);
   gtk_container_set_focus_vadjustment (box, gtk_scrolled_window_get_vadjustment (swin));
   */
-  dt_colorspaces_set_display_profile(DT_COLORSPACE_DISPLAY);
   // update the profile when the window is moved. resize is already handled in configure()
   widget = dt_ui_main_window(darktable.gui->ui);
   g_signal_connect(G_OBJECT(widget), "configure-event",
@@ -1464,10 +1512,6 @@ int dt_gui_gtk_init(dt_gui_gtk_t *gui)
   }
   g_list_free(input_devices);
 
-  // finally set the cursor to be the default.
-  // for some reason this is needed on some systems to pick up the correctly themed cursor
-  dt_control_change_cursor(GDK_LEFT_PTR);
-
   // create focus-peaking button
   darktable.gui->focus_peaking_button =
     dtgtk_togglebutton_new(dtgtk_cairo_paint_focus_peaking, 0, NULL);
@@ -1491,9 +1535,7 @@ void dt_gui_gtk_run(dt_gui_gtk_t *gui)
   GtkWidget *widget = dt_ui_center(darktable.gui->ui);
   GtkAllocation allocation;
   gtk_widget_get_allocation(widget, &allocation);
-  darktable.gui->surface
-      = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-                                      allocation.width, allocation.height);
+
   // need to pre-configure views to avoid crash caused by draw coming
   // before configure-event
   darktable.control->tabborder = 8;
@@ -1512,12 +1554,6 @@ void dt_gui_gtk_run(dt_gui_gtk_t *gui)
     g_atomic_int_set(&darktable.gui_running, 1);
     gtk_main();
     g_atomic_int_set(&darktable.gui_running, 0);
-  }
-
-  if(darktable.gui->surface)
-  {
-    cairo_surface_destroy(darktable.gui->surface);
-    darktable.gui->surface = NULL;
   }
 }
 
@@ -1577,13 +1613,7 @@ void dt_configure_ppd_dpi(dt_gui_gtk_t *gui)
 
   gui->ppd = gui->ppd_thb = dt_get_system_gui_ppd(widget);
   gui->filter_image = CAIRO_FILTER_GOOD;
-  if(dt_conf_get_bool("ui/performance"))
-  {
-      gui->ppd_thb *= DT_GUI_THUMBSIZE_REDUCE;
-      gui->filter_image = CAIRO_FILTER_FAST;
-  }
-
-   gui->dpi = dt_get_screen_resolution(widget);
+  gui->dpi = dt_get_screen_resolution(widget);
 
 #ifdef GDK_WINDOWING_QUARTZ
   gui->dpi_factor
@@ -1691,54 +1721,7 @@ static void _init_widgets(dt_gui_gtk_t *gui)
                                                   DT_UI_BORDER_BOTTOM);
   gtk_box_pack_start(GTK_BOX(container), gui->widgets.bottom_border, FALSE, TRUE, 0);
 
-  // configure main window position, colors, fonts, etc.
-  gint splash_x, splash_y, splash_w, splash_h;
-  darktable_splash_screen_get_geometry(&splash_x, &splash_y, &splash_w, &splash_h);
-  if(splash_w == -1)
-  {
-    // use the previously-saved geometry; we'll be setting the window to this size later anyway
-    dt_gui_gtk_load_config();
-  }
-  else
-  {
-    // the main window peeks out behind the splash screen so we reduce the dimensions
-    if(splash_h > 100 && splash_w > 100)
-    {
-      splash_x += 20;
-      splash_y += 50;
-      splash_w -= 100;
-      splash_h -= 100;
-    }
-    gtk_window_move(GTK_WINDOW(dt_ui_main_window(gui->ui)), splash_x, splash_y);
-    gtk_window_resize(GTK_WINDOW(dt_ui_main_window(gui->ui)), splash_w, splash_h);
-  }
   dt_gui_apply_theme();
-  dt_gui_process_events();
-
-  // Showing everything, to ensure proper instantiation and initialization
-  // then we hide the scroll bars and popup messages again
-  // before doing this, request that the window be minimized (some WMs
-  // don't support this, so we can hide it below, but that had issues)
-//  gtk_window_iconify(GTK_WINDOW(dt_ui_main_window(gui->ui)));
-// unfortunately, on some systems the above results in a window which can only be manually deiconified....
-  gtk_widget_show_all(dt_ui_main_window(gui->ui));
-  gtk_widget_set_visible(dt_ui_log_msg(gui->ui), FALSE);
-  gtk_widget_set_visible(dt_ui_toast_msg(gui->ui), FALSE);
-  gtk_widget_set_visible(gui->scrollbars.hscrollbar, FALSE);
-  gtk_widget_set_visible(gui->scrollbars.vscrollbar, FALSE);
-
-  // if the WM doesn't support minimization, we want to hide the
-  // window so that we don't actually see it until the rest of the
-  // initialization is complete
-//  gtk_widget_hide(dt_ui_main_window(gui->ui));  //FIXME: on some systems, the main window never un-hides later...
-
-  // finally, process all accumulated GUI events so that everything is properly
-  // set up before proceeding
-  for(int i = 0; i < 5; i++)
-  {
-    g_usleep(500);
-    dt_gui_process_events();
-  }
 }
 
 static const dt_action_def_t _action_def_focus_tabs;
@@ -1787,13 +1770,14 @@ static void _init_main_table(GtkWidget *container)
   gtk_widget_set_hexpand(ocda, TRUE);
   gtk_widget_set_vexpand(ocda, TRUE);
   gtk_widget_set_app_paintable(cda, TRUE);
-  gtk_widget_set_events(cda,
-                        GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK
-                        | GDK_BUTTON_RELEASE_MASK | GDK_ENTER_NOTIFY_MASK
-                        | GDK_LEAVE_NOTIFY_MASK | darktable.gui->scroll_mask);
   gtk_widget_set_can_focus(cda, TRUE);
-  gtk_widget_set_visible(cda, TRUE);
-  gtk_overlay_add_overlay(GTK_OVERLAY(ocda), cda);
+  darktable.gui->ui->snapshot = gtk_drawing_area_new();
+  gtk_widget_set_no_show_all(darktable.gui->ui->snapshot, TRUE);
+  GtkWidget *sidebyside = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_box_pack_start(GTK_BOX(sidebyside), cda, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(sidebyside), darktable.gui->ui->snapshot, TRUE, TRUE, 0);
+  gtk_box_set_homogeneous(GTK_BOX(sidebyside), TRUE);
+  gtk_overlay_add_overlay(GTK_OVERLAY(ocda), sidebyside);
 
   gtk_grid_attach(GTK_GRID(centergrid), ocda, 0, 0, 1, 1);
   darktable.gui->ui->center = cda;
@@ -1811,6 +1795,7 @@ static void _init_main_table(GtkWidget *container)
   gtk_label_set_ellipsize(GTK_LABEL(darktable.gui->ui->log_msg), PANGO_ELLIPSIZE_MIDDLE);
   dt_gui_add_class(darktable.gui->ui->log_msg, "dt_messages");
   gtk_container_add(GTK_CONTAINER(eb), darktable.gui->ui->log_msg);
+  gtk_widget_set_no_show_all(darktable.gui->ui->log_msg, TRUE);
   gtk_widget_set_valign(eb, GTK_ALIGN_END);
   gtk_widget_set_halign(eb, GTK_ALIGN_CENTER);
   gtk_overlay_add_overlay(GTK_OVERLAY(ocda), eb);
@@ -1833,6 +1818,7 @@ static void _init_main_table(GtkWidget *container)
 
   dt_gui_add_class(darktable.gui->ui->toast_msg, "dt_messages");
   gtk_container_add(GTK_CONTAINER(eb), darktable.gui->ui->toast_msg);
+  gtk_widget_set_no_show_all(darktable.gui->ui->toast_msg, TRUE);
   gtk_widget_set_valign(eb, GTK_ALIGN_START);
   gtk_widget_set_halign(eb, GTK_ALIGN_CENTER);
   gtk_overlay_add_overlay(GTK_OVERLAY(ocda), eb);
@@ -2260,6 +2246,10 @@ GtkWidget *dt_ui_center_base(dt_ui_t *ui)
 {
   return ui->center_base;
 }
+GtkWidget *dt_ui_snapshot(dt_ui_t *ui)
+{
+  return ui->snapshot;
+}
 dt_thumbtable_t *dt_ui_thumbtable(struct dt_ui_t *ui)
 {
   return ui->thumbtable;
@@ -2395,7 +2385,11 @@ static gboolean _side_panel_draw(GtkWidget *widget,
                                  cairo_t *cr,
                                  gpointer user_data)
 {
-  if(darktable.gui->ui->thumbtable->manual_button.x != -1)
+  // in lighttable view, if there are no thumbs displayed in the center view, we have lines to
+  // modules which need to be updated as we expand and collapse modules in the side panels
+  if(darktable.collection
+     && dt_view_get_current() == DT_VIEW_LIGHTTABLE
+     && dt_collection_get_count(darktable.collection) == 0)
     gtk_widget_queue_draw(darktable.gui->ui->center);
   return FALSE;
 }
@@ -4367,12 +4361,12 @@ void dt_gui_collapsible_section_set_label(dt_gui_collapsible_section_t *cs,
   dt_control_queue_redraw_widget(cs->label);
 }
 
-gboolean dt_gui_long_click(const int second,
-                           const int first)
+gboolean dt_gui_long_click(const guint second,
+                           const guint first)
 {
   int delay = 0;
   g_object_get(gtk_settings_get_default(), "gtk-double-click-time", &delay, NULL);
-  return second - first > delay;
+  return second - delay > first;
 }
 
 static int busy_nest_count = 0;
@@ -4389,6 +4383,7 @@ void dt_gui_cursor_set_busy()
     GtkWidget *toplevel = darktable.gui->ui->main_window;
     GdkWindow *window = gtk_widget_get_window(toplevel);
     busy_prev_cursor = gdk_window_get_cursor(window);
+    g_object_ref(busy_prev_cursor);
     GdkCursor *watch = gdk_cursor_new_for_display(gtk_widget_get_display(toplevel), GDK_WATCH);
     gdk_window_set_cursor(window, watch);
     g_object_unref(watch);
@@ -4413,6 +4408,7 @@ void dt_gui_cursor_clear_busy()
       GdkWindow *window = gtk_widget_get_window(toplevel);
       gdk_window_set_cursor(window, busy_prev_cursor);
       dt_gui_process_events();
+      g_object_unref(busy_prev_cursor);
       busy_prev_cursor = NULL;
       dt_control_allow_change_cursor();
       gtk_grab_remove(darktable.control->progress_system.proxy.module->widget);
@@ -4461,6 +4457,20 @@ void dt_gui_simulate_button_event(GtkWidget *widget,
   {
     g_object_unref(event.window);
   }
+}
+
+GtkWidget *(dt_gui_box_add)(const char *file, const int line, const char *function, GtkBox *box, gpointer list[])
+{
+  int i = 1;
+  for(; *list != (gpointer)-1; list++, i++)
+  {
+    if(GTK_IS_WIDGET(*list))
+      gtk_container_add(GTK_CONTAINER(box), GTK_WIDGET(*list));
+    else
+      dt_print(DT_DEBUG_ALWAYS, "%s:%d %s: trying to add invalid widget to box (#%d)", file, line, function, i);
+  }
+
+  return GTK_WIDGET(box);
 }
 
 // clang-format off

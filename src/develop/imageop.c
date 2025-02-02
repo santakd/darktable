@@ -163,11 +163,6 @@ static void default_cleanup_pipe(dt_iop_module_t *self,
   free(piece->data);
 }
 
-static void default_gui_cleanup(dt_iop_module_t *self)
-{
-  IOP_GUI_FREE;
-}
-
 static void default_cleanup(dt_iop_module_t *module)
 {
   g_free(module->params);
@@ -532,8 +527,8 @@ static void _gui_delete_callback(GtkButton *button, dt_iop_module_t *module)
   // we remove the plugin effectively
   if(!dt_iop_is_hidden(module))
   {
-    dt_iop_gui_cleanup_module(module);
     gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
+    dt_iop_gui_cleanup_module(module);
   }
 
   // we remove all references in the history stack and dev->iop
@@ -1163,10 +1158,6 @@ gboolean dt_iop_so_is_hidden(dt_iop_module_so_t *module)
       dt_print(DT_DEBUG_ALWAYS,
                "Module '%s' is not hidden and lacks implementation of gui_init()...",
                module->op);
-    else if(!module->gui_cleanup)
-      dt_print(DT_DEBUG_ALWAYS,
-               "Module '%s' is not hidden and lacks implementation of gui_cleanup()...",
-               module->op);
     else
       is_hidden = FALSE;
   }
@@ -1299,6 +1290,7 @@ void dt_iop_gui_init(dt_iop_module_t *module)
 {
   ++darktable.gui->reset;
   --darktable.bauhaus->skip_accel;
+  dt_pthread_mutex_init(&module->gui_lock, NULL);
   if(module->gui_init) module->gui_init(module);
   ++darktable.bauhaus->skip_accel;
   --darktable.gui->reset;
@@ -1729,6 +1721,35 @@ static void _init_module_so(void *m)
   }
 }
 
+// to be called before issuing any query based on memory.darktable_iop_names
+void _iop_set_darktable_iop_table()
+{
+  // the iop list must have been set, so after dt_iop_load_modules_so()
+  assert(darktable.iop && g_list_length(darktable.iop) > 0);
+
+  sqlite3_stmt *stmt;
+  gchar *module_list = NULL;
+  for(GList *iop = darktable.iop; iop; iop = g_list_next(iop))
+  {
+    dt_iop_module_so_t *module = iop->data;
+    dt_util_str_cat(&module_list, "(\"%s\",\"%s\"),",
+                                  module->op, module->name());
+  }
+
+  if(module_list)
+  {
+    module_list[strlen(module_list) - 1] = '\0';
+    gchar *query =
+      g_strdup_printf("INSERT INTO memory.darktable_iop_names (operation, name)"
+                      " VALUES %s", module_list);
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    g_free(query);
+    g_free(module_list);
+  }
+}
+
 void dt_iop_load_modules_so(void)
 {
   darktable.iop = dt_module_load_modules
@@ -1736,6 +1757,9 @@ void dt_iop_load_modules_so(void)
      dt_iop_load_module_so, _init_module_so, NULL);
 
   DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_PREFERENCES_CHANGE, _iop_preferences_changed, darktable.iop);
+
+  // set up memory.darktable_iop_names table
+  _iop_set_darktable_iop_table();
 }
 
 gboolean dt_iop_load_module(dt_iop_module_t *module,
@@ -2188,9 +2212,12 @@ void dt_iop_gui_cleanup_module(dt_iop_module_t *module)
 {
   g_slist_free_full(module->widget_list, g_free);
   module->widget_list = NULL;
-  module->gui_cleanup(module);
+  DT_CONTROL_SIGNAL_DISCONNECT_ALL(module, module->so->op);
+  if(module->gui_cleanup) module->gui_cleanup(module);
   gtk_widget_destroy(module->expander ?: module->widget);
   dt_iop_gui_cleanup_blending(module);
+  dt_pthread_mutex_destroy(&module->gui_lock);
+  dt_free_align(module->gui_data);
 }
 
 void dt_iop_gui_update(dt_iop_module_t *module)
@@ -2218,7 +2245,6 @@ void dt_iop_gui_update(dt_iop_module_t *module)
       dt_iop_gui_update_expanded(module);
     }
     dt_iop_gui_update_header(module);
-    dt_iop_show_hide_header_buttons(module, NULL, FALSE, FALSE);
     dt_guides_update_module_widget(module);
 
     // this signal must be raised only safely when the darkroom and history
@@ -2310,6 +2336,15 @@ static gboolean _presets_scroll_callback(GtkWidget *widget,
   return TRUE;
 }
 
+gboolean dt_iop_has_focus(const dt_iop_module_t *module)
+{
+  return module
+      && module->dev
+      && module->dev->gui_attached
+      && module == module->dev->gui_module
+      && dt_dev_modulegroups_test_activated(darktable.develop);
+}
+
 void dt_iop_request_focus(dt_iop_module_t *module)
 {
   dt_develop_t *dev = darktable.develop;
@@ -2320,12 +2355,18 @@ void dt_iop_request_focus(dt_iop_module_t *module)
   if(!darktable.lib->proxy.colorpicker.restrict_histogram)
     dt_iop_color_picker_reset(NULL, TRUE);
 
-  if(darktable.gui->reset
-     || (out_focus_module == module))
+  if(darktable.gui->reset || (out_focus_module == module))
     return;
 
   dev->gui_module = module;
   dev->focus_hash = TRUE;
+
+  dt_free_align(dev->full.pipe->bcache_data);
+  dev->full.pipe->bcache_data = NULL;
+  dt_free_align(dev->preview_pipe->bcache_data);
+  dev->preview_pipe->bcache_data = NULL;
+  dt_free_align(dev->preview2.pipe->bcache_data);
+  dev->preview2.pipe->bcache_data = NULL;
 
   /* lets lose the focus of previous focus module*/
   if(out_focus_module)
@@ -3346,32 +3387,6 @@ static void _enable_module_callback(dt_iop_module_t *module)
 
   const gboolean active = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(module->off));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(module->off), !active);
-}
-
-// to be called before issuing any query based on memory.darktable_iop_names
-void dt_iop_set_darktable_iop_table()
-{
-  sqlite3_stmt *stmt;
-  gchar *module_list = NULL;
-  for(GList *iop = darktable.iop; iop; iop = g_list_next(iop))
-  {
-    dt_iop_module_so_t *module = iop->data;
-    dt_util_str_cat(&module_list, "(\"%s\",\"%s\"),",
-                                  module->op, module->name());
-  }
-
-  if(module_list)
-  {
-    module_list[strlen(module_list) - 1] = '\0';
-    gchar *query =
-      g_strdup_printf("INSERT INTO memory.darktable_iop_names (operation, name)"
-                      " VALUES %s", module_list);
-    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    g_free(query);
-    g_free(module_list);
-  }
 }
 
 const gchar *dt_iop_get_localized_name(const gchar *op)

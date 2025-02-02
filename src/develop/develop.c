@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -346,6 +346,9 @@ void dt_dev_process_image_job(dt_develop_t *dev,
   dt_dev_pixelpipe_set_input(pipe, dev, (float *)buf.buf, buf.width, buf.height,
                              port ? 1.0 : buf.iscale);
 
+  // We require calculation of pixelpipe dimensions via dt_dev_pixelpipe_change() in these cases
+  const gboolean initial = pipe->loading || dev->image_force_reload || pipe->input_changed;
+
   if(pipe->loading)
   {
     // init pixel pipeline
@@ -398,10 +401,10 @@ restart:
   if(port == &dev->full)
     pipe->input_timestamp = dev->timestamp;
 
-  // dt_dev_pixelpipe_change() will clear the changed value
-  const dt_dev_pixelpipe_change_t pipe_changed = pipe->changed;
-  // this locks dev->history_mutex.
-  dt_dev_pixelpipe_change(pipe, dev);
+  const gboolean pipe_changed = pipe->changed != DT_DEV_PIPE_UNCHANGED;
+  // dt_dev_pixelpipe_change() locks history mutex while syncing nodes and finally calculates dimensions
+  if(pipe_changed || initial || (port && port->pipe->loading))
+    dt_dev_pixelpipe_change(pipe, dev);
 
   float scale = 1.0f;
   int window_width = G_MAXINT;
@@ -414,7 +417,7 @@ restart:
     // if just changed to an image with a different aspect ratio or
     // altered image orientation, the prior zoom xy could now be beyond
     // the image boundary
-    if(port->pipe->loading || pipe_changed != DT_DEV_PIPE_UNCHANGED)
+    if(port->pipe->loading || pipe_changed)
       dt_dev_zoom_move(port, DT_ZOOM_MOVE, 0.0f, 0, 0.0f, 0.0f, TRUE);
 
     // determine scale according to new dimensions
@@ -569,8 +572,11 @@ float dt_dev_get_zoom_scale(dt_dev_viewport_t *port,
       break;
   }
 
-  if(preview) zoom_scale *= (float)darktable.develop->full.pipe->processed_width
-                              / darktable.develop->preview_pipe->processed_width;
+  if(!zoom_scale) zoom_scale = 1.0f;
+
+  if(preview && darktable.develop->preview_pipe->processed_width)
+    zoom_scale *= (float)darktable.develop->full.pipe->processed_width
+                  / darktable.develop->preview_pipe->processed_width;
 
   return zoom_scale;
 }
@@ -1663,8 +1669,11 @@ static gboolean _dev_auto_apply_presets(dt_develop_t *dev)
        "       AND ?10 BETWEEN focal_length_min AND focal_length_max"
        "       AND (format = 0 OR (format&?11 != 0 AND ~format&?12 != 0))"
        "       AND operation = 'ioporder'"
-       " ORDER BY writeprotect DESC, LENGTH(model), LENGTH(maker), LENGTH(lens)",
+       " ORDER BY writeprotect ASC, LENGTH(model), LENGTH(maker), LENGTH(lens)",
        -1, &stmt, NULL);
+    // NOTE: the order "writeprotect ASC" is very important as it ensure that
+    //       user's defined presets are listed first and will be used instead of
+    //       the darktable internal ones.
     // clang-format on
     DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
     DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 2, image->exif_model, -1, SQLITE_TRANSIENT);
@@ -1687,6 +1696,8 @@ static gboolean _dev_auto_apply_presets(dt_develop_t *dev)
 
     if(sqlite3_step(stmt) == SQLITE_ROW)
     {
+      dt_print(DT_DEBUG_PARAMS,
+               "[dev_auto_apply_presets] found iop-order preset, apply it on %d", imgid);
       const char *params = (char *)sqlite3_column_blob(stmt, 0);
       const int32_t params_len = sqlite3_column_bytes(stmt, 0);
       iop_list = dt_ioppr_deserialize_iop_order_list(params, params_len);
@@ -1695,11 +1706,19 @@ static gboolean _dev_auto_apply_presets(dt_develop_t *dev)
     {
       // we have no auto-apply order, so apply iop order, depending of the workflow
       if(is_scene_referred || is_workflow_none)
+      {
+        dt_print(DT_DEBUG_PARAMS,
+                 "[dev_auto_apply_presets] no iop-order preset, use DT_IOP_ORDER_{JPG/RAW} on %d", imgid);
         iop_list = dt_ioppr_get_iop_order_list_version((iformat & FOR_LDR)
                                                        ? DT_DEFAULT_IOP_ORDER_JPG
                                                        : DT_DEFAULT_IOP_ORDER_RAW);
+      }
       else
+      {
+        dt_print(DT_DEBUG_PARAMS,
+                 "[dev_auto_apply_presets] no iop-order preset, use DT_IOP_ORDER_LEGACY on %d", imgid);
         iop_list = dt_ioppr_get_iop_order_list_version(DT_IOP_ORDER_LEGACY);
+      }
     }
 
     // add multi-instance entries that could have been added if more
@@ -2421,11 +2440,11 @@ gboolean dt_dev_get_zoom_bounds(dt_dev_viewport_t *port,
   if(port->zoom == DT_ZOOM_FIT)
     return FALSE;
 
-  int procw = 0, proch = 0;
+  dt_dev_zoom_t zoom;
+  int closeup, procw = 0, proch = 0;
+  dt_dev_get_viewport_params(port, &zoom, &closeup, zoom_x, zoom_y);
   dt_dev_get_processed_size(port, &procw, &proch);
   const float scale = dt_dev_get_zoom_scale(port, port->zoom, 1<<port->closeup, 0);
-
-  dt_dev_get_viewport_params(port, NULL, NULL, zoom_x, zoom_y);
 
   *boxw = procw ? port->width / (procw * scale) : 1.0f;
   *boxh = proch ? port->height / (proch * scale) : 1.0f;
@@ -2823,6 +2842,32 @@ void dt_dev_get_pointer_zoom_pos(dt_dev_viewport_t *port,
   int closeup = 0, procw = 0, proch = 0;
   float zoom2_x = 0.0f, zoom2_y = 0.0f;
   dt_dev_get_viewport_params(port, &zoom, &closeup, &zoom2_x, &zoom2_y);
+  dt_dev_get_processed_size(port, &procw, &proch);
+  const float scale = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, 0);
+  const double tb = port->border_size;
+  // offset from center now (current zoom_{x,y} points there)
+  const float mouse_off_x = px - tb - .5 * port->width;
+  const float mouse_off_y = py - tb - .5 * port->height;
+  zoom2_x += mouse_off_x / (procw * scale);
+  zoom2_y += mouse_off_y / (proch * scale);
+  *zoom_x = zoom2_x + 0.5f;
+  *zoom_y = zoom2_y + 0.5f;
+  *zoom_scale = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, 1);
+}
+
+void dt_dev_get_pointer_zoom_pos_from_bounds(dt_dev_viewport_t *port,
+                                             const float px,
+                                             const float py,
+                                             const float zbound_x,
+                                             const float zbound_y,
+                                             float *zoom_x,
+                                             float *zoom_y,
+                                             float *zoom_scale)
+{
+  dt_dev_zoom_t zoom;
+  int closeup = 0, procw = 0, proch = 0;
+  float zoom2_x = zbound_x, zoom2_y = zbound_y;
+  dt_dev_get_viewport_params(port, &zoom, &closeup, NULL, NULL);
   dt_dev_get_processed_size(port, &procw, &proch);
   const float scale = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, 0);
   const double tb = port->border_size;
